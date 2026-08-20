@@ -1,0 +1,35 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.dll
+*.pdb
+
+## Rider / VS
+*.DotSettings.user
+
+## Node / Angular (frontend/)
+node_modules/
+dist/
+.angular/
+npm-debug.log*
+yarn-error.log*
+
+## IDEs and editors
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Local secrets / config overrides
+appsettings.*.local.json
+*.env
+.env
