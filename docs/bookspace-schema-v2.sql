@@ -237,14 +237,14 @@ CREATE TABLE RecurrenceRules (
     CONSTRAINT CK_RecurrenceRules_EndCondition CHECK
         ((EndDate IS NOT NULL AND OccurrenceCount IS NULL)
          OR (EndDate IS NULL AND OccurrenceCount IS NOT NULL)),
-    -- Decision #7 (docs/decisions/0007): a series runs at most one calendar
-    -- year past its own StartDate. This only covers the EndDate case exactly;
+    -- Decision #7 (docs/decisions/0007): a series runs at most two calendar
+    -- years past its own StartDate. This only covers the EndDate case exactly;
     -- the OccurrenceCount case gets the equivalent check in the Domain layer
     -- (RecurrenceRule constructor) instead, since expressing "implied span"
     -- for Monthly recurrence isn't a clean single SQL expression across all
     -- three frequencies.
     CONSTRAINT CK_RecurrenceRules_MaxSpan CHECK
-        (EndDate IS NULL OR EndDate <= DATEADD(YEAR, 1, StartDate))
+        (EndDate IS NULL OR EndDate <= DATEADD(YEAR, 2, StartDate))
 );
 
 -- The only table owning a time interval. Occurrences of a series

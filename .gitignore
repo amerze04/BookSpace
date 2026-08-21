@@ -6,6 +6,9 @@ obj/
 .vs/
 *.dll
 *.pdb
+TestResults/
+coverage-report/
+*.cobertura.xml
 
 ## Rider / VS
 *.DotSettings.user

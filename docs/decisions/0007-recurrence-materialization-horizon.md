@@ -22,13 +22,18 @@ Two options were considered:
 
 ## Decision
 **Materialize everything at creation**, bounded by a hard cap: **a series
-cannot run more than one calendar year past its own `StartDate`**. No
+cannot run more than two calendar years past its own `StartDate`**. No
 background top-up job exists or is needed.
+
+(Originally capped at one year; raised to two during WP-1 to satisfy the
+work package's "represents a two-year weekly recurring booking without
+redesign" acceptance criterion — see the addendum at the end of this doc.
+The cap value was never load-bearing on its own; only the strategy below is.)
 
 The cap is enforced twice, because the two end-condition types need
 different mechanisms:
 - `EndDate`-bound rules: DB-level, `CK_RecurrenceRules_MaxSpan CHECK
-  (EndDate IS NULL OR EndDate <= DATEADD(YEAR, 1, StartDate))`. Cheap and
+  (EndDate IS NULL OR EndDate <= DATEADD(YEAR, 2, StartDate))`. Cheap and
   exact.
 - `OccurrenceCount`-bound rules: Domain-level, in the `RecurrenceRule`
   constructor (`ComputeImpliedEndDate`), because computing the implied span
@@ -55,10 +60,24 @@ them hit a conflict would be worse than reporting the 1 exception.
   best-effort exceptions) the moment `dbo.CreateBooking` finishes running
   for each occurrence.
 - No new background job in CLAUDE.md §7 — still 3 jobs.
-- A 1-year daily series is ~365 `dbo.CreateBooking` calls in one create-series
-  operation. Acceptable for this domain (internal org resource booking, not
-  high-volume public scheduling); revisit if that assumption changes.
+- A 2-year daily series is ~730 `dbo.CreateBooking` calls in one create-series
+  operation (the worst case; a 2-year weekly series — the one WP-1's
+  acceptance criterion actually names — is ~104). Acceptable for this domain
+  (internal org resource booking, not high-volume public scheduling); revisit
+  if that assumption changes.
 - `RecurrenceRule`'s own span-cap check (`ComputeImpliedEndDate`) is the
   same calculation full occurrence-expansion will need anyway (last
   occurrence = `IntervalValue * (OccurrenceCount - 1)` steps after
   `StartDate`), so it isn't throwaway logic.
+
+## Addendum — cap raised from one year to two (2026-08-21)
+WP-1's acceptance criteria (`CLAUDE.md` §12) requires the model to
+"represent a two-year weekly recurring booking without redesign." The
+original one-year cap would have forced that into two chained
+`RecurrenceRule` rows instead. Since the cap was always just *a* reasonable
+bound chosen to avoid unbounded materialization cost — not a value with
+independent significance — it was raised to two years: one changed literal
+in `CK_RecurrenceRules_MaxSpan` and one in `RecurrenceRule.
+ComputeImpliedEndDate`'s comparison, nothing else. The materialize-everything-
+at-creation strategy, the best-effort-per-occurrence behavior, and the
+DST/blackout handling above are all unaffected.

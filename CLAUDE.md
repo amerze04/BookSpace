@@ -243,7 +243,7 @@ index; when a new decision doc is added, add its one-liner here too.
    physically unable to disagree.
 7. [`0007`](docs/decisions/0007-recurrence-materialization-horizon.md) — A
    recurring series is fully materialized at creation (best-effort per
-   occurrence, not atomic), capped at one calendar year past its own
+   occurrence, not atomic), capped at two calendar years past its own
    `StartDate`. No background top-up job.
 8. [`0008`](docs/decisions/0008-dst-spring-forward-policy.md) — An occurrence
    whose local time falls in a DST spring-forward gap is skipped, not
@@ -364,26 +364,46 @@ Acceptance criteria:
 Notes: git/remote setup was explicitly deferred to the repo owner rather
 than done by the assistant — not a gap in scope, a deliberate choice.
 
-### WP-1 — Data Model & Database — **Not started** (design already done)
-- [ ] Model core entities: Tenant, User, Resource, AvailabilityWindow,
+### WP-1 — Data Model & Database — **Code done, ERD unconfirmed** (2026-08-21)
+- [x] Model core entities: Tenant, User, Resource, AvailabilityWindow,
       BlackoutPeriod, Booking, RecurrenceRule, ApprovalRequest.
-- [ ] Define relationships, keys, integrity constraints.
-- [ ] Decide how tenancy is represented on every ownable entity.
-- [ ] Plan indexing for availability lookups and overlap checks.
-- [ ] Produce an ERD; write initial migrations + seed data.
+- [x] Define relationships, keys, integrity constraints.
+- [x] Decide how tenancy is represented on every ownable entity.
+- [x] Plan indexing for availability lookups and overlap checks.
+- [x] Produce an ERD; write initial migrations + seed data — migrations and
+      seed data done; ERD not confirmed to exist as a repo artifact, see Notes.
 
 Acceptance criteria:
-- [ ] ERD exists, presented before any application code.
-- [ ] Migrations run cleanly and seed a realistic multi-tenant dataset.
-- [ ] Model represents a two-year weekly recurring booking without redesign.
-- [ ] Every ownable entity is unambiguously tied to a tenant.
+- [ ] ERD exists, presented before any application code — unconfirmed, see Notes.
+- [x] Migrations run cleanly and seed a realistic multi-tenant dataset —
+      `InitialCreate` applied to a real SQL Server instance; seed produces 2
+      orgs, 9 users, 4 resources, 20 availability windows, 2 blackout periods,
+      2 recurrence rules; re-running is a no-op (idempotent).
+- [x] Model represents a two-year weekly recurring booking without redesign —
+      cap raised from one year to two (Decision #7 addendum); seed data
+      includes a recurrence rule running exactly to the new boundary.
+- [x] Every ownable entity is unambiguously tied to a tenant.
 
-Notes: the *design* side of WP-1 is already done — `docs/bookspace-schema-v2.sql`
-and all 8 decisions in §9 answer every one of these tasks on paper (tenancy
-via `OrgId`, indexing via `IX_Bookings_Resource_Start` and friends, the
-1-year recurrence cap, etc.). What's genuinely not started is turning that
-design into EF Core code (entities, configurations, migrations) and seed
-data — do that once WP-0 is fully signed off, not before.
+Notes:
+- The design side of WP-1 (`docs/bookspace-schema-v2.sql`, decisions 0001–0008)
+  was already done before this build order started; this entry tracks turning
+  it into EF Core code, which is now complete except the ERD question below.
+- ERD: `docs/Amer-ERD-Feedback.docx` / `-Response.docx` show a prior ERD review
+  happened, but no ERD artifact itself lives in this repo. Unclear whether one
+  was already presented to the mentor from the earlier attempt (carried
+  forward per `docs/RESTART_NOTES.md`) or still needs producing — flagged for
+  the repo owner to confirm, not assumed either way.
+- Seed data stops short of `Bookings`, `ApprovalRequests`, `Notifications`,
+  and `RefreshTokens` — the first three because CLAUDE.md §4.1 requires
+  Booking writes to go through `dbo.CreateBooking`/`dbo.ApproveBooking`, which
+  don't exist yet; the last because refresh tokens are issued at login, not
+  meaningful as static data.
+- `ResourceApprovers`' forced EF owned-collection cascade (vs. the schema's
+  `NoAction`) is a known, accepted, documented deviation — see the comment in
+  `ResourceConfiguration.cs`.
+- `EnableRetryOnFailure` (CLAUDE.md §5) is not yet configured on the
+  `DbContext` — deferred, since WP-2 lists "wire EF Core" as its own task and
+  it wasn't blocking migrations or seed data.
 
 ### WP-2 — Backend Skeleton, Auth & Tenancy — **Not started**
 - [ ] Layered architecture: API / application / domain / infrastructure.
