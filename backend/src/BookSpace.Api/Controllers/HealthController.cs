@@ -8,14 +8,20 @@ namespace BookSpace.Api.Controllers;
 public class HealthController : ControllerBase
 {
     private readonly IConfiguration _configuration;
+    private readonly ILogger<HealthController> _logger;
 
-    public HealthController(IConfiguration configuration)
+    public HealthController(IConfiguration configuration, ILogger<HealthController> logger)
     {
         _configuration = configuration;
+        _logger = logger;
     }
 
     [HttpGet]
-    public IActionResult Get() => Ok(new { status = "healthy" });
+    public IActionResult Get()
+    {
+        _logger.LogInformation("Health check requested");
+        return Ok(new { status = "healthy" });
+    }
 
     [HttpGet("db")]
     public async Task<IActionResult> GetDatabase(CancellationToken cancellationToken)
