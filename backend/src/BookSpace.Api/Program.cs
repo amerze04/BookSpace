@@ -1,3 +1,4 @@
+using BookSpace.Api.ExceptionHandling;
 using BookSpace.Api.Middleware;
 using BookSpace.Infrastructure;
 using BookSpace.Infrastructure.Persistence;
@@ -25,10 +26,18 @@ try
     // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
     builder.Services.AddOpenApi();
 
+    builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+    builder.Services.AddProblemDetails(options =>
+    {
+        options.CustomizeProblemDetails = context =>
+            context.ProblemDetails.Extensions["correlationId"] = context.HttpContext.TraceIdentifier;
+    });
+
     var app = builder.Build();
 
     app.UseCorrelationId();
     app.UseSerilogRequestLogging();
+    app.UseExceptionHandler();
 
     // Configure the HTTP request pipeline.
     if (app.Environment.IsDevelopment())

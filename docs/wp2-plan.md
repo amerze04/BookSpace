@@ -60,9 +60,20 @@ make and depend on each other. Proposed order:
 2. **Serilog + correlation ID.** Independent of auth and everything else.
    Doing this first means every later feature gets structured logs and a
    correlation ID for free, instead of being retrofitted.
-3. **Global exception handling.** Pairs with #2 — the `ProblemDetails`
+3. **Global exception handling — done.** Pairs with #2 — the `ProblemDetails`
    response needs the same correlation ID the logging middleware just
    established. ASP.NET Core's `IExceptionHandler` is the natural fit.
+   Built as a safety net only: any unhandled exception → 500 `ProblemDetails`
+   with the correlation ID and a `reasonCode` extension, no stack trace
+   leaked; `DbUpdateConcurrencyException` → 409 (`CLAUDE.md` §5). No
+   `AppException` hierarchy and no FluentValidation reference were added —
+   neither has a caller yet. **Deferred, pick up when the relevant phase
+   starts:** map `FluentValidation.ValidationException` → 400 once the
+   mediator's validation pipeline behavior exists (Phase 2 below), and map
+   booking rejections to their `CLAUDE.md` §6 reason codes
+   (`SlotUnavailable`, `CapacityExceeded`, ...) once that write path exists.
+   Both extension points are marked with a comment in
+   `GlobalExceptionHandler.Map(...)`.
 
 ### Phase 2 — the mediator, before any real feature exists
 4. **Hand-written mediator + pipeline.** Build this *before* login, not after.
