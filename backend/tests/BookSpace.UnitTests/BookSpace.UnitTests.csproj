@@ -8,6 +8,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
@@ -21,6 +25,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\BookSpace.Domain\BookSpace.Domain.csproj" />
     <ProjectReference Include="..\..\src\BookSpace.Application\BookSpace.Application.csproj" />
+    <ProjectReference Include="..\..\src\BookSpace.Api\BookSpace.Api.csproj" />
   </ItemGroup>
 
 </Project>

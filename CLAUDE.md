@@ -400,18 +400,29 @@ Notes:
 - `ResourceApprovers`' forced EF owned-collection cascade (vs. the schema's
   `NoAction`) is a known, accepted, documented deviation — see the comment in
   `ResourceConfiguration.cs`.
-- `EnableRetryOnFailure` (CLAUDE.md §5) is not yet configured on the
-  `DbContext` — deferred, since WP-2 lists "wire EF Core" as its own task and
-  it wasn't blocking migrations or seed data.
-
-### WP-2 — Backend Skeleton, Auth & Tenancy — **Not started**
+### WP-2 — Backend Skeleton, Auth & Tenancy — **In progress**
 - [ ] Layered architecture: API / application / domain / infrastructure.
-- [ ] Wire EF Core to the WP-1 schema.
+- [x] Wire EF Core to the WP-1 schema — `EnableRetryOnFailure` added (5
+      retries, 1205 deadlock victim included) in
+      `BookSpace.Infrastructure/DependencyInjection.cs`. No explicit
+      `BeginTransaction` calls exist anywhere yet, so nothing needed
+      rewriting onto `CreateExecutionStrategy().ExecuteAsync(...)` — future
+      transactional code (e.g. refresh-token rotation) must use it, per
+      CLAUDE.md §5.
 - [ ] Credential login issuing access token + rotating refresh token.
 - [ ] Refresh-token rotation and reuse detection.
 - [ ] RBAC (SysAdmin, TenantAdmin, Approver, Member).
 - [ ] Structural tenant isolation (§4.2).
-- [ ] Serilog structured logging, correlation ID per request.
+- [x] Serilog structured logging, correlation ID per request —
+      `Serilog.AspNetCore` + `Serilog.Settings.Configuration` wired in
+      `Program.cs` (bootstrap logger, `appsettings`-driven sinks/levels);
+      `CorrelationIdMiddleware` (`BookSpace.Api/Middleware/`) reads/generates
+      an `X-Correlation-Id` header, sets `HttpContext.TraceIdentifier`, and
+      pushes it into Serilog's `LogContext` so every log line for a request —
+      controller code and the `UseSerilogRequestLogging()` summary line alike
+      — carries it with no per-call-site plumbing. Verified manually (console
+      output + response header, both with and without an inbound header) and
+      via two new unit tests in `BookSpace.UnitTests/Middleware/`.
 - [ ] Global exception handler → `ProblemDetails` with correlation ID.
 - [ ] Hand-written mediator (no MediatR) with a pipeline for cross-cutting
       behaviors (logging, validation).
