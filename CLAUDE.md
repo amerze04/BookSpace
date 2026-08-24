@@ -364,17 +364,17 @@ Acceptance criteria:
 Notes: git/remote setup was explicitly deferred to the repo owner rather
 than done by the assistant — not a gap in scope, a deliberate choice.
 
-### WP-1 — Data Model & Database — **Code done, ERD unconfirmed** (2026-08-21)
+### WP-1 — Data Model & Database — **Done** (2026-08-21)
 - [x] Model core entities: Tenant, User, Resource, AvailabilityWindow,
       BlackoutPeriod, Booking, RecurrenceRule, ApprovalRequest.
 - [x] Define relationships, keys, integrity constraints.
 - [x] Decide how tenancy is represented on every ownable entity.
 - [x] Plan indexing for availability lookups and overlap checks.
-- [x] Produce an ERD; write initial migrations + seed data — migrations and
-      seed data done; ERD not confirmed to exist as a repo artifact, see Notes.
+- [x] Produce an ERD; write initial migrations + seed data.
 
 Acceptance criteria:
-- [ ] ERD exists, presented before any application code — unconfirmed, see Notes.
+- [x] ERD exists, presented before any application code — presented to the
+      mentor as one of the first steps; the full schema was built on it.
 - [x] Migrations run cleanly and seed a realistic multi-tenant dataset —
       `InitialCreate` applied to a real SQL Server instance; seed produces 2
       orgs, 9 users, 4 resources, 20 availability windows, 2 blackout periods,
@@ -386,13 +386,12 @@ Acceptance criteria:
 
 Notes:
 - The design side of WP-1 (`docs/bookspace-schema-v2.sql`, decisions 0001–0008)
-  was already done before this build order started; this entry tracks turning
-  it into EF Core code, which is now complete except the ERD question below.
-- ERD: `docs/Amer-ERD-Feedback.docx` / `-Response.docx` show a prior ERD review
-  happened, but no ERD artifact itself lives in this repo. Unclear whether one
-  was already presented to the mentor from the earlier attempt (carried
-  forward per `docs/RESTART_NOTES.md`) or still needs producing — flagged for
-  the repo owner to confirm, not assumed either way.
+  was already done before this build order started, ERD included; this entry
+  tracked turning it into EF Core code, which is now complete.
+- ERD: confirmed settled — presented to the mentor early, and
+  `docs/bookspace-schema-v2.sql` was built directly on it. `docs/Amer-ERD-
+  Feedback.docx` / `-Response.docx` are the review that followed. No separate
+  ERD image/file lives in this repo; the schema doc is its record.
 - Seed data stops short of `Bookings`, `ApprovalRequests`, `Notifications`,
   and `RefreshTokens` — the first three because CLAUDE.md §4.1 requires
   Booking writes to go through `dbo.CreateBooking`/`dbo.ApproveBooking`, which
