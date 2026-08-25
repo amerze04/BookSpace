@@ -423,7 +423,27 @@ Notes:
       — carries it with no per-call-site plumbing. Verified manually (console
       output + response header, both with and without an inbound header) and
       via two new unit tests in `BookSpace.UnitTests/Middleware/`.
-- [ ] Global exception handler → `ProblemDetails` with correlation ID.
+- [x] Global exception handler → `ProblemDetails` with correlation ID —
+      `GlobalExceptionHandler` (`BookSpace.Api/ExceptionHandling/`) implements
+      `IExceptionHandler`, registered via `AddExceptionHandler<>()` and run
+      through `app.UseExceptionHandler()` (placed inside
+      `UseSerilogRequestLogging()` so the exception is logged exactly once,
+      at the boundary, never twice). `AddProblemDetails()` is configured to
+      stamp `extensions.correlationId` from `HttpContext.TraceIdentifier`
+      (already set by `CorrelationIdMiddleware`) onto every `ProblemDetails`
+      response app-wide. Scope is deliberately a safety net, not the full
+      AC: any unhandled exception → 500, `DbUpdateConcurrencyException` →
+      409 (`CLAUDE.md` §5); logged at `LogError` for 5xx, `LogWarning`
+      otherwise. Verified with unit tests in
+      `BookSpace.UnitTests/ExceptionHandling/`.
+      **Deferred, not this task** — see the comment above
+      `GlobalExceptionHandler.Map(...)` and `docs/wp2-plan.md` Phase 1 item
+      3: map `FluentValidation.ValidationException` once the mediator's
+      validation pipeline exists, and map booking rejection reason codes
+      once that write path exists.
+- [ ] Map domain/validation errors to clean, consistent problem responses —
+      deferred (see above); neither FluentValidation nor booking rejections
+      have a caller yet.
 - [ ] Hand-written mediator (no MediatR) with a pipeline for cross-cutting
       behaviors (logging, validation).
 
