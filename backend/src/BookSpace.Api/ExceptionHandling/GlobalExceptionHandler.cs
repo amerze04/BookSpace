@@ -46,6 +46,13 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
         };
         problemDetails.Extensions["reasonCode"] = reasonCode;
 
+        if (exception is FluentValidation.ValidationException validationException)
+        {
+            problemDetails.Extensions["errors"] = validationException.Errors
+                .GroupBy(e => e.PropertyName)
+                .ToDictionary(g => g.Key, g => g.Select(e => e.ErrorMessage).ToArray());
+        }
+
         httpContext.Response.StatusCode = statusCode;
 
         var problemDetailsService = httpContext.RequestServices.GetRequiredService<IProblemDetailsService>();
@@ -60,8 +67,6 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
     // Known mappings today are deliberately limited to what already exists in the
     // codebase (WP-2 stream 3 is a safety net, not the full AC). Extend this switch,
     // don't add parallel handling elsewhere, when:
-    //   - the mediator's validation pipeline behavior lands: map
-    //     FluentValidation.ValidationException -> 400 with per-field errors.
     //   - booking rejections exist: map whatever exception type carries CLAUDE.md §6's
     //     reason codes (SlotUnavailable, CapacityExceeded, OutsideAvailability,
     //     BlackoutPeriod, ResourceArchived, ApprovalRequired) -> 409/400 as appropriate.
@@ -71,6 +76,10 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
             StatusCodes.Status409Conflict,
             "The record was modified by another request.",
             "ConcurrencyConflict"),
+        FluentValidation.ValidationException => (
+            StatusCodes.Status400BadRequest,
+            "One or more validation errors occurred.",
+            "ValidationFailed"),
         _ => (
             StatusCodes.Status500InternalServerError,
             "An unexpected error occurred.",
