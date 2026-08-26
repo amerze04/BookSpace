@@ -1,10 +1,14 @@
 # WP-2 — Backend Skeleton, Auth & Tenancy: proposed approach
 
-Status: **proposal, not a decision** — drafted 2026-08-21 for the mentor
-design review before WP-2 starts. Once discussed, settled points should move
-into `docs/decisions/` as numbered decision records the same way 0001–0008
-did for WP-1, and this file's checklist should replace the WP-2 entry in the
-root `CLAUDE.md` §12.
+Status: drafted 2026-08-21 as a **proposal** for the mentor design review
+before WP-2 started; the sequencing below was accepted and is now being
+executed. Settled points should still move into `docs/decisions/` as numbered
+decision records the same way 0001–0008 did for WP-1.
+
+**Where the build stands (2026-08-26): Phases 1 and 2 are complete. Phase 3
+(login + tokens + RBAC) is next.** Per-phase status is marked inline below;
+the root `CLAUDE.md` §12 checklist carries the detail on what each completed
+item actually built.
 
 Source: `docs/Work Packages - Week 1 and 2.docx`, WP-2 section.
 
@@ -51,7 +55,7 @@ The four streams aren't equally ready to start — two have no open design
 questions and no dependencies on anything else; two have real decisions to
 make and depend on each other. Proposed order:
 
-### Phase 1 — cross-cutting plumbing (no design ambiguity)
+### Phase 1 — cross-cutting plumbing (no design ambiguity) — **done**
 1. **Finish wiring EF Core.** ~90% done from WP-1 (`DbContext`, configurations,
    migrations, DI registration already exist). What's left: `EnableRetryOnFailure`
    with 1205 (deadlock victim) added, and using
@@ -66,30 +70,64 @@ make and depend on each other. Proposed order:
    Built as a safety net only: any unhandled exception → 500 `ProblemDetails`
    with the correlation ID and a `reasonCode` extension, no stack trace
    leaked; `DbUpdateConcurrencyException` → 409 (`CLAUDE.md` §5). No
-   `AppException` hierarchy and no FluentValidation reference were added —
-   neither has a caller yet. **Deferred, pick up when the relevant phase
-   starts:** map `FluentValidation.ValidationException` → 400 once the
-   mediator's validation pipeline behavior exists (Phase 2 below), and map
-   booking rejections to their `CLAUDE.md` §6 reason codes
-   (`SlotUnavailable`, `CapacityExceeded`, ...) once that write path exists.
-   Both extension points are marked with a comment in
-   `GlobalExceptionHandler.Map(...)`.
+   `AppException` hierarchy was added, and FluentValidation had no caller at
+   the time. The `FluentValidation.ValidationException` → 400 mapping was
+   picked up in Phase 2 as planned and is now done (with a per-field `errors`
+   extension). **Still deferred:** map booking rejections to their
+   `CLAUDE.md` §6 reason codes (`SlotUnavailable`, `CapacityExceeded`, ...)
+   once that write path exists — the remaining extension point is marked with
+   a comment in `GlobalExceptionHandler.Map(...)`.
 
-### Phase 2 — the mediator, before any real feature exists
-4. **Hand-written mediator + pipeline.** Build this *before* login, not after.
-   Writing login directly in a controller now and refactoring into the
-   mediator pattern later risks the AC it's meant to prevent ("no business
-   logic lives in a controller") — temporary code tends to become permanent.
-   Prove the mediator with a trivial no-op handler through the pipeline
-   first; let login be the first real handler written against it.
+### Phase 2 — the mediator, before any real feature exists — **done**
+4. **Hand-written mediator + pipeline.** Built *before* login, deliberately:
+   writing login directly in a controller and refactoring into the mediator
+   later risks the AC it's meant to prevent ("no business logic lives in a
+   controller") — temporary code tends to become permanent.
 
-### Phase 3 — auth, now with somewhere real to put it
+   What exists now, all in `BookSpace.Application` (detail in `CLAUDE.md`
+   §12): `Messaging/` holds the contracts (`IRequest<TResponse>`,
+   `IRequestHandler`, `IPipelineBehavior` + `RequestHandlerDelegate`, the
+   public `ISender`, a `Unit` void-substitute) and `Dispatcher`, which
+   resolves the closed-generic handler and behaviors for a request's runtime
+   type through one reflective bridge call and composes the behavior chain in
+   reverse registration order. `Messaging/Behaviors/` holds `LoggingBehavior`
+   and `ValidationBehavior`. `AddApplication()` in
+   `Application/DependencyInjection.cs` scans the assembly once for
+   `IRequestHandler<,>` and `IValidator<>` implementations, then registers the
+   behaviors — Logging first so it ends up outermost, Validation second — and
+   `ISender`, all `Scoped`.
+
+   **Two things a future session needs to know:**
+   - The proof-of-concept slice (`Application/Features/Ping/` +
+     `Api/Controllers/PingController.cs`) is **temporary and must be deleted
+     as part of Phase 3**, in the same change that makes login the first real
+     handler. It's an unauthenticated endpoint that does nothing but exercise
+     the pipeline.
+   - A validator is only discovered if it lives in the `BookSpace.Application`
+     assembly and is typed against the **exact** concrete request type
+     (`AbstractValidator<TheCommand>`). A validator in another project, or
+     typed against a base class/interface, is silently never found — generics
+     are invariant, so `IValidator<BaseCommand>` never satisfies
+     `IValidator<TheCommand>`. There is no startup check that a command has a
+     validator; a missing one is a silent pass-through.
+
+   Verified by unit tests in `BookSpace.UnitTests/Messaging/` (dispatch,
+   behavior ordering, short-circuiting, both behaviors) and by a manual HTTP
+   round trip: valid `POST /ping` → 200 with handler logs present; empty
+   message → 400 `ProblemDetails` carrying `reasonCode: "ValidationFailed"`
+   and per-field `errors`, with the handler's log line absent (proving
+   validation short-circuited before it) and the correlation ID on every line.
+
+### Phase 3 — auth, now with somewhere real to put it — **next up**
 5. **Login + tokens + RBAC.** The schema already fully supports rotation and
    reuse detection — `RefreshTokens.FamilyId` / `ReplacedByTokenId` from WP-1
    are exactly what this needs — so this is mostly application-layer work,
-   not data-model work.
+   not data-model work. Login is the first real handler written against the
+   Phase 2 mediator; deleting the `Ping` slice is part of this phase. The
+   JWT claims shape is still open (see "Still open" below) and needs settling
+   before the tenant accessor in Phase 4 has anything to read.
 
-### Phase 4 — tenant isolation, last because it depends on auth existing
+### Phase 4 — tenant isolation, last because it depends on auth existing — **not started**
 6. **Structural tenant isolation.** `CLAUDE.md` §4.2 already prescribes the
    three-mechanism design (global query filters, `SaveChangesAsync` `OrgId`
    stamping, RLS via a connection interceptor calling
@@ -109,7 +147,30 @@ make and depend on each other. Proposed order:
   criteria.
 - **Pipeline validation:** FluentValidation, per the mentor's direction —
   wired into the mediator's pipeline as a behavior rather than validated
-  ad hoc inside handlers.
+  ad hoc inside handlers. Implemented in Phase 2 (`ValidationBehavior`).
+
+Settled while building Phase 2, recorded so they aren't re-litigated:
+
+- **Dispatch interface is named `ISender`** — this codebase only needs
+  one-way dispatch, no pub/sub notifications, so the narrower name is
+  accurate. (It's also MediatR's name for its send-only interface; the
+  shape is the mediator pattern itself, not borrowed code.)
+- **No `FluentValidation.DependencyInjectionExtensions` package.** The
+  assembly scan for handlers has to be hand-rolled regardless, so validators
+  are picked up in that same pass rather than mixing a library-provided
+  scanner with a hand-rolled one.
+- **`ValidationBehavior` throws, never writes a response.** It throws
+  `FluentValidation.ValidationException`; turning that into HTTP is
+  `GlobalExceptionHandler`'s job alone, so error-shaping stays in one place.
+  Each validator also gets its own `ValidationContext` — sharing one makes
+  FluentValidation double-count failures across validators.
+- **Reflection strategy in `Dispatcher`:** one `MakeGenericMethod().Invoke()`
+  per dispatched request, no cached-delegate optimization. Clarity over
+  micro-optimization at this stage; adding a `ConcurrentDictionary` cache
+  later is purely additive, no public-contract change.
+- **Behavior order is Logging outermost, Validation inside it**, so a request
+  rejected by validation still produces start/completion log lines rather
+  than vanishing from the logs.
 
 ## Still open
 

@@ -401,7 +401,13 @@ Notes:
   `NoAction`) is a known, accepted, documented deviation — see the comment in
   `ResourceConfiguration.cs`.
 ### WP-2 — Backend Skeleton, Auth & Tenancy — **In progress**
-- [ ] Layered architecture: API / application / domain / infrastructure.
+- [ ] Layered architecture: API / application / domain / infrastructure — the
+      four projects and their inward-pointing references have existed since
+      WP-0, and as of the mediator task `BookSpace.Application` finally holds
+      real application code rather than being an empty shell. Left unchecked
+      deliberately: worth a look with the mentor over whether this item means
+      "the structure exists" (true now) or "every layer carries its intended
+      responsibilities" (not until auth and the write paths land).
 - [x] Wire EF Core to the WP-1 schema — `EnableRetryOnFailure` added (5
       retries, 1205 deadlock victim included) in
       `BookSpace.Infrastructure/DependencyInjection.cs`. No explicit
@@ -438,14 +444,52 @@ Notes:
       `BookSpace.UnitTests/ExceptionHandling/`.
       **Deferred, not this task** — see the comment above
       `GlobalExceptionHandler.Map(...)` and `docs/wp2-plan.md` Phase 1 item
-      3: map `FluentValidation.ValidationException` once the mediator's
-      validation pipeline exists, and map booking rejection reason codes
-      once that write path exists.
+      3: map booking rejection reason codes once that write path exists.
+      `FluentValidation.ValidationException` mapping landed with the
+      mediator task below.
 - [ ] Map domain/validation errors to clean, consistent problem responses —
-      deferred (see above); neither FluentValidation nor booking rejections
-      have a caller yet.
-- [ ] Hand-written mediator (no MediatR) with a pipeline for cross-cutting
-      behaviors (logging, validation).
+      the `FluentValidation.ValidationException` → 400 half is done (see the
+      mediator entry below); booking-rejection reason codes are still
+      deferred, no write path exists yet.
+- [x] Hand-written mediator (no MediatR) with a pipeline for cross-cutting
+      behaviors (logging, validation) — `BookSpace.Application/Messaging/`
+      defines the dispatcher shape (`IRequest<TResponse>`, `IRequestHandler`,
+      `IPipelineBehavior`, and the public `ISender` controllers depend on)
+      and `Dispatcher` (`Messaging/Dispatcher.cs`), which resolves the
+      closed-generic handler/behaviors for a request's runtime type via one
+      reflective bridge call, then composes the behavior chain around the
+      handler in reverse registration order. `Messaging/Behaviors/` has
+      `LoggingBehavior` (start/completion + elapsed ms, riding the ambient
+      Serilog `LogContext` `CorrelationIdMiddleware` already populates — no
+      extra plumbing) and `ValidationBehavior` (resolves
+      `IEnumerable<IValidator<TRequest>>`, throws
+      `FluentValidation.ValidationException` on failure so mapping stays
+      `GlobalExceptionHandler`'s job alone). `Application/DependencyInjection.cs`
+      (`AddApplication()`, called from `Program.cs`) does one reflection pass
+      registering both `IRequestHandler<,>` and `IValidator<>`
+      implementations, then registers the two behaviors — Logging first so
+      it's outermost, Validation second — and `ISender` itself, all `Scoped`.
+      `GlobalExceptionHandler.Map` gained the `ValidationException` → 400
+      case plus a per-field `errors` extension. Proved end-to-end with a
+      temporary `PingCommand`/`PingCommandHandler`/`PingCommandValidator`
+      (`Application/Features/Ping/`) dispatched from `PingController` —
+      **temporary, delete both once login is the first real handler**, per
+      `docs/wp2-plan.md`'s explicit sequencing note to prove the pipeline
+      before building against it. Verified with unit tests in
+      `BookSpace.UnitTests/Messaging/` (dispatch, ordering, short-circuiting,
+      both behaviors) and extended `ExceptionHandlerTests`, plus a manual HTTP
+      round trip (2026-08-26): valid `POST /ping` → 200 with the handler's log
+      line present; empty message → 400 carrying `reasonCode:
+      "ValidationFailed"` and per-field `errors`, with the handler's log line
+      absent — i.e. validation short-circuited before the handler — and the
+      inbound `X-Correlation-Id` on every log line including the exception
+      handler's.
+      **Gotcha for later:** a validator is only discovered if it lives in the
+      `BookSpace.Application` assembly *and* is typed against the exact
+      concrete request type (`AbstractValidator<TheCommand>`). Generics are
+      invariant, so `IValidator<SomeBase>` never satisfies
+      `IValidator<TheCommand>`, and nothing checks at startup that a command
+      has a validator — a missing or mistyped one is a silent pass-through.
 
 Acceptance criteria: see the source doc — login/refresh/rotation/reuse
 detection, hashed passwords, tenant isolation under a forged identifier,

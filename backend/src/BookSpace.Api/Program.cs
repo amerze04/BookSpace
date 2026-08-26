@@ -1,5 +1,6 @@
 using BookSpace.Api.ExceptionHandling;
 using BookSpace.Api.Middleware;
+using BookSpace.Application;
 using BookSpace.Infrastructure;
 using BookSpace.Infrastructure.Persistence;
 using Serilog;
@@ -22,6 +23,7 @@ try
     // Add services to the container.
 
     builder.Services.AddInfrastructure(builder.Configuration);
+    builder.Services.AddApplication();
     builder.Services.AddControllers();
     // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
     builder.Services.AddOpenApi();

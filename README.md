@@ -95,6 +95,31 @@ curl http://localhost:5270/health
 curl http://localhost:5270/health/db
 ```
 
+`/health/db` needs SQL Server running; `/health` does not.
+
+To exercise the mediator pipeline end to end there's a temporary
+`POST /ping` endpoint (removed once login becomes the first real handler):
+
+```sh
+curl -i -X POST http://localhost:5270/ping \
+  -H "Content-Type: application/json" \
+  -H "X-Correlation-Id: my-test" \
+  -d '{"message":"hello"}'
+```
+
+A valid `message` returns 200; an empty one returns a 400 `ProblemDetails`
+with `reasonCode: "ValidationFailed"` and per-field `errors`.
+
+**On Windows PowerShell:** use `curl.exe`, not `curl` — the latter is an
+alias for `Invoke-WebRequest` and rejects `-X`/`-d`. PowerShell 5.1 also
+strips the inner double quotes out of a JSON body on the way to a native
+executable, so escape them (`-d '{\"message\":\"hello\"}'`) or pass the body
+from a file (`-d "@body.json"`).
+
+Starting the API with `--no-launch-profile` runs it in Production, which
+skips the Development-only seed step — useful for testing endpoints that
+don't touch the database without needing SQL Server up.
+
 ### 3. Frontend
 
 ```sh
