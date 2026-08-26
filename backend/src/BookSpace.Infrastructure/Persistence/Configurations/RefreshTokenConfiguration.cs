@@ -17,6 +17,14 @@ internal sealed class RefreshTokenConfiguration : IEntityTypeConfiguration<Refre
         builder.Property(r => r.ExpiresAtUtc).IsRequired();
         builder.Ignore(r => r.IsActive);
 
+        // Concurrency token, not a new column: EF appends "AND RevokedAtUtc IS NULL"
+        // to the UPDATE that revokes a token, so of two requests rotating the same
+        // token at once the loser affects zero rows and gets a
+        // DbUpdateConcurrencyException (already mapped to 409 by
+        // GlobalExceptionHandler) instead of both minting a replacement.
+        // Model metadata only — no DDL, so no migration.
+        builder.Property(r => r.RevokedAtUtc).IsConcurrencyToken();
+
         builder.HasOne<User>().WithMany()
             .HasForeignKey(r => r.UserId)
             .HasConstraintName("FK_RefreshTokens_Users")

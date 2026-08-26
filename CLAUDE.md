@@ -215,7 +215,8 @@ so it will pass tests that production would fail.
 ## 9. Decisions log
 
 PRD §13 left several decisions to the team; schema/ERD review surfaced a few
-more. **All are resolved as of 2026-08-19** and written up individually in
+more. **All are resolved as of 2026-08-26** (0001–0008 on 2026-08-19;
+0009–0012 with WP-2 Phase 3) and written up individually in
 `docs/decisions/` — read the linked doc before touching the affected
 feature, the reasoning matters as much as the answer. This list is the
 index; when a new decision doc is added, add its one-liner here too.
@@ -252,6 +253,30 @@ index; when a new decision doc is added, add its one-liner here too.
    dispatch job — no new job. `Notifications` gained a second anchor
    (`RecurrenceRuleId` + `OccurrenceDate`) for this one case, since there's
    no `Booking` to reference.
+
+9. [`0009`](docs/decisions/0009-jwt-claims-and-token-lifetimes.md) — Access
+   tokens are HMAC-SHA256 JWTs carrying `sub`, `email`, `orgId`, and one `role`
+   claim per role. `orgId` is **omitted entirely** for a SysAdmin rather than
+   emitted empty, so no code can mistake it for a real tenant. 15-minute access
+   token, 14-day **absolute** refresh window. Signing key from configuration
+   only, validated at startup.
+10. [`0010`](docs/decisions/0010-global-email-uniqueness.md) — An email
+   identifies exactly one user platform-wide (`UQ_Users_Email`, unfiltered),
+   so login takes email + password with no tenant discriminator. Replaced the
+   WP-1 `(OrgId, Email)` filtered index, which allowed the same email in two
+   tenants and left SysAdmin rows with no uniqueness at all. **Decided by the
+   repo owner.**
+11. [`0011`](docs/decisions/0011-refresh-token-hashing-and-rotation.md) —
+   Refresh tokens are 256-bit CSPRNG values stored as SHA-256 (deterministic,
+   because lookup is *by* hash; a salted KDF would break the index and protect
+   nothing at that entropy). Rotation keeps the `FamilyId` and inherits the
+   original expiry. **Reuse of a revoked token kills the whole family**;
+   expiry kills only that token.
+12. [`0012`](docs/decisions/0012-rbac-enforcement-model.md) — RBAC via four
+   named policies plus a deny-by-default `FallbackPolicy`, so a new endpoint is
+   protected unless it opts out. `TenantMember` deliberately **excludes**
+   SysAdmin (PRD §2: the Platform Operator must never see tenant booking
+   content in routine operation).
 
 **Still open** — flag before building the affected feature, don't decide
 silently: the DST **fall-back** case (clocks go back, a local time occurs
@@ -415,10 +440,63 @@ Notes:
       rewriting onto `CreateExecutionStrategy().ExecuteAsync(...)` — future
       transactional code (e.g. refresh-token rotation) must use it, per
       CLAUDE.md §5.
-- [ ] Credential login issuing access token + rotating refresh token.
-- [ ] Refresh-token rotation and reuse detection.
-- [ ] RBAC (SysAdmin, TenantAdmin, Approver, Member).
-- [ ] Structural tenant isolation (§4.2).
+- [x] Credential login issuing access token + rotating refresh token —
+      `POST /auth/login` dispatches `LoginCommand` through the mediator to
+      `LoginCommandHandler` (`Application/Features/Authentication/Login/`),
+      which verifies the password against its PBKDF2 hash, checks `IsActive`
+      and the owning org's status, then mints a 15-minute JWT plus a refresh
+      token in a **new** `FamilyId` via the shared `TokenIssuer`. Claim shape
+      and lifetimes fixed by `docs/decisions/0009`. Every credential failure —
+      unknown email, wrong password, deactivated user, suspended org — returns
+      the same `InvalidCredentials` reason code so login isn't an
+      account-enumeration oracle; the real cause goes to the log with the
+      correlation ID. `Jwt:SigningKey` is never committed and `JwtOptions` is
+      `ValidateOnStart()`, so a missing or under-32-byte key fails the boot.
+      **Verified manually (2026-08-26)** against a real running instance: login
+      with a seeded member returns a decodable JWT with the exact claim set
+      from `0009` (`orgId` present for a tenant user); wrong password and an
+      unknown email return byte-identical 401 `InvalidCredentials` bodies
+      (aside from the per-request `correlationId`/`traceId`); a malformed
+      request returns 400 `ValidationFailed` with field errors, never reaching
+      the handler.
+- [x] Refresh-token rotation and reuse detection — `RefreshTokenCommandHandler`
+      implements the five-case table in its own header comment: unknown hash →
+      401; active → rotate (revoke old, set `ReplacedByTokenId`, new token in
+      the **same** family inheriting the **original expiry** so the window stays
+      absolute); expired → 401 revoking that token only, because expiry isn't
+      theft; **already revoked → reuse detected, revoke the entire family**;
+      inactive user/suspended org → 401 + family revoked (FR-2.4). Revocation
+      is family-scoped, so one compromised session doesn't sign the user out of
+      their other devices. Rotation is a single `SaveChangesAsync`, and
+      `RefreshToken.RevokedAtUtc` is mapped as a **concurrency token** — EF
+      appends `AND RevokedAtUtc IS NULL` to the revoking UPDATE, so two
+      concurrent refreshes of the same token can't both mint a replacement (the
+      loser gets `DbUpdateConcurrencyException` → 409, already mapped).
+      `POST /auth/logout` revokes the family and returns 204 either way.
+      Rationale in `docs/decisions/0011`.
+      **Verified manually (2026-08-26):** login → rotate → the *original*
+      token reused returns 401 `RefreshTokenReuseDetected`, and the token that
+      rotation had just issued (previously valid) is also dead immediately
+      after — confirming the whole family dies, not just the reused token.
+- [x] RBAC (SysAdmin, TenantAdmin, Approver, Member) — four named policies in
+      `Api/Authorization/AuthorizationPolicies.cs` (`SysAdminOnly`,
+      `TenantAdmin`, `Approver`, `TenantMember`) plus
+      `FallbackPolicy = RequireAuthenticatedUser`, so a controller added later
+      is **protected unless it opts out** with `[AllowAnonymous]` — opt-in
+      would leave every new endpoint one forgotten attribute away from public.
+      `HealthController` and `AuthController` are the two opt-outs.
+      `TenantMember` deliberately **excludes** SysAdmin by requiring the
+      `orgId` claim (PRD §2: the Platform Operator must never see tenant
+      booking content in routine operation), so SysAdmin is a separate axis,
+      not the top of a ladder. `docs/decisions/0012`.
+      **Note:** roles come from the token, so a role change takes effect at the
+      next refresh — the same boundary FR-2.4 uses.
+- [ ] Structural tenant isolation (§4.2) — Phase 4, not started. Auth is
+      shaped for it: the `orgId` claim exists to be read by the tenant
+      accessor, and the only unfiltered `Users` reads live behind
+      `IAuthenticationUserRepository`, the explicitly-named
+      `IgnoreQueryFilters()` exception §4.2 permits (login runs before any
+      tenant context exists, so the global filter would match nothing).
 - [x] Serilog structured logging, correlation ID per request —
       `Serilog.AspNetCore` + `Serilog.Settings.Configuration` wired in
       `Program.cs` (bootstrap logger, `appsettings`-driven sinks/levels);
@@ -448,9 +526,13 @@ Notes:
       `FluentValidation.ValidationException` mapping landed with the
       mediator task below.
 - [ ] Map domain/validation errors to clean, consistent problem responses —
-      the `FluentValidation.ValidationException` → 400 half is done (see the
-      mediator entry below); booking-rejection reason codes are still
-      deferred, no write path exists yet.
+      `FluentValidation.ValidationException` → 400 with per-field errors (see
+      the mediator entry below) and `AuthenticationException` → 401 carrying
+      the handler's own reason code (`InvalidCredentials`,
+      `InvalidRefreshToken`, `RefreshTokenExpired`,
+      `RefreshTokenReuseDetected`, `AccountInactive`) are both done. Left
+      unchecked: booking-rejection reason codes (§6) are still deferred — no
+      write path exists yet.
 - [x] Hand-written mediator (no MediatR) with a pipeline for cross-cutting
       behaviors (logging, validation) — `BookSpace.Application/Messaging/`
       defines the dispatcher shape (`IRequest<TResponse>`, `IRequestHandler`,
@@ -484,6 +566,9 @@ Notes:
       absent — i.e. validation short-circuited before the handler — and the
       inbound `X-Correlation-Id` on every log line including the exception
       handler's.
+      **Ping slice is now deleted** — `Application/Features/Ping/` and
+      `Api/Controllers/PingController.cs` were removed as part of the auth task,
+      as planned, since login is now the first real handler.
       **Gotcha for later:** a validator is only discovered if it lives in the
       `BookSpace.Application` assembly *and* is typed against the exact
       concrete request type (`AbstractValidator<TheCommand>`). Generics are
@@ -495,6 +580,13 @@ Acceptance criteria: see the source doc — login/refresh/rotation/reuse
 detection, hashed passwords, tenant isolation under a forged identifier,
 correlation ID on every log line, clean problem responses on unhandled
 exceptions, and controllers that only dispatch through the mediator.
+**As of 2026-08-26:** everything is met except tenant isolation under a
+forged identifier, which is Phase 4 and hasn't started. Login/refresh/
+rotation/reuse-detection, hashed passwords, correlation IDs, problem
+responses, and mediator-only controllers are all implemented, covered by 239
+automated tests (181 unit, 58 integration against real SQL Server), and the
+login/rotation/reuse-detection paths additionally verified by hand against a
+running instance.
 
 ### Future work packages
 Appended here as the mentor sends them — one subsection per WP, same

@@ -26,6 +26,7 @@
     <ProjectReference Include="..\..\src\BookSpace.Domain\BookSpace.Domain.csproj" />
     <ProjectReference Include="..\..\src\BookSpace.Application\BookSpace.Application.csproj" />
     <ProjectReference Include="..\..\src\BookSpace.Api\BookSpace.Api.csproj" />
+    <ProjectReference Include="..\..\src\BookSpace.Infrastructure\BookSpace.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

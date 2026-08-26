@@ -56,6 +56,10 @@ CREATE TABLE Organizations (
 
 -- FR-1.5 one tenant per user; OrgId NULL = SysAdmin (above tenants)
 -- FR-8.2 CalendarFeedToken is the ICS subscription secret
+-- FR-2.1 Email is globally unique (UQ_Users_Email, below) and stored
+--        normalized to lowercase, so it alone identifies a user at login
+-- FR-2.3 PasswordHash is PBKDF2 via ASP.NET Core's PasswordHasher; plaintext
+--        is never stored or logged
 CREATE TABLE Users (
     Id                UNIQUEIDENTIFIER NOT NULL,
     OrgId             UNIQUEIDENTIFIER NULL,
@@ -102,6 +106,12 @@ CREATE TABLE UserRoles (
 
 -- FR-2.1 rotating refresh tokens; FR-2.2 reuse kills the family;
 -- FR-2.3 hash only, never the token itself
+-- TokenHash is SHA-256, not a salted KDF: lookup happens *by* hash against
+-- UQ_RefreshTokens_TokenHash so it must be deterministic, and the token is
+-- already 256 bits of CSPRNG entropy so a slow KDF buys nothing.
+-- RevokedAtUtc doubles as an EF concurrency token, which is what stops two
+-- concurrent refreshes both rotating the same token.
+-- See docs/decisions/0011-refresh-token-hashing-and-rotation.md.
 CREATE TABLE RefreshTokens (
     Id                UNIQUEIDENTIFIER NOT NULL,
     UserId            UNIQUEIDENTIFIER NOT NULL,
@@ -389,9 +399,14 @@ CREATE INDEX IX_Bookings_NoShowSweep
     ON Bookings (StartsAtUtc)
     WHERE Status = 'Confirmed' AND CheckedInAtUtc IS NULL;
 
-CREATE UNIQUE INDEX UX_Users_Org_Email
-    ON Users (OrgId, Email)
-    WHERE OrgId IS NOT NULL;
+-- FR-2.1: an email identifies exactly one user platform-wide, so credential
+-- login needs no tenant discriminator. Unfiltered on purpose — this replaced
+-- UX_Users_Org_Email (OrgId, Email) WHERE OrgId IS NOT NULL, which both allowed
+-- the same email in two tenants and left SysAdmin rows (OrgId NULL) with no
+-- email uniqueness whatsoever.
+-- See docs/decisions/0010-global-email-uniqueness.md.
+CREATE UNIQUE INDEX UQ_Users_Email
+    ON Users (Email);
 
 CREATE INDEX IX_RefreshTokens_Family
     ON RefreshTokens (FamilyId);

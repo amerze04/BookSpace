@@ -1,4 +1,6 @@
+using BookSpace.Application.Abstractions;
 using BookSpace.Infrastructure.Persistence;
+using BookSpace.Infrastructure.Security;
 using Microsoft.EntityFrameworkCore;
 
 namespace BookSpace.IntegrationTests;
@@ -12,6 +14,10 @@ public class SeedDataTests : IAsyncLifetime
 {
     private const string ConnectionString =
         "Server=localhost\\SQLEXPRESS;Database=BookSpace_SeedDataTests;Trusted_Connection=True;TrustServerCertificate=True;";
+
+    // Real hasher: the seed now stores genuine PBKDF2 hashes, and asserting on
+    // that is part of proving FR-2.3 holds for seeded accounts too.
+    private static readonly IPasswordHasher PasswordHasher = new PasswordHasherAdapter();
 
     private BookSpaceDbContext _context = null!;
 
@@ -35,7 +41,7 @@ public class SeedDataTests : IAsyncLifetime
     [Fact]
     public async Task SeedAsync_PopulatesExpectedRowCounts()
     {
-        await SeedData.SeedAsync(_context);
+        await SeedData.SeedAsync(_context, PasswordHasher);
 
         Assert.Equal(2, await _context.Organizations.CountAsync());
 
@@ -50,11 +56,27 @@ public class SeedDataTests : IAsyncLifetime
         Assert.Equal(0, await _context.Bookings.CountAsync());
     }
 
+    // FR-2.3: the seed stores real hashes now, not the WP-1 placeholder — so the
+    // accounts are actually usable for login and no plaintext is on disk.
+    [Fact]
+    public async Task SeedAsync_StoresVerifiablePasswordHashesNotPlaintext()
+    {
+        await SeedData.SeedAsync(_context, PasswordHasher);
+
+        var users = await _context.Users.ToListAsync();
+
+        Assert.All(users, u =>
+        {
+            Assert.DoesNotContain(SeedData.SeedPassword, u.PasswordHash);
+            Assert.True(PasswordHasher.Verify(u.PasswordHash, SeedData.SeedPassword));
+        });
+    }
+
     [Fact]
     public async Task SeedAsync_IsIdempotent_WhenCalledTwice()
     {
-        await SeedData.SeedAsync(_context);
-        await SeedData.SeedAsync(_context);
+        await SeedData.SeedAsync(_context, PasswordHasher);
+        await SeedData.SeedAsync(_context, PasswordHasher);
 
         Assert.Equal(2, await _context.Organizations.CountAsync());
         Assert.Equal(9, await _context.Users.CountAsync());
@@ -63,7 +85,7 @@ public class SeedDataTests : IAsyncLifetime
     [Fact]
     public async Task SeedAsync_BootstrapSysAdmin_SelfReferencesCreatedBy()
     {
-        await SeedData.SeedAsync(_context);
+        await SeedData.SeedAsync(_context, PasswordHasher);
 
         var sysAdmin = await _context.Users.SingleAsync(u => u.OrgId == null);
 
@@ -73,7 +95,7 @@ public class SeedDataTests : IAsyncLifetime
     [Fact]
     public async Task SeedAsync_EachOrganizationHasATenantAdmin()
     {
-        await SeedData.SeedAsync(_context);
+        await SeedData.SeedAsync(_context, PasswordHasher);
 
         var orgIds = await _context.Organizations.Select(o => o.Id).ToListAsync();
 

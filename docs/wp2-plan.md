@@ -5,10 +5,10 @@ before WP-2 started; the sequencing below was accepted and is now being
 executed. Settled points should still move into `docs/decisions/` as numbered
 decision records the same way 0001–0008 did for WP-1.
 
-**Where the build stands (2026-08-26): Phases 1 and 2 are complete. Phase 3
-(login + tokens + RBAC) is next.** Per-phase status is marked inline below;
-the root `CLAUDE.md` §12 checklist carries the detail on what each completed
-item actually built.
+**Where the build stands (2026-08-26): Phases 1, 2 and 3 are complete. Phase 4
+(structural tenant isolation) is next.** Per-phase status is marked inline
+below; the root `CLAUDE.md` §12 checklist carries the detail on what each
+completed item actually built.
 
 Source: `docs/Work Packages - Week 1 and 2.docx`, WP-2 section.
 
@@ -118,14 +118,73 @@ make and depend on each other. Proposed order:
    and per-field `errors`, with the handler's log line absent (proving
    validation short-circuited before it) and the correlation ID on every line.
 
-### Phase 3 — auth, now with somewhere real to put it — **next up**
-5. **Login + tokens + RBAC.** The schema already fully supports rotation and
-   reuse detection — `RefreshTokens.FamilyId` / `ReplacedByTokenId` from WP-1
-   are exactly what this needs — so this is mostly application-layer work,
-   not data-model work. Login is the first real handler written against the
-   Phase 2 mediator; deleting the `Ping` slice is part of this phase. The
-   JWT claims shape is still open (see "Still open" below) and needs settling
-   before the tenant accessor in Phase 4 has anything to read.
+### Phase 3 — auth, now with somewhere real to put it — **done**
+5. **Login + tokens + RBAC.** As predicted, almost entirely application-layer
+   work: `RefreshTokens.FamilyId` / `ReplacedByTokenId` from WP-1 were exactly
+   what rotation and reuse detection needed, and the only data-model change was
+   the email-uniqueness one below. Login is now the first real handler on the
+   Phase 2 mediator, and the `Ping` slice is deleted.
+
+   Built: `Application/Abstractions/` (the seven interfaces the handlers depend
+   on — password hasher, refresh-token factory, access-token service, clock, and
+   the two auth repositories), `Application/Features/Authentication/`
+   (`Login`, `Refresh`, `Logout`, plus the shared `TokenIssuer`,
+   `AuthenticationResult`, `AuthenticationException`, and reason codes),
+   `Infrastructure/Security/` (`JwtOptions`, `JwtAccessTokenService`,
+   `PasswordHasherAdapter`, `RefreshTokenFactory`, `SystemClock`,
+   `BookSpaceClaims`), `Infrastructure/Persistence/Repositories/`,
+   `Api/Authorization/AuthorizationPolicies.cs`, and
+   `Api/Controllers/AuthController.cs`.
+
+   **Four decisions came out of this phase** and are recorded properly:
+   `0009` (JWT claims + lifetimes), `0010` (global email uniqueness — the
+   owner's call, and a real schema gap rather than an unmade decision),
+   `0011` (refresh-token hashing, rotation, reuse detection), `0012` (RBAC
+   enforcement model).
+
+   **What a future session should know:**
+   - **`Jwt:SigningKey` must be set or the app will not start.** Deliberate —
+     `ValidateOnStart()` on `JwtOptions`, minimum 32 bytes. user-secrets in
+     dev, `Jwt__SigningKey` elsewhere. See the README.
+   - Seed data now stores real PBKDF2 hashes of one shared dev password
+     (`SeedData.SeedPassword`), so `SeedAsync` takes an `IPasswordHasher`.
+   - `RefreshToken.RevokedAtUtc` is an EF **concurrency token**. It looks like
+     an odd choice until you need it: it is what stops two concurrent refreshes
+     of the same token from both minting a replacement. Do not "clean it up".
+   - The only unfiltered `Users` reads in the codebase are in
+     `AuthenticationUserRepository`, and that is the named
+     `IgnoreQueryFilters()` exception `CLAUDE.md` §4.2 allows. Phase 4 must not
+     add more.
+   - **Migrations don't apply automatically on startup.** A fresh or reset
+     database needs `dotnet ef database update` (see README §3) before
+     `dotnet run` — `SeedAsync` will fail on tables that don't exist yet
+     otherwise. This predates Phase 3 but only got documented now, prompted by
+     resetting the dev database to clear WP-1's placeholder password hashes.
+   - **A `CREATE DATABASE BookSpace` file-collision on 2026-08-26 was not a
+     leftover from that drop** — it turned out `BookSpace_initial`, the
+     pre-WP-0-restart database `RESTART_NOTES.md` describes, had been renamed
+     via `ALTER DATABASE ... MODIFY NAME` rather than dropped at the time of
+     the restart, so it was still quietly sitting on the default
+     `BookSpace.mdf`/`BookSpace_log.ldf` filenames under a different logical
+     name. Confirmed empty (schema + 2 migration rows, zero data) and dropped
+     — **resolved**, not just worked around; see the README's Database section
+     for the general diagnostic (`sys.master_files`, not just `sys.databases`)
+     if a similar collision shows up again.
+   - **On Windows PowerShell, test the API with `Invoke-RestMethod`, not
+     `curl`/`curl.exe`.** Confirmed live: PowerShell mangles the inner quotes
+     of a JSON body when it reconstructs the argument list for a *native*
+     executable like `curl.exe`, so a body that's correct in the terminal
+     arrives at the API malformed. `Invoke-RestMethod` is a cmdlet, not a
+     native binary, so `-Body` passes through untouched. Examples in the
+     README's "Signing in" section.
+   - **Manually verified against a running instance (2026-08-26):** login
+     returns the exact claim shape from `0009` (`orgId` present for a tenant
+     user, decodable via jwt.io or manually); wrong password and unknown email
+     return byte-identical 401 bodies; rotation issues a different token and
+     the original stops working; **presenting an already-rotated token
+     returns 401 `RefreshTokenReuseDetected` and kills the token rotation had
+     just issued too** — the family-wide blast radius, not just the reused
+     token, confirmed by hand rather than only by the automated test.
 
 ### Phase 4 — tenant isolation, last because it depends on auth existing — **not started**
 6. **Structural tenant isolation.** `CLAUDE.md` §4.2 already prescribes the
@@ -174,8 +233,22 @@ Settled while building Phase 2, recorded so they aren't re-litigated:
 
 ## Still open
 
-- **JWT claims shape** — not yet decided. Needs at minimum: what identifies
-  the user (user id), what identifies the tenant (org id — required for the
-  tenant-isolation accessor in Phase 4 to have anything to read), and how
-  roles are represented for RBAC checks. Also open: where the signing key
-  lives in configuration (never committed, per `CLAUDE.md` §4.4).
+- **JWT claims shape** — **closed**, see `docs/decisions/0009`. `sub`, `email`,
+  `orgId` (omitted for a SysAdmin), one `role` claim per role; HMAC-SHA256 with
+  the key supplied from configuration only and validated at startup.
+
+Nothing from WP-2 remains undecided. What Phase 4 inherits, rather than has to
+decide:
+
+- The `orgId` claim is the tenant accessor's input, and **its absence means
+  SysAdmin**, never "tenant zero". A principal with no `orgId` and no
+  `SysAdmin` role is malformed and should be rejected.
+- Tenant scoping belongs **inside the existing policies** (or as a requirement
+  alongside them), so no endpoint annotation has to change when it lands.
+- `AuthenticationUserRepository` is the one sanctioned unfiltered read of
+  `Users`. Adding the global query filter must not break it — that is why it
+  was written with `IgnoreQueryFilters()` from the start rather than being
+  retrofitted.
+- `SysAdmin` is already excluded from `TenantMember`, so the "operator can
+  administer but not read tenant content" line is drawn in one place and Phase
+  4 can build on it rather than re-litigate it.

@@ -1,3 +1,4 @@
+using BookSpace.Application.Features.Authentication;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -72,6 +73,13 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
     //     BlackoutPeriod, ResourceArchived, ApprovalRequired) -> 409/400 as appropriate.
     private static (int StatusCode, string Title, string ReasonCode) Map(Exception exception) => exception switch
     {
+        // FR-2.1 / FR-2.2. The reason code comes from the exception rather than
+        // being decided here, because only the handler knows whether this was a
+        // bad credential, an expired token, or detected reuse.
+        AuthenticationException authenticationException => (
+            StatusCodes.Status401Unauthorized,
+            "Authentication failed.",
+            authenticationException.ReasonCode),
         DbUpdateConcurrencyException => (
             StatusCodes.Status409Conflict,
             "The record was modified by another request.",
