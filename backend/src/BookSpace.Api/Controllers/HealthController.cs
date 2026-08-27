@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
 
@@ -5,6 +6,10 @@ namespace BookSpace.Api.Controllers;
 
 [ApiController]
 [Route("health")]
+// Reachable without a token: the fallback policy in AuthorizationPolicies
+// protects everything by default, and a health check that needs credentials is
+// useless to a load balancer or uptime monitor.
+[AllowAnonymous]
 public class HealthController : ControllerBase
 {
     private readonly IConfiguration _configuration;

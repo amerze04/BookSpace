@@ -56,7 +56,10 @@ public class User : IAuditable, ITenantOwned
 
         Id = id;
         OrgId = orgId;
-        Email = email;
+        // Normalized on the way in so UQ_Users_Email and the login lookup agree
+        // without depending on the server collation happening to be
+        // case-insensitive (docs/decisions/0010-global-email-uniqueness.md).
+        Email = NormalizeEmail(email);
         PasswordHash = passwordHash;
         FullName = fullName;
         IsActive = true;
@@ -66,6 +69,11 @@ public class User : IAuditable, ITenantOwned
         UpdatedAtUtc = nowUtc;
         UpdatedByUserId = createdByUserId;
     }
+
+    // Public so the login path normalizes a submitted email exactly the way the
+    // stored one was — one definition, no chance of the two drifting apart.
+    public static string NormalizeEmail(string email) =>
+        email.Trim().ToLowerInvariant();
 
     public void AddRole(Role role, Guid actorUserId, DateTime nowUtc)
     {

@@ -53,9 +53,13 @@ internal sealed class UserConfiguration : IEntityTypeConfiguration<User>
             .HasConstraintName("FK_Users_UpdatedBy")
             .OnDelete(DeleteBehavior.NoAction);
 
-        builder.HasIndex(u => new { u.OrgId, u.Email })
+        // Globally unique, unfiltered: an email identifies exactly one user across
+        // the whole platform, so login needs no tenant discriminator. Replaces the
+        // old (OrgId, Email) filtered index, which both allowed the same email in
+        // two tenants and left SysAdmin rows (OrgId NULL) with no uniqueness at
+        // all (docs/decisions/0010-global-email-uniqueness.md).
+        builder.HasIndex(u => u.Email)
             .IsUnique()
-            .HasDatabaseName("UX_Users_Org_Email")
-            .HasFilter("[OrgId] IS NOT NULL");
+            .HasDatabaseName("UQ_Users_Email");
     }
 }

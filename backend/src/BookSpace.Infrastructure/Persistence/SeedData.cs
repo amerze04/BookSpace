@@ -1,3 +1,4 @@
+using BookSpace.Application.Abstractions;
 using BookSpace.Domain.Entities;
 using BookSpace.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
@@ -12,12 +13,22 @@ namespace BookSpace.Infrastructure.Persistence;
 // not meaningful as static seed data.
 public static class SeedData
 {
-    public static async Task SeedAsync(BookSpaceDbContext context)
+    // Development only — see the comment at its use site.
+    public const string SeedPassword = "Passw0rd!";
+
+    public static async Task SeedAsync(BookSpaceDbContext context, IPasswordHasher passwordHasher)
     {
         if (await context.Organizations.AnyAsync())
             return;
 
         var now = DateTime.UtcNow;
+
+        // Every seeded account shares one known development password so the auth
+        // flow is exercisable straight after a migrate + seed. Hashed once —
+        // PBKDF2 at 100k iterations nine times over is needless work, and these
+        // are all the same input anyway. Documented in the README; this is dev
+        // seed data and has no place in a real environment.
+        var seedPasswordHash = passwordHasher.Hash(SeedPassword);
 
         // Bootstrap SysAdmin — no self-registration (see the audit-trail
         // convention comment in docs/bookspace-schema-v2.sql), so the very
@@ -27,7 +38,7 @@ public static class SeedData
             sysAdminId,
             orgId: null,
             email: "sysadmin@bookspace.local",
-            passwordHash: "seed-placeholder-hash",
+            passwordHash: seedPasswordHash,
             fullName: "System Administrator",
             createdByUserId: sysAdminId,
             nowUtc: now);
@@ -37,8 +48,8 @@ public static class SeedData
         var acme = CreateOrg(context, "Acme Corporation", "acme", "America/New_York", 60, 15, 24, sysAdminId, now);
         var globex = CreateOrg(context, "Globex Corporation", "globex", "Europe/Berlin", 30, 10, 48, sysAdminId, now);
 
-        SeedTenant(context, acme, "acme.test", now);
-        SeedTenant(context, globex, "globex.test", now);
+        SeedTenant(context, acme, "acme.test", now, seedPasswordHash);
+        SeedTenant(context, globex, "globex.test", now, seedPasswordHash);
 
         await context.SaveChangesAsync();
     }
@@ -61,23 +72,24 @@ public static class SeedData
         return org;
     }
 
-    private static void SeedTenant(BookSpaceDbContext context, Organization org, string domain, DateTime now)
+    private static void SeedTenant(
+        BookSpaceDbContext context, Organization org, string domain, DateTime now, string passwordHash)
     {
         // Provisioned by the SysAdmin (no self-registration, CLAUDE.md §1).
-        var tenantAdmin = new User(Guid.NewGuid(), org.Id, $"admin@{domain}", "seed-placeholder-hash", "Tenant Admin", org.CreatedByUserId, now);
+        var tenantAdmin = new User(Guid.NewGuid(), org.Id, $"admin@{domain}", passwordHash, "Tenant Admin", org.CreatedByUserId, now);
         tenantAdmin.AddRole(Role.TenantAdmin, org.CreatedByUserId, now);
         context.Users.Add(tenantAdmin);
 
         // Everyone else provisioned by the TenantAdmin from here on.
-        var approver = new User(Guid.NewGuid(), org.Id, $"approver@{domain}", "seed-placeholder-hash", "Resource Approver", tenantAdmin.Id, now);
+        var approver = new User(Guid.NewGuid(), org.Id, $"approver@{domain}", passwordHash, "Resource Approver", tenantAdmin.Id, now);
         approver.AddRole(Role.Approver, tenantAdmin.Id, now);
         context.Users.Add(approver);
 
-        var memberOne = new User(Guid.NewGuid(), org.Id, $"member1@{domain}", "seed-placeholder-hash", "Member One", tenantAdmin.Id, now);
+        var memberOne = new User(Guid.NewGuid(), org.Id, $"member1@{domain}", passwordHash, "Member One", tenantAdmin.Id, now);
         memberOne.AddRole(Role.Member, tenantAdmin.Id, now);
         context.Users.Add(memberOne);
 
-        var memberTwo = new User(Guid.NewGuid(), org.Id, $"member2@{domain}", "seed-placeholder-hash", "Member Two", tenantAdmin.Id, now);
+        var memberTwo = new User(Guid.NewGuid(), org.Id, $"member2@{domain}", passwordHash, "Member Two", tenantAdmin.Id, now);
         memberTwo.AddRole(Role.Member, tenantAdmin.Id, now);
         context.Users.Add(memberTwo);
 

@@ -1,3 +1,4 @@
+using BookSpace.Application.Features.Authentication;
 using BookSpace.Application.Messaging;
 using BookSpace.Application.Messaging.Behaviors;
 using FluentValidation;
@@ -34,6 +35,11 @@ public static class DependencyInjection
         services.AddScoped(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
 
         services.AddScoped<ISender, Dispatcher>();
+
+        // Not picked up by the scan above (it implements neither interface) and
+        // internal to this assembly, so it's registered by hand. Shared by the
+        // login and refresh handlers so token minting has one definition.
+        services.AddScoped<TokenIssuer>();
 
         return services;
     }

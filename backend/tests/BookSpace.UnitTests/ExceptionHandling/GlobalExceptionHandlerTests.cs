@@ -1,5 +1,6 @@
 using System.Text.Json;
 using BookSpace.Api.ExceptionHandling;
+using BookSpace.Application.Features.Authentication;
 using FluentValidation.Results;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
@@ -71,6 +72,47 @@ public class GlobalExceptionHandlerTests
 
         Assert.Equal(new[] { "must not be empty", "must be at least 3 characters" }, messageErrors);
         Assert.Equal(new[] { "already exists" }, slugErrors);
+    }
+
+    // FR-2.1 / FR-2.2: the reason code is carried by the exception, not decided
+    // here, so each authentication failure keeps the meaning the handler gave it.
+    [Theory]
+    [InlineData("InvalidCredentials")]
+    [InlineData("RefreshTokenReuseDetected")]
+    [InlineData("RefreshTokenExpired")]
+    [InlineData("AccountInactive")]
+    public async Task TryHandleAsync_AuthenticationException_Returns401WithTheHandlersReasonCode(string reasonCode)
+    {
+        var exception = new AuthenticationException(reasonCode, "authentication failed");
+
+        var (handled, statusCode, body, _) = await InvokeAsync(exception);
+
+        Assert.True(handled);
+        Assert.Equal(StatusCodes.Status401Unauthorized, statusCode);
+        Assert.Equal(reasonCode, body.GetProperty("reasonCode").GetString());
+    }
+
+    // The message is for the server log; it must not reach the client, where it
+    // could distinguish "no such account" from "wrong password".
+    [Fact]
+    public async Task TryHandleAsync_AuthenticationException_DoesNotLeakTheExceptionMessage()
+    {
+        var exception = new AuthenticationException("InvalidCredentials", "no user for member@acme.test");
+
+        var (_, _, body, _) = await InvokeAsync(exception);
+
+        Assert.DoesNotContain("member@acme.test", body.ToString());
+    }
+
+    [Fact]
+    public async Task TryHandleAsync_AuthenticationException_LogsAsWarningNotError()
+    {
+        // 401 is a client problem, so it logs once at Warning — a failed login is
+        // not a server fault and must not page anyone.
+        var (_, _, _, logCount) = await InvokeAsync(
+            new AuthenticationException("InvalidCredentials", "bad password"));
+
+        Assert.Equal(1, logCount);
     }
 
     private static async Task<(bool Handled, int StatusCode, JsonElement Body, int LogCount)> InvokeAsync(Exception exception)

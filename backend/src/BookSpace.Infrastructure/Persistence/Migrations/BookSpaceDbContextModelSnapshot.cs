@@ -517,6 +517,7 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<DateTime?>("RevokedAtUtc")
+                        .IsConcurrencyToken()
                         .HasPrecision(0)
                         .HasColumnType("datetime2(0)");
 
@@ -669,12 +670,13 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("CreatedByUserId");
 
-                    b.HasIndex("UpdatedByUserId");
-
-                    b.HasIndex("OrgId", "Email")
+                    b.HasIndex("Email")
                         .IsUnique()
-                        .HasDatabaseName("UX_Users_Org_Email")
-                        .HasFilter("[OrgId] IS NOT NULL");
+                        .HasDatabaseName("UQ_Users_Email");
+
+                    b.HasIndex("OrgId");
+
+                    b.HasIndex("UpdatedByUserId");
 
                     b.ToTable("Users", (string)null);
                 });

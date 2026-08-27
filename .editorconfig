@@ -29,7 +29,10 @@ csharp_indent_case_contents = true
 csharp_indent_switch_labels = true
 
 # naming: private fields are _camelCase
-dotnet_naming_rule.private_fields_underscore.severity = warning
+# severity = silent: keeps the convention documented (and enforceable via
+# `dotnet format`) without VS Code squiggling every field and turning the
+# tab/file yellow.
+dotnet_naming_rule.private_fields_underscore.severity = silent
 dotnet_naming_rule.private_fields_underscore.symbols = private_fields
 dotnet_naming_rule.private_fields_underscore.style = underscore_prefix
 dotnet_naming_symbols.private_fields.applicable_kinds = field
