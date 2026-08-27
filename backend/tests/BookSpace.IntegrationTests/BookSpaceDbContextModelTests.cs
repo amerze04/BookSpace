@@ -1,3 +1,4 @@
+using BookSpace.IntegrationTests.Support;
 using BookSpace.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 
@@ -15,7 +16,7 @@ public class BookSpaceDbContextModelTests
         var options = new DbContextOptionsBuilder<BookSpaceDbContext>()
             .UseSqlServer("Server=(local);Database=BookSpace_ModelBuildProbe;Trusted_Connection=True;TrustServerCertificate=True;")
             .Options;
-        return new BookSpaceDbContext(options);
+        return new BookSpaceDbContext(options, new FixedCurrentTenant(null));
     }
 
     [Fact]

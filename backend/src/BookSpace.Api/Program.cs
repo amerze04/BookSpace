@@ -2,6 +2,7 @@ using System.Text;
 using BookSpace.Api.Authorization;
 using BookSpace.Api.ExceptionHandling;
 using BookSpace.Api.Middleware;
+using BookSpace.Api.Tenancy;
 using BookSpace.Application;
 using BookSpace.Application.Abstractions;
 using BookSpace.Infrastructure;
@@ -31,6 +32,13 @@ try
 
     builder.Services.AddInfrastructure(builder.Configuration);
     builder.Services.AddApplication();
+
+    // CLAUDE.md §4.2: ICurrentTenant reads HttpContext.User, so it (and the
+    // accessor it depends on) lives here rather than in AddInfrastructure —
+    // BookSpace.Infrastructure has no ASP.NET Core dependency and shouldn't
+    // gain one just for this. Scoped: it reads the current request's claims.
+    builder.Services.AddHttpContextAccessor();
+    builder.Services.AddScoped<ICurrentTenant, HttpContextCurrentTenant>();
 
     // FR-2.1. Validation parameters per
     // docs/decisions/0009-jwt-claims-and-token-lifetimes.md. JwtOptions itself is

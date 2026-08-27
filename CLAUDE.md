@@ -277,6 +277,12 @@ index; when a new decision doc is added, add its one-liner here too.
    protected unless it opts out. `TenantMember` deliberately **excludes**
    SysAdmin (PRD §2: the Platform Operator must never see tenant booking
    content in routine operation).
+13. [`0013`](docs/decisions/0013-tenant-isolation-mechanism.md) — Structural
+   tenant isolation is validation, not assignment: `SaveChanges*` throws if an
+   `ITenantOwned` entity's `OrgId` doesn't match the current tenant, since the
+   property has no setter to "stamp." RLS gets its own explicit bypass signal
+   (`TenantBypassScope` + a `TenantInit`/`TenantBypass` session-context pair)
+   rather than treating an unset session as "allow all."
 
 **Still open** — flag before building the affected feature, don't decide
 silently: the DST **fall-back** case (clocks go back, a local time occurs
@@ -491,12 +497,54 @@ Notes:
       not the top of a ladder. `docs/decisions/0012`.
       **Note:** roles come from the token, so a role change takes effect at the
       next refresh — the same boundary FR-2.4 uses.
-- [ ] Structural tenant isolation (§4.2) — Phase 4, not started. Auth is
-      shaped for it: the `orgId` claim exists to be read by the tenant
-      accessor, and the only unfiltered `Users` reads live behind
-      `IAuthenticationUserRepository`, the explicitly-named
-      `IgnoreQueryFilters()` exception §4.2 permits (login runs before any
-      tenant context exists, so the global filter would match nothing).
+- [x] Structural tenant isolation (§4.2) — all three mechanisms land in
+      `BookSpace.Infrastructure.Persistence`. **Global query filters**:
+      `BookSpaceDbContext.OnModelCreating` adds
+      `HasQueryFilter(x => x.OrgId == _currentTenant.OrgId)` for `Users`,
+      `Resources`, `Bookings`, where `ICurrentTenant`
+      (`Application/Abstractions/ICurrentTenant.cs`, implemented by
+      `Api/Tenancy/HttpContextCurrentTenant.cs` reading the `orgId` claim from
+      `0009`) is constructor-injected — the standard EF Core multi-tenancy
+      pattern. EF's null-safe translation gives the right fail-closed
+      behavior for free: no tenant context hides all `Resources`/`Bookings`
+      rows and all but SysAdmin `Users` rows. **`SaveChanges*` enforcement**:
+      turned out to be validation, not assignment — `ITenantOwned.OrgId` has
+      no setter and every entity already requires it at construction, so
+      `BookSpaceDbContext` instead throws `TenantIsolationViolationException`
+      (`Domain/Common/`) if an `Added`/`Modified` `ITenantOwned` entity's
+      `OrgId` doesn't match the current tenant, no-opping when there is no
+      current tenant (SeedData). **RLS**: `TenantSessionContextInterceptor`
+      calls `sp_set_session_context` on every `ConnectionOpened`
+      (`TenantInit=1`, `OrgId`, `TenantBypass`), wired via
+      `DependencyInjection.cs`'s `(IServiceProvider, options)` `AddDbContext`
+      overload so it resolves the request's own `ICurrentTenant`. The
+      `AddTenantIsolationRls` migration adds a `Security` schema, one shared
+      inline predicate function, and a filter-only `SECURITY POLICY` on all
+      three tables. `AuthenticationUserRepository` — the one sanctioned
+      `IgnoreQueryFilters()` exception — now also enters
+      `TenantBypassScope` (`AsyncLocal`-backed), since `IgnoreQueryFilters()`
+      only skips the EF-generated WHERE clause and has no effect on RLS,
+      which the engine enforces independently. Both reinterpretations
+      (validation-not-assignment; the `TenantInit`/`TenantBypass` design) are
+      recorded in `docs/decisions/0013-tenant-isolation-mechanism.md`.
+      **Verified**: `dotnet test` — 257 tests (192 unit incl. 11 new EF
+      InMemory tests over `ChangeTracker`/filter logic, 65 integration incl. 7
+      new `TenantIsolation` tests against real SQL Server) all pass. The
+      integration suite proves isolation at two independent levels: through
+      the real HTTP pipeline with a real authenticated principal (query
+      filter + RLS together, as production traffic hits them), and via a raw
+      `SqlConnection` with no EF involved at all — confirming a connection
+      with no session context, or `OrgId` set but `TenantInit` omitted, sees
+      zero rows even though rows physically exist, and a connection scoped to
+      Acme's real `OrgId` sees exactly Acme's 2 resources / 4 users, never
+      Globex's. Manually re-confirmed against the dev database via `sqlcmd`
+      (2026-08-27): no session context → 0 `Resources` rows; `TenantBypass=1`
+      → all 4; a real Acme `OrgId` with `TenantBypass=0` → exactly 2
+      resources and 4 users. **Known gap, not silently skipped**: no
+      `Bookings` rows are seeded yet (§4.1 — `dbo.CreateBooking` doesn't
+      exist), so the `Bookings` cross-tenant test is a smoke check only (the
+      filter clause builds and returns empty without throwing); the real leak
+      test is deferred to whatever work adds a Bookings write/read path.
 - [x] Serilog structured logging, correlation ID per request —
       `Serilog.AspNetCore` + `Serilog.Settings.Configuration` wired in
       `Program.cs` (bootstrap logger, `appsettings`-driven sinks/levels);
@@ -580,13 +628,13 @@ Acceptance criteria: see the source doc — login/refresh/rotation/reuse
 detection, hashed passwords, tenant isolation under a forged identifier,
 correlation ID on every log line, clean problem responses on unhandled
 exceptions, and controllers that only dispatch through the mediator.
-**As of 2026-08-26:** everything is met except tenant isolation under a
-forged identifier, which is Phase 4 and hasn't started. Login/refresh/
+**As of 2026-08-27: all WP-2 acceptance criteria are met**, including tenant
+isolation under a forged identifier (Phase 4). Login/refresh/
 rotation/reuse-detection, hashed passwords, correlation IDs, problem
-responses, and mediator-only controllers are all implemented, covered by 239
-automated tests (181 unit, 58 integration against real SQL Server), and the
-login/rotation/reuse-detection paths additionally verified by hand against a
-running instance.
+responses, mediator-only controllers, and structural tenant isolation are all
+implemented, covered by 257 automated tests (192 unit, 65 integration against
+real SQL Server), and the login/rotation/reuse-detection paths additionally
+verified by hand against a running instance.
 
 ### Future work packages
 Appended here as the mentor sends them — one subsection per WP, same

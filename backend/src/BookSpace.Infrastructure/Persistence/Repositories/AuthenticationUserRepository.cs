@@ -11,6 +11,12 @@ namespace BookSpace.Infrastructure.Persistence.Repositories;
 // filter would match nothing and every login would fail. Nothing else in the
 // codebase may read Users unfiltered.
 //
+// IgnoreQueryFilters() only skips the ORM-generated WHERE clause — it has no
+// effect on SQL Server row-level security, which the engine enforces
+// independently via SESSION_CONTEXT. QueryUnfiltered also enters
+// TenantBypassScope so the RLS layer is told the same thing the EF layer
+// already knows: this query is deliberately scopeless, not forgotten.
+//
 // FirstOrDefaultAsync, never DbSet.Find() — Find can return a tracked entity
 // without querying, which would bypass the filter for the wrong reason.
 internal sealed class AuthenticationUserRepository : IAuthenticationUserRepository
@@ -35,6 +41,8 @@ internal sealed class AuthenticationUserRepository : IAuthenticationUserReposito
         System.Linq.Expressions.Expression<Func<User, bool>> predicate,
         CancellationToken cancellationToken)
     {
+        using var _ = TenantBypassScope.Enter();
+
         var row = await _context.Users
             .IgnoreQueryFilters()
             .Where(predicate)

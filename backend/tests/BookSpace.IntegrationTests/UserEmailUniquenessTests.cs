@@ -1,4 +1,5 @@
 using BookSpace.Domain.Entities;
+using BookSpace.IntegrationTests.Support;
 using BookSpace.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 
@@ -23,7 +24,11 @@ public class UserEmailUniquenessTests : IAsyncLifetime
         var options = new DbContextOptionsBuilder<BookSpaceDbContext>()
             .UseSqlServer(ConnectionString)
             .Options;
-        _context = new BookSpaceDbContext(options);
+        // No tenant context: SaveChanges* tenant-ownership validation
+        // (CLAUDE.md §4.2) no-ops with a null current tenant, so inserting
+        // users across two different orgs in one context — exactly what these
+        // tests do — behaves the same as before Phase 4.
+        _context = new BookSpaceDbContext(options, new FixedCurrentTenant(null));
 
         await _context.Database.EnsureDeletedAsync();
         await _context.Database.MigrateAsync();

@@ -1,4 +1,5 @@
 using BookSpace.Application.Features.Authentication;
+using BookSpace.Domain.Common;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -84,6 +85,13 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
             StatusCodes.Status409Conflict,
             "The record was modified by another request.",
             "ConcurrencyConflict"),
+        // CLAUDE.md §4.2. Always an application bug, never something a client
+        // legitimately triggers — deliberately generic so the response never
+        // hints at tenant boundaries; the reason code is for grepping logs.
+        TenantIsolationViolationException => (
+            StatusCodes.Status500InternalServerError,
+            "An unexpected error occurred.",
+            "TenantIsolationViolation"),
         FluentValidation.ValidationException => (
             StatusCodes.Status400BadRequest,
             "One or more validation errors occurred.",

@@ -5,10 +5,9 @@ before WP-2 started; the sequencing below was accepted and is now being
 executed. Settled points should still move into `docs/decisions/` as numbered
 decision records the same way 0001–0008 did for WP-1.
 
-**Where the build stands (2026-08-26): Phases 1, 2 and 3 are complete. Phase 4
-(structural tenant isolation) is next.** Per-phase status is marked inline
-below; the root `CLAUDE.md` §12 checklist carries the detail on what each
-completed item actually built.
+**Where the build stands (2026-08-27): all four phases are complete.**
+Per-phase status is marked inline below; the root `CLAUDE.md` §12 checklist
+carries the detail on what each completed item actually built.
 
 Source: `docs/Work Packages - Week 1 and 2.docx`, WP-2 section.
 
@@ -186,7 +185,7 @@ make and depend on each other. Proposed order:
      just issued too** — the family-wide blast radius, not just the reused
      token, confirmed by hand rather than only by the automated test.
 
-### Phase 4 — tenant isolation, last because it depends on auth existing — **not started**
+### Phase 4 — tenant isolation, last because it depends on auth existing — **done**
 6. **Structural tenant isolation.** `CLAUDE.md` §4.2 already prescribes the
    three-mechanism design (global query filters, `SaveChangesAsync` `OrgId`
    stamping, RLS via a connection interceptor calling

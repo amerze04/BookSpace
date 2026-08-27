@@ -1,4 +1,5 @@
 using BookSpace.Application.Abstractions;
+using BookSpace.IntegrationTests.Support;
 using BookSpace.Infrastructure.Persistence;
 using BookSpace.Infrastructure.Security;
 using Microsoft.EntityFrameworkCore;
@@ -10,6 +11,15 @@ namespace BookSpace.IntegrationTests;
 // actual constraint enforcement) must use a real SQL Server, not the
 // in-memory provider. Runs against its own throwaway database so it never
 // touches the "BookSpace" dev database that the app itself seeds.
+//
+// Every assertion here is a deliberate cross-tenant read (all seeded users,
+// all seeded resources, at once) — this file intentionally acts as an
+// unfiltered probe over SeedData's raw output, the same justification
+// AuthenticationUserRepository has for its own IgnoreQueryFilters() use
+// (CLAUDE.md §4.2). It's wired with a fixed no-tenant ICurrentTenant plus the
+// RLS interceptor, and every query against Users/Resources/Bookings wraps in
+// TenantBypassScope.Enter() and adds IgnoreQueryFilters() — bypassing both
+// the EF-level filter and the DB-level RLS layer, which are independent.
 public class SeedDataTests : IAsyncLifetime
 {
     private const string ConnectionString =
@@ -23,10 +33,12 @@ public class SeedDataTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
+        var currentTenant = new FixedCurrentTenant(null);
         var options = new DbContextOptionsBuilder<BookSpaceDbContext>()
             .UseSqlServer(ConnectionString)
+            .AddInterceptors(new TenantSessionContextInterceptor(currentTenant))
             .Options;
-        _context = new BookSpaceDbContext(options);
+        _context = new BookSpaceDbContext(options, currentTenant);
 
         await _context.Database.EnsureDeletedAsync();
         await _context.Database.MigrateAsync();
@@ -43,17 +55,19 @@ public class SeedDataTests : IAsyncLifetime
     {
         await SeedData.SeedAsync(_context, PasswordHasher);
 
+        using var _ = TenantBypassScope.Enter();
+
         Assert.Equal(2, await _context.Organizations.CountAsync());
 
-        var users = await _context.Users.ToListAsync();
+        var users = await _context.Users.IgnoreQueryFilters().ToListAsync();
         Assert.Equal(9, users.Count);
         Assert.Equal(9, users.Sum(u => u.Roles.Count)); // owned collections load with the owner
 
-        Assert.Equal(4, await _context.Resources.CountAsync());
+        Assert.Equal(4, await _context.Resources.IgnoreQueryFilters().CountAsync());
         Assert.Equal(20, await _context.AvailabilityWindows.CountAsync());
         Assert.Equal(2, await _context.BlackoutPeriods.CountAsync());
         Assert.Equal(2, await _context.RecurrenceRules.CountAsync());
-        Assert.Equal(0, await _context.Bookings.CountAsync());
+        Assert.Equal(0, await _context.Bookings.IgnoreQueryFilters().CountAsync());
     }
 
     // FR-2.3: the seed stores real hashes now, not the WP-1 placeholder — so the
@@ -63,7 +77,8 @@ public class SeedDataTests : IAsyncLifetime
     {
         await SeedData.SeedAsync(_context, PasswordHasher);
 
-        var users = await _context.Users.ToListAsync();
+        using var _ = TenantBypassScope.Enter();
+        var users = await _context.Users.IgnoreQueryFilters().ToListAsync();
 
         Assert.All(users, u =>
         {
@@ -78,8 +93,10 @@ public class SeedDataTests : IAsyncLifetime
         await SeedData.SeedAsync(_context, PasswordHasher);
         await SeedData.SeedAsync(_context, PasswordHasher);
 
+        using var _ = TenantBypassScope.Enter();
+
         Assert.Equal(2, await _context.Organizations.CountAsync());
-        Assert.Equal(9, await _context.Users.CountAsync());
+        Assert.Equal(9, await _context.Users.IgnoreQueryFilters().CountAsync());
     }
 
     [Fact]
@@ -87,7 +104,8 @@ public class SeedDataTests : IAsyncLifetime
     {
         await SeedData.SeedAsync(_context, PasswordHasher);
 
-        var sysAdmin = await _context.Users.SingleAsync(u => u.OrgId == null);
+        using var _ = TenantBypassScope.Enter();
+        var sysAdmin = await _context.Users.IgnoreQueryFilters().SingleAsync(u => u.OrgId == null);
 
         Assert.Equal(sysAdmin.Id, sysAdmin.CreatedByUserId);
     }
@@ -97,11 +115,12 @@ public class SeedDataTests : IAsyncLifetime
     {
         await SeedData.SeedAsync(_context, PasswordHasher);
 
+        using var _ = TenantBypassScope.Enter();
         var orgIds = await _context.Organizations.Select(o => o.Id).ToListAsync();
 
         foreach (var orgId in orgIds)
         {
-            var usersInOrg = await _context.Users.Where(u => u.OrgId == orgId).ToListAsync();
+            var usersInOrg = await _context.Users.IgnoreQueryFilters().Where(u => u.OrgId == orgId).ToListAsync();
             Assert.Equal(4, usersInOrg.Count);
         }
     }

@@ -261,7 +261,13 @@ public class AuthenticationEndpointTests
         await using (var scope = _host.CreateScope())
         {
             var context = scope.ServiceProvider.GetRequiredService<BookSpaceDbContext>();
-            var user = await context.Users.FirstAsync(u => u.Email == email);
+
+            // No HttpContext in this scope, so ICurrentTenant.OrgId is null —
+            // simulating an admin action against a real tenant user needs the
+            // same bypass SeedData and AuthenticationUserRepository use
+            // (CLAUDE.md §4.2), at both the EF filter and RLS layers.
+            using var _ = TenantBypassScope.Enter();
+            var user = await context.Users.IgnoreQueryFilters().FirstAsync(u => u.Email == email);
             user.Deactivate(user.Id, DateTime.UtcNow);
             await context.SaveChangesAsync();
         }
@@ -292,7 +298,13 @@ public class AuthenticationEndpointTests
         await using (var scope = _host.CreateScope())
         {
             var context = scope.ServiceProvider.GetRequiredService<BookSpaceDbContext>();
-            var user = await context.Users.FirstAsync(u => u.Email == email);
+
+            // No HttpContext in this scope, so ICurrentTenant.OrgId is null —
+            // simulating an admin action against a real tenant user needs the
+            // same bypass SeedData and AuthenticationUserRepository use
+            // (CLAUDE.md §4.2), at both the EF filter and RLS layers.
+            using var _ = TenantBypassScope.Enter();
+            var user = await context.Users.IgnoreQueryFilters().FirstAsync(u => u.Email == email);
             user.Deactivate(user.Id, DateTime.UtcNow);
             await context.SaveChangesAsync();
         }
