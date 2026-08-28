@@ -1,0 +1,270 @@
+# WP-3 — Resources & Availability API: proposed approach
+
+Status: drafted 2026-08-28, **before any WP-3 code was written**, and approved
+by the repo owner the same day. The four decisions in "Decisions settled
+before starting" below were taken as part of that approval, not left to be
+discovered mid-build. They should still move into `docs/decisions/` as
+numbered records (0014+) as the phases that implement them land — the same way
+`0009`–`0012` did for WP-2, and `0013` for its Phase 4.
+
+Source: `docs/Work Packages - Week 3.pdf`.
+
+---
+
+## What WP-3 asks for
+
+Six tasks, one goal: "the endpoints that let an admin publish resources with
+real rules, and let a member see genuine live availability."
+
+1. **CRUD for resources** (type, capacity, timezone, description) — TenantAdmin
+   only. FR-3.1, FR-3.5.
+2. **Manage availability windows** per resource. FR-3.2.
+3. **Manage blackout periods**; ensure they override availability. FR-3.4.
+4. **Mark resources `RequiresApproval`** and assign approvers. FR-3.3.
+5. **An availability query**: given a resource and a date range, return
+   bookable slots.
+6. **Clean DTOs, error contracts, and pagination.**
+
+Acceptance criteria (source doc): an admin can publish a resource with
+availability and blackout rules; the availability query correctly excludes
+blackout periods and existing bookings; non-admins cannot create or edit
+resources; the API returns clear, structured errors.
+
+---
+
+## The structural finding that shapes the phase order
+
+`AvailabilityWindow` and `BlackoutPeriod` sit **outside all three tenant-
+isolation mechanisms** WP-2 built. Neither implements `ITenantOwned`, neither
+has an `OrgId` column, neither appears in `BookSpaceDbContext`'s global query
+filters, and `Security.TenantAccessPolicy` (the `AddTenantIsolationRls`
+migration) covers only `dbo.Users`, `dbo.Resources`, `dbo.Bookings`. Both are
+reached purely by `ResourceId`.
+
+This was harmless through WP-2, because nothing queried those two tables. WP-3
+is the first package whose endpoints operate mostly *on* them. Written the
+obvious way, a handler for `DELETE /blackouts/{id}` would be
+
+```csharp
+await _context.BlackoutPeriods.FirstOrDefaultAsync(b => b.Id == id, ct);
+```
+
+— which returns another tenant's blackout, with no filter and no RLS to stop
+it. That is precisely the failure mode `CLAUDE.md` §4.2 exists to make
+impossible, so it has to be closed before any WP-3 endpoint is written. See
+decision D1 below; it lands in Phase 1.
+
+---
+
+## Proposed sequencing
+
+Each phase is a prerequisite for the next, in the literal sense that the next
+one cannot be tested without it: windows and blackouts hang off a resource,
+and the availability query consumes all of them.
+
+**Delivery style:** each phase is itself built in **small, reviewable chunks**
+with control returned between them, at the owner's request — the phase is the
+unit of planning, not the unit of delivery. Chunk boundaries are decided when
+the phase starts and are deliberately not planned here.
+
+### Phase 1 — API contract foundations
+
+The WP lists "clean DTOs, error contracts, pagination" last; it is built
+first. Same reasoning the mentor accepted for building the mediator before
+login in WP-2: retrofitting a contract across endpoints that already exist is
+how the inconsistency the AC forbids gets in.
+
+1. **Tenant-scope the child tables (D1).** Denormalize `OrgId` onto
+   `AvailabilityWindows` and `BlackoutPeriods`, implement `ITenantOwned` on
+   both, add them to the global query filters and to the RLS security policy.
+   New migration. Update `CLAUDE.md` §4.2's mechanism list (it currently names
+   only `Users`, `Resources`, `Bookings`) once this lands.
+2. **Pagination.** A shared paged-result envelope plus paging/sorting query
+   parameters. Nothing paginated exists in the codebase yet.
+3. **Error contracts.** Fill in the extension point deliberately left in
+   `GlobalExceptionHandler.Map(...)` during WP-2, generalizing it into a
+   domain-exception → reason-code mapping rather than adding a third one-off
+   beside the existing `ValidationException` and `AuthenticationException`
+   cases. WP-3 supplies the first real callers; §6's booking reason codes then
+   slot into the same mechanism in WP-4 with no further plumbing.
+4. **Reason-code catalogue for WP-3**, extending `CLAUDE.md` §6's list.
+   `ResourceArchived` and `BlackoutPeriod` are already there; resource-not-
+   found, approver-not-in-tenant, and invalid-timezone are new.
+
+### Phase 2 — Resource CRUD (FR-3.1, FR-3.5)
+
+The aggregate root everything else hangs off.
+
+- **`Resource` has no edit methods today** — only `Archive`, the approver and
+  availability-window collection methods, and a private `Touch`. Domain
+  mutation methods are needed for name, description, type, capacity,
+  timezone, durations, and the `RequiresApproval` flag.
+- Read endpoints (paginated list, get-by-id) on the `TenantMember` policy;
+  write endpoints (create, edit, archive) on `TenantAdmin`. Reads cannot be
+  admin-only — members must browse resources in order to book them.
+- No new authorization policy is required: `TenantAdmin` and `TenantMember`
+  from decision `0012` already express exactly the WP-3 AC "non-admins cannot
+  create or edit resources".
+- Archiving already exists on the entity. There is no `Unarchive`, and the PRD
+  does not ask for one; not adding it.
+
+### Phase 3 — Availability windows and approvers (FR-3.2, FR-3.3)
+
+Grouped because they are the same shape of problem: a child collection managed
+*through* the aggregate root, under the Phase 1 scoping rules. Both already
+have domain methods (`AddAvailabilityWindow`/`RemoveAvailabilityWindow`,
+`AddApprover`/`RemoveApprover`), so this is mostly Application and API work.
+
+- **Availability windows get replace-the-set (PUT) semantics**, not per-row
+  POST/DELETE. `AvailabilityWindow`'s own doc comment already records why it
+  has no audit columns: entries are "typically bulk-replaced as a weekly set
+  rather than individually edited". The domain hints at the intended API
+  shape; following it keeps the two consistent.
+- **Approver assignment needs validation the domain does not do.**
+  `AddApprover(Guid userId, ...)` takes a bare id and checks only for
+  duplicates. The Application layer must confirm the user is in the same
+  tenant and holds the `Approver` role — cross-tenant approver assignment is
+  otherwise a leak vector.
+- `RequiresApproval` (the flag, a plain `Resource` property) is set in Phase 2;
+  the approver list is managed here. The invariant spanning the two is
+  enforced at edit time — see "Smaller calls" below.
+
+### Phase 4 — Blackout periods (FR-3.4, Decision 0001)
+
+Its own phase because it is **not** simple CRUD. Decision `0001` gives a
+blackout absolute priority: it cancels every occurrence it overlaps, *any
+status*, and the booking's owner is notified. So creating a blackout is a
+write against `Bookings` and `Notifications`, not an insert into one table.
+The WP's one-line task ("ensure they override availability") understates this
+considerably.
+
+- Placed after Phase 3 so the availability it overrides actually exists, and
+  before Phase 5 because the query must exclude blackouts.
+- The cancellation cascade writes `Notifications` rows for the not-yet-built
+  dispatch job to pick up. That is the intended design (§7): the table exists,
+  and its unique constraint is what makes the job idempotent.
+- **Known testing constraint:** no booking write path exists yet, so the
+  cascade is exercised against rows inserted by the D4 raw-SQL fixture rather
+  than through a real booking flow.
+
+### Phase 5 — The availability query
+
+Last, because it consumes every phase above: availability windows, blackouts,
+capacity, existing bookings, and the archived flag. This is WP-3's genuinely
+hard problem and where D2 and D3 do their work.
+
+- Returns **free/busy intervals carrying `remainingCapacity`** (D2), not a
+  fixed grid of slots.
+- Expands resource-local windows across the requested date range and over DST
+  boundaries per D3.
+- Excludes blackouts and subtracts `Confirmed`/`Pending` booking `Quantity`
+  from capacity, per decision `0005`.
+- Bounded by a maximum date-range span rather than paginated — the result is
+  a function of a range, not a list of records.
+
+The final AC sweep lands here: publishing a resource with rules end-to-end,
+the query excluding blackouts and bookings, non-admin writes rejected, and
+structured errors throughout. Per-phase tests are written inside each phase;
+this is the cross-cutting pass.
+
+---
+
+## Decisions settled before starting
+
+Taken by the repo owner on 2026-08-28, in response to this plan. To be written
+up as numbered records as the implementing phase lands.
+
+### D1 — `AvailabilityWindows` and `BlackoutPeriods` get their own `OrgId`
+
+**Decided: denormalize.** Add `OrgId` to both tables, implement `ITenantOwned`,
+extend the global query filters and the RLS policy to cover them.
+
+Rejected alternative: an architectural rule that the two are only ever reached
+through the (already filtered) `Resource` aggregate. That works, costs no
+migration, and is what a smaller change would look like — but it is a
+*convention*, and `CLAUDE.md` §4.2's entire premise is that isolation must not
+depend on remembering one. Decision `0006` already set the house precedent
+with `Bookings.OrgId`: duplicate the column when it buys enforceable isolation,
+and back it with a composite FK so the two values cannot physically disagree.
+The same composite-FK technique (`FK_..._Resources_SameOrg` against
+`UQ_Resources_Org_Id`) applies here unchanged.
+
+Owner's reasoning: a migration is still cheap at this stage, and this is a core
+requirement rather than a nicety.
+
+### D2 — A "bookable slot" is an interval with remaining capacity
+
+**Decided: free/busy intervals carrying `remainingCapacity`**, not fixed-size
+discrete slots.
+
+Decision `0005` makes `Capacity` a count of *concurrent units*, so a slot is
+not bookable/not-bookable — it has a number of units left. A boolean response
+shape would contradict the capacity model. Discrete slots would additionally
+bake a grid size into the API that the PRD never asks for, and force a choice
+of granularity that belongs to the client.
+
+### D3 — DST is resolved for availability *ranges* now; the instant question stays open
+
+**Decided: expand a window to the actual elapsed UTC interval on that date**,
+which handles both the spring-forward gap and the fall-back doubling with no
+policy choice — the day simply has 23 or 25 hours.
+
+This is a genuinely easier question than the one `0008` answers, and the
+difference is worth recording: a *window* is a range, so it can absorb a
+missing or repeated hour by just being shorter or longer. An *occurrence* is
+an instant, and an instant has to land somewhere, which is why spring-forward
+needed a documented skip policy and why the fall-back case is still open.
+
+**§9's still-open fall-back question is unaffected and stays open** — resolving
+it for ranges here does not resolve it for instants.
+
+### D4 — Bookings are inserted by raw SQL in the integration fixture
+
+**Decided: allow it, document it.** The AC "the availability query correctly
+excludes … existing bookings" cannot be tested without booking rows, and
+`dbo.CreateBooking` is WP-4 work that §11/§12 forbid pulling forward.
+
+Raw SQL specifically, **not** LINQ or `SaveChanges`: it cannot be mistaken for
+a production write path, and it adds no domain method anyone could later
+reuse by accident. This is a narrow, deliberate carve-out from `CLAUDE.md`
+§4.1, scoped to the integration-test fixture only. §4.1's guarantee is about
+concurrent production writes; a fixture inserting one known fixed row needs no
+such guarantee.
+
+Owner's note: acceptable at this stage of development; worth documenting but
+not a significant deviation.
+
+---
+
+## Smaller calls made without a formal decision record
+
+Flagged in the plan proposal and not objected to. Any of these can be revisited
+cheaply; none changes the schema.
+
+- **Overlapping availability windows on the same weekday are rejected**, not
+  unioned. The schema has no constraint either way.
+- **`RequiresApproval = true` with zero approvers is blocked** at edit time.
+  FR-3.3 reads "can be marked `RequiresApproval`, with one or more assigned
+  approvers", so the empty state is not a valid resting state.
+- **A capacity decrease that would put existing bookings over the new limit is
+  rejected.**
+- **Changing `TimeZoneId` reinterprets all existing availability windows**, and
+  the response says so explicitly rather than silently shifting them.
+
+---
+
+## Still open
+
+- **The DST fall-back case for recurring booking occurrences** — unchanged by
+  D3, which resolves the range case only. Still the single open item in
+  `CLAUDE.md` §9; see the Notes section of `0008`. WP-3 does not need it.
+- **Whether `Resource` needs an `Unarchive`.** Not in the PRD, not being built;
+  noted so a future session does not read its absence as an oversight.
+
+## What WP-3 deliberately does not touch
+
+- `dbo.CreateBooking` / `dbo.ApproveBooking` and any booking write path — WP-4.
+- Recurrence expansion — the availability query reads `Bookings` rows, it does
+  not create or expand series.
+- The notification *dispatch* job. Phase 4 writes `Notifications` rows; sending
+  them is §7 work in a later package.

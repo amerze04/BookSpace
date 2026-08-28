@@ -284,10 +284,21 @@ index; when a new decision doc is added, add its one-liner here too.
    (`TenantBypassScope` + a `TenantInit`/`TenantBypass` session-context pair)
    rather than treating an unset session as "allow all."
 
+**Decided but not yet written up as numbered records** — four WP-3 decisions
+(D1–D4) were settled by the repo owner on 2026-08-28 before that package
+started, and live in `docs/wp3-plan.md` until the phase implementing each one
+lands and promotes it to `0014`+: child-table `OrgId` denormalization,
+interval-plus-`remainingCapacity` slot semantics, DST handling for
+availability *ranges*, and a raw-SQL carve-out for seeding `Bookings` in
+integration tests. Treat them as settled, not open.
+
 **Still open** — flag before building the affected feature, don't decide
 silently: the DST **fall-back** case (clocks go back, a local time occurs
 twice and is ambiguous rather than nonexistent). See the Notes section of
 `0008` for why it's a genuinely separate question from spring-forward.
+WP-3's D3 resolves this for availability *windows* (a range absorbs a missing
+or repeated hour); it leaves the *occurrence* case — an instant, which has to
+land somewhere — exactly as open as it was.
 
 If a task needs a decision that isn't listed above and isn't in this log,
 **stop and ask** rather than picking silently — same rule as always, this
@@ -635,6 +646,64 @@ responses, mediator-only controllers, and structural tenant isolation are all
 implemented, covered by 257 automated tests (192 unit, 65 integration against
 real SQL Server), and the login/rotation/reuse-detection paths additionally
 verified by hand against a running instance.
+
+### WP-3 — Resources & Availability API — **Planned, not started**
+Source doc: `docs/Work Packages - Week 3.pdf` (weeks 2–3, backend track).
+Plan and settled decisions: `docs/wp3-plan.md`.
+
+- [ ] CRUD for resources (type, capacity, timezone, description) —
+      TenantAdmin only. FR-3.1, FR-3.5.
+- [ ] Manage availability windows per resource. FR-3.2.
+- [ ] Manage blackout periods; ensure they override availability. FR-3.4.
+- [ ] Mark resources `RequiresApproval` and assign approvers. FR-3.3.
+- [ ] Build an availability query: given a resource and date range, return
+      bookable slots.
+- [ ] Design clean DTOs, error contracts, and pagination.
+
+Acceptance criteria (source doc):
+- [ ] An admin can publish a resource with availability and blackout rules.
+- [ ] The availability query correctly excludes blackout periods and existing
+      bookings.
+- [ ] Non-admins cannot create or edit resources.
+- [ ] API returns clear, structured errors.
+
+Planned phasing — detail and reasoning in `docs/wp3-plan.md`, which was
+approved by the repo owner on 2026-08-28 before any code was written:
+
+1. **API contract foundations** — tenant-scope the child tables (D1),
+   pagination, error contracts, WP-3 reason codes.
+2. **Resource CRUD** — FR-3.1/FR-3.5.
+3. **Availability windows + approvers** — FR-3.2/FR-3.3.
+4. **Blackout periods** — FR-3.4 plus decision `0001`'s cancellation cascade.
+5. **The availability query** — consumes all of the above; final AC sweep.
+
+**Four decisions were settled up front** (`docs/wp3-plan.md`), to be written
+up as numbered records 0014+ as each implementing phase lands:
+- **D1** — `AvailabilityWindows` and `BlackoutPeriods` get their own `OrgId`,
+  `ITenantOwned`, query filters and RLS coverage. They are currently outside
+  **all three** §4.2 mechanisms, which makes a cross-tenant read the *natural*
+  way to write a child-entity handler. Follows decision `0006`'s precedent.
+  **§4.2's mechanism list must be updated when this migration lands** — it
+  presently names only `Users`, `Resources`, `Bookings`.
+- **D2** — a "bookable slot" is a free/busy interval carrying
+  `remainingCapacity`, not a fixed grid; forced by decision `0005`'s
+  concurrent-units capacity model.
+- **D3** — a DST gap or doubling inside an availability *window* is absorbed by
+  expanding to the actual elapsed UTC interval (the day has 23 or 25 hours).
+  **This does not resolve §9's still-open fall-back question for recurring
+  occurrences**, which is about an instant, not a range.
+- **D4** — integration tests insert `Bookings` rows via **raw SQL** (never LINQ
+  or `SaveChanges`), a narrow documented carve-out from §4.1 so the
+  "excludes existing bookings" AC is testable before `dbo.CreateBooking`
+  exists in WP-4.
+
+Notes:
+- Delivery style: each phase is built in **small, reviewable chunks** with
+  control returned between them, at the owner's request. Chunk boundaries are
+  decided at the start of each phase, not planned in the doc.
+- WP-3 deliberately does not touch `dbo.CreateBooking`/`dbo.ApproveBooking`,
+  recurrence expansion, or the notification dispatch job. Phase 4 writes
+  `Notifications` rows; sending them is later work.
 
 ### Future work packages
 Appended here as the mentor sends them — one subsection per WP, same
