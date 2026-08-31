@@ -2,6 +2,7 @@ using BookSpace.Application.Abstractions;
 using BookSpace.Infrastructure.Persistence;
 using BookSpace.Infrastructure.Persistence.Repositories;
 using BookSpace.Infrastructure.Security;
+using BookSpace.Infrastructure.Time;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -37,6 +38,8 @@ public static class DependencyInjection
             .ValidateOnStart();
 
         services.AddSingleton<IClock, SystemClock>();
+        // Stateless; TimeZoneInfo does its own caching.
+        services.AddSingleton<ITimeZoneCatalog, SystemTimeZoneCatalog>();
         services.AddSingleton<IPasswordHasher, PasswordHasherAdapter>();
         services.AddSingleton<IRefreshTokenFactory, RefreshTokenFactory>();
         services.AddSingleton<IAccessTokenService, JwtAccessTokenService>();

@@ -204,6 +204,24 @@ public class ResourceReadEndpointTests
         Assert.NotEqual(default, detail.CreatedAtUtc);
     }
 
+    // The wire contract for instants, asserted on the raw JSON rather than the
+    // deserialized DTO — System.Text.Json accepts an offset-less timestamp
+    // happily, so a round trip through ResourceDetailResponse would not notice
+    // the "Z" going missing. A browser client parsing "2026-08-31T13:49:35"
+    // would read it as local time (CLAUDE.md §4.3).
+    [Fact]
+    public async Task GetById_SerializesTimestampsAsUtcWithAnExplicitZ()
+    {
+        var client = await AuthenticatedClientAsync(AcmeMember);
+        var page = await client.GetFromJsonAsync<PagedResult<ResourceSummaryResponse>>("/resources");
+        var anyResource = page!.Items.First();
+
+        var body = await client.GetFromJsonAsync<JsonElement>($"/resources/{anyResource.Id}");
+
+        Assert.EndsWith("Z", body.GetProperty("createdAtUtc").GetString());
+        Assert.EndsWith("Z", body.GetProperty("updatedAtUtc").GetString());
+    }
+
     [Fact]
     public async Task GetById_UnknownId_ReturnsNotFoundWithTheReasonCode()
     {

@@ -1,6 +1,7 @@
 using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.Resources.GetResource;
 using BookSpace.Application.Features.Resources.ListResources;
+using BookSpace.Domain.Entities;
 
 namespace BookSpace.Application.Abstractions;
 
@@ -34,4 +35,33 @@ public interface IResourceRepository
     // Null means "no such resource in this tenant" — which, per ErrorKind
     // .NotFound, is also the answer for another tenant's real id.
     Task<ResourceDetailResponse?> FindDetailAsync(Guid resourceId, CancellationToken cancellationToken);
+
+    // ---- Writes (FR-3.1 / FR-3.5) ----
+
+    // The tracked aggregate, for an edit. Returns the entity rather than a DTO
+    // because the caller mutates it through the domain methods — the same
+    // reason IAuthenticationUserRepository returns a User. Loads the approver
+    // assignments and availability windows with it, since the edit rules read
+    // both (ApproversRequired, and the timezone-change notice's count).
+    Task<Resource?> FindForUpdateAsync(Guid resourceId, CancellationToken cancellationToken);
+
+    void Add(Resource resource);
+
+    // The largest number of units any single instant still in the future has
+    // already committed on this resource — the number a capacity decrease must
+    // not fall below (ReasonCodes.CapacityBelowExistingBookings).
+    //
+    // "Concurrent units", per docs/decisions/0005-capacity-semantics.md: not a
+    // booking count and not a sum over the whole range, but the peak of
+    // overlapping Quantity. Past bookings are excluded on purpose — reducing
+    // capacity cannot invalidate history, and FR-3.5's whole premise is that
+    // history is preserved as it was.
+    Task<int> PeakConcurrentBookedQuantityAsync(
+        Guid resourceId,
+        DateTime asOfUtc,
+        CancellationToken cancellationToken);
+
+    // Separate from the mutations, matching IRefreshTokenRepository: the handler
+    // owns the unit of work, so one save covers everything it changed.
+    Task SaveChangesAsync(CancellationToken cancellationToken);
 }

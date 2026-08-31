@@ -2,11 +2,25 @@ using BookSpace.Application.Abstractions;
 using BookSpace.Domain.Common;
 using BookSpace.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace BookSpace.Infrastructure.Persistence;
 
 public class BookSpaceDbContext : DbContext
 {
+    // Write side is the identity: the value is already UTC going in (§4.3), and
+    // a converter that touched it would be rewriting data. Only the read side
+    // does anything — restoring the Kind the column cannot store. Static so the
+    // instances are shared across every property rather than allocated per model
+    // property.
+    private static readonly ValueConverter<DateTime, DateTime> UtcDateTimeConverter =
+        new(value => value, value => DateTime.SpecifyKind(value, DateTimeKind.Utc));
+
+    private static readonly ValueConverter<DateTime?, DateTime?> NullableUtcDateTimeConverter =
+        new(
+            value => value,
+            value => value.HasValue ? DateTime.SpecifyKind(value.Value, DateTimeKind.Utc) : null);
+
     private readonly ICurrentTenant _currentTenant;
 
     public BookSpaceDbContext(DbContextOptions<BookSpaceDbContext> options, ICurrentTenant currentTenant)
@@ -54,6 +68,15 @@ public class BookSpaceDbContext : DbContext
         // CLAUDE.md §4.3: every instant is datetime2(0)/time(0) — set once here
         // instead of a HasPrecision(0) call on every DateTime/TimeOnly property
         // in every configuration.
+        //
+        // The same loop also stamps DateTimeKind.Utc back on every DateTime read
+        // from the database. SQL Server's datetime2 carries no offset, so EF
+        // materializes it as DateTimeKind.Unspecified, and System.Text.Json then
+        // serializes it without the trailing "Z" — while the same property on an
+        // entity still in memory (just stamped from IClock) serializes *with*
+        // one. A client parsing "2026-08-31T13:49:35" reads it as local time,
+        // which is a silent off-by-hours bug rather than a visible one. §4.3
+        // already guarantees the stored value is UTC; this makes the wire say so.
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())
         {
             foreach (var property in entityType.GetProperties())
@@ -62,6 +85,15 @@ public class BookSpaceDbContext : DbContext
                     || property.ClrType == typeof(TimeOnly) || property.ClrType == typeof(TimeOnly?))
                 {
                     property.SetPrecision(0);
+                }
+
+                if (property.ClrType == typeof(DateTime))
+                {
+                    property.SetValueConverter(UtcDateTimeConverter);
+                }
+                else if (property.ClrType == typeof(DateTime?))
+                {
+                    property.SetValueConverter(NullableUtcDateTimeConverter);
                 }
             }
         }
