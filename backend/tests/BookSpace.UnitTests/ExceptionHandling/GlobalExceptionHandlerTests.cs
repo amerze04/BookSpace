@@ -1,5 +1,6 @@
 using System.Text.Json;
 using BookSpace.Api.ExceptionHandling;
+using BookSpace.Application.Common.Errors;
 using BookSpace.Application.Features.Authentication;
 using FluentValidation.Results;
 using Microsoft.AspNetCore.Http;
@@ -111,6 +112,54 @@ public class GlobalExceptionHandlerTests
         // not a server fault and must not page anyone.
         var (_, _, _, logCount) = await InvokeAsync(
             new AuthenticationException("InvalidCredentials", "bad password"));
+
+        Assert.Equal(1, logCount);
+    }
+
+    // WP-3 Phase 1: one AppException case, mapped by Kind. A new failure needs a
+    // reason code and a Kind, not a new switch case — these four rows are the
+    // whole contract WP-4's booking rejections will arrive through.
+    [Theory]
+    [InlineData(ErrorKind.Validation, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorKind.Unauthorized, StatusCodes.Status401Unauthorized)]
+    [InlineData(ErrorKind.NotFound, StatusCodes.Status404NotFound)]
+    [InlineData(ErrorKind.Conflict, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorKind.RuleViolation, StatusCodes.Status422UnprocessableEntity)]
+    public async Task TryHandleAsync_AppException_MapsKindToStatusCode(ErrorKind kind, int expectedStatusCode)
+    {
+        var exception = new AppException(kind, "SomeReasonCode", "internal detail");
+
+        var (handled, statusCode, body, _) = await InvokeAsync(exception);
+
+        Assert.True(handled);
+        Assert.Equal(expectedStatusCode, statusCode);
+        Assert.Equal("SomeReasonCode", body.GetProperty("reasonCode").GetString());
+    }
+
+    // The message is the log's, not the client's — for every Kind, not just
+    // authentication. Nothing in AppException decides what is safe to disclose,
+    // so nothing is disclosed.
+    [Theory]
+    [InlineData(ErrorKind.NotFound)]
+    [InlineData(ErrorKind.Conflict)]
+    [InlineData(ErrorKind.RuleViolation)]
+    public async Task TryHandleAsync_AppException_DoesNotLeakTheExceptionMessage(ErrorKind kind)
+    {
+        var exception = new AppException(kind, "SomeReasonCode", "resource 4f2c belongs to org globex");
+
+        var (_, _, body, _) = await InvokeAsync(exception);
+
+        Assert.DoesNotContain("globex", body.ToString());
+        Assert.DoesNotContain("4f2c", body.ToString());
+    }
+
+    // 4xx is the client's problem and logs at Warning; only a 5xx is the
+    // server's fault. A rule violation must not page anyone.
+    [Fact]
+    public async Task TryHandleAsync_AppException_LogsExactlyOnce()
+    {
+        var (_, _, _, logCount) = await InvokeAsync(
+            new AppException(ErrorKind.RuleViolation, "ResourceArchived", "resource is archived"));
 
         Assert.Equal(1, logCount);
     }

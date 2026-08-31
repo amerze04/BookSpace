@@ -169,8 +169,24 @@ Rule of thumb: PRD wording of "must never" belongs in tier 1–3. "Should"
 belongs in tier 4.
 
 Rejections return a machine-readable reason code, not just a message
-(FR-4.5): `SlotUnavailable`, `CapacityExceeded`, `OutsideAvailability`,
-`BlackoutPeriod`, `ResourceArchived`, `ApprovalRequired`.
+(FR-4.5). The catalogue is `ReasonCodes`
+(`BookSpace.Application/Common/Errors/`) — add a code there and here, never
+at a throw site as a literal. Authentication's five codes stay in
+`AuthenticationFailureReason` on purpose; see
+`docs/decisions/0016-error-contract-and-reason-codes.md`.
+
+Bookings (declared by FR-4.5, first thrown in WP-4): `SlotUnavailable`,
+`CapacityExceeded`, `OutsideAvailability`, `BlackoutPeriod`,
+`ResourceArchived`, `ApprovalRequired`.
+
+Resources and availability (WP-3): `ResourceNotFound`, `InvalidTimeZone`,
+`CapacityBelowExistingBookings`, `OverlappingAvailabilityWindow`,
+`ApproversRequired`, `ApproverNotEligible`.
+
+A code travels with the `ErrorKind` recorded beside it in `ReasonCodes`, so
+the same failure never arrives as a 404 from one handler and a 422 from
+another. `AppException(kind, reasonCode, message)` is how a handler raises
+one; the message is for the log only.
 
 ---
 
@@ -304,13 +320,27 @@ index; when a new decision doc is added, add its one-liner here too.
    response DTOs in the feature folder, sealed records, no domain entity on the
    wire, hand-written mapping, full-representation `PUT` for edits. Keyset
    paging was rejected — revisit only if an endpoint pages over `Bookings`.
+16. [`0016`](docs/decisions/0016-error-contract-and-reason-codes.md) — one error
+   contract: a handler rejects a request by throwing `AppException(kind,
+   reasonCode, message)`, and `GlobalExceptionHandler` maps `ErrorKind` —
+   Validation/Unauthorized/NotFound/Conflict/RuleViolation — onto
+   400/401/404/409/**422** once. A new failure needs a code and a kind, not a
+   new switch case, so WP-4's booking rejections need no further plumbing.
+   The exception **message never reaches the response** (log only); `Title` is
+   generic per kind and the reason code carries the meaning.
+   `AuthenticationException` is now an `AppException`, unchanged from outside.
+   Also holds the reason-code catalogue (`ReasonCodes`), §6's list in code, with
+   each code's kind beside it; authentication's five stay in
+   `AuthenticationFailureReason`, and a test proves every code is unique across
+   both files and matches its own member name.
 
 **Decided but not yet written up as numbered records** — three WP-3 decisions
 (D2–D4) were settled by the repo owner on 2026-08-28 before that package
 started, and live in `docs/wp3-plan.md` until the phase implementing each one
-lands and promotes it to the next free number (`0016`+, now that `0015` is
-taken): interval-plus-`remainingCapacity` slot semantics, DST handling for
-availability *ranges*, and a raw-SQL carve-out for seeding `Bookings` in
+lands and promotes it to the next free number (`0017`+, now that `0015` and
+`0016` are taken): interval-plus-`remainingCapacity` slot semantics, DST
+handling for availability *ranges*, and a raw-SQL carve-out for seeding
+`Bookings` in
 integration tests. Treat them as settled, not open. D1 was promoted to `0014`
 above when WP-3 Phase 1 landed.
 
@@ -684,9 +714,12 @@ Plan and settled decisions: `docs/wp3-plan.md`.
       DTO conventions landed with Phase 1 (offset paging with a total count,
       `PagedResult<T>`, the `sort` whitelist, and the DTO rules WP-2 had only
       implicitly: [`0015`](docs/decisions/0015-api-contract-and-pagination.md)).
-      Left unchecked: the error-contract work (generalized domain-exception
-      mapping + the WP-3 reason-code catalogue) is still to come, and the
-      concrete per-endpoint DTOs land with the phase that owns each endpoint.
+      The error contract landed too: `AppException` + `ErrorKind` mapped to
+      status codes once, and the `ReasonCodes` catalogue behind §6's list
+      ([`0016`](docs/decisions/0016-error-contract-and-reason-codes.md)).
+      Left unchecked: the concrete per-endpoint DTOs, which land with the
+      phase that owns each endpoint — nothing here has a caller until
+      Phase 2.
 
 Acceptance criteria (source doc):
 - [ ] An admin can publish a resource with availability and blackout rules.
@@ -700,7 +733,8 @@ approved by the repo owner on 2026-08-28 before any code was written:
 
 1. **API contract foundations** — tenant-scope the child tables (D1),
    pagination + DTO conventions, error contracts, WP-3 reason codes.
-   *In progress.* Delivered so far: the D1 child-table scoping, in three
+   **Done 2026-08-31**, in six reviewable steps. Delivered: the D1
+   child-table scoping, in three
    steps — domain (`OrgId` + `ITenantOwned` on both entities,
    `Resource.AddAvailabilityWindow` now the only creator of an
    `AvailabilityWindow`), persistence (query filters, composite same-org FKs,
@@ -710,8 +744,14 @@ approved by the repo owner on 2026-08-28 before any code was written:
    doc); and pagination + the DTO conventions (`PagedResult<T>`, `IPagedQuery`,
    `PagingDefaults`, `SortOption`, `PagedQueryRules`, `ToPagedResultAsync`,
    decision `0015`) — unit-tested but with no consumer until Phase 2's
-   `GET /resources`. Still to come in this phase: the generalized
-   domain-exception mapping, and the WP-3 reason-code catalogue.
+   `GET /resources`; and the error contract (`AppException` + `ErrorKind`,
+   mapped to status codes once in `GlobalExceptionHandler`, decision `0016`),
+   which fills in the extension point WP-2 left there; and the reason-code
+   catalogue (`ReasonCodes` + §6's list, kinds recorded per code, decision
+   `0016`'s catalogue section). 277 unit + 70 integration tests pass.
+   Nothing in the phase is consumed by an endpoint yet — Phase 2 is the first
+   caller of all of it, which is the accepted cost of building the contract
+   before the endpoints.
 2. **Resource CRUD** — FR-3.1/FR-3.5.
 3. **Availability windows + approvers** — FR-3.2/FR-3.3.
 4. **Blackout periods** — FR-3.4 plus decision `0001`'s cancellation cascade.

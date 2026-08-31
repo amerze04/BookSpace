@@ -96,9 +96,15 @@ how the inconsistency the AC forbids gets in.
    beside the existing `ValidationException` and `AuthenticationException`
    cases. WP-3 supplies the first real callers; §6's booking reason codes then
    slot into the same mechanism in WP-4 with no further plumbing.
+   **Done 2026-08-31** — `AppException` carries an `ErrorKind`, and
+   `GlobalExceptionHandler` maps kind to status once; decision `0016`.
 4. **Reason-code catalogue for WP-3**, extending `CLAUDE.md` §6's list.
    `ResourceArchived` and `BlackoutPeriod` are already there; resource-not-
    found, approver-not-in-tenant, and invalid-timezone are new.
+   **Done 2026-08-31** — `ReasonCodes` holds all twelve with their kinds; the
+   approver code shipped as `ApproverNotEligible` rather than
+   `ApproverNotInTenant`, so it cannot confirm a cross-tenant id exists
+   (reasoning in decision `0016`).
 
 ### Phase 2 — Resource CRUD (FR-3.1, FR-3.5)
 
