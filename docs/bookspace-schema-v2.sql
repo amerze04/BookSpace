@@ -173,15 +173,21 @@ CREATE TABLE ResourceApprovers (
 );
 
 -- FR-3.2 recurring open hours, resource-local wall clock (FR-6.3)
+-- OrgId is denormalized from the owning resource so this table falls inside all
+-- three CLAUDE.md 4.2 isolation mechanisms rather than being reachable by
+-- ResourceId alone -- see docs/decisions/0014-child-table-tenant-scoping.md,
+-- which follows the precedent of 0006.
 CREATE TABLE AvailabilityWindows (
     Id         UNIQUEIDENTIFIER NOT NULL,
+    OrgId      UNIQUEIDENTIFIER NOT NULL,
     ResourceId UNIQUEIDENTIFIER NOT NULL,
     Weekday    TINYINT          NOT NULL,
     OpensAt    TIME(0)          NOT NULL,
     ClosesAt   TIME(0)          NOT NULL,
     CONSTRAINT PK_AvailabilityWindows PRIMARY KEY (Id),
-    CONSTRAINT FK_AvailabilityWindows_Resources FOREIGN KEY (ResourceId)
-        REFERENCES Resources (Id) ON DELETE CASCADE,
+    -- composite FK: a window cannot reference another tenant's resource
+    CONSTRAINT FK_AvailabilityWindows_Resources_SameOrg FOREIGN KEY (OrgId, ResourceId)
+        REFERENCES Resources (OrgId, Id) ON DELETE CASCADE,
     CONSTRAINT CK_AvailabilityWindows_Weekday CHECK (Weekday BETWEEN 0 AND 6),
     CONSTRAINT CK_AvailabilityWindows_Window CHECK (ClosesAt > OpensAt)
 );
@@ -189,8 +195,11 @@ CREATE TABLE AvailabilityWindows (
 -- FR-3.4 blackouts override availability; absolute instants
 -- Decision #1 (docs/decisions/0001-blackout-vs-recurring-series.md): blackouts
 -- have absolute priority — occurrences they overlap get cancelled, booker notified
+-- OrgId denormalized from the owning resource, as on AvailabilityWindows above
+-- (docs/decisions/0014-child-table-tenant-scoping.md).
 CREATE TABLE BlackoutPeriods (
     Id              UNIQUEIDENTIFIER NOT NULL,
+    OrgId           UNIQUEIDENTIFIER NOT NULL,
     ResourceId      UNIQUEIDENTIFIER NOT NULL,
     StartsAtUtc     DATETIME2(0)     NOT NULL,
     EndsAtUtc       DATETIME2(0)     NOT NULL,
@@ -200,8 +209,9 @@ CREATE TABLE BlackoutPeriods (
     UpdatedAtUtc    DATETIME2(0)     NOT NULL,
     UpdatedByUserId UNIQUEIDENTIFIER NULL,
     CONSTRAINT PK_BlackoutPeriods PRIMARY KEY (Id),
-    CONSTRAINT FK_BlackoutPeriods_Resources FOREIGN KEY (ResourceId)
-        REFERENCES Resources (Id) ON DELETE CASCADE,
+    -- composite FK: a blackout cannot reference another tenant's resource
+    CONSTRAINT FK_BlackoutPeriods_Resources_SameOrg FOREIGN KEY (OrgId, ResourceId)
+        REFERENCES Resources (OrgId, Id) ON DELETE CASCADE,
     CONSTRAINT FK_BlackoutPeriods_CreatedBy FOREIGN KEY (CreatedByUserId)
         REFERENCES Users (Id),
     CONSTRAINT FK_BlackoutPeriods_UpdatedBy FOREIGN KEY (UpdatedByUserId)
@@ -413,6 +423,13 @@ CREATE INDEX IX_RefreshTokens_Family
 
 CREATE INDEX IX_BlackoutPeriods_Resource_Start
     ON BlackoutPeriods (ResourceId, StartsAtUtc);
+
+-- Serve the composite tenant FKs added by decision 0014.
+CREATE INDEX IX_AvailabilityWindows_OrgId_ResourceId
+    ON AvailabilityWindows (OrgId, ResourceId);
+
+CREATE INDEX IX_BlackoutPeriods_OrgId_ResourceId
+    ON BlackoutPeriods (OrgId, ResourceId);
 
 -- FR-7.2 approver queue
 CREATE INDEX IX_ApprovalRequests_Pending

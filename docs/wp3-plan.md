@@ -78,9 +78,18 @@ how the inconsistency the AC forbids gets in.
    `AvailabilityWindows` and `BlackoutPeriods`, implement `ITenantOwned` on
    both, add them to the global query filters and to the RLS security policy.
    New migration. Update `CLAUDE.md` §4.2's mechanism list (it currently names
-   only `Users`, `Resources`, `Bookings`) once this lands.
-2. **Pagination.** A shared paged-result envelope plus paging/sorting query
-   parameters. Nothing paginated exists in the codebase yet.
+   only `Users`, `Resources`, `Bookings`) once this lands. **Done 2026-08-31**
+   — see decision `0014`.
+2. **Pagination and DTO conventions.** A shared paged-result envelope plus
+   paging/sorting query parameters — nothing paginated exists in the codebase
+   yet. The WP's "clean DTOs" item lands here as the *convention* (where
+   request/response types live, records not classes, domain entities never on
+   the wire, how an edit payload distinguishes "not supplied" from "set to
+   null", hand-written mapping); the concrete per-endpoint DTOs belong to the
+   phase that owns each endpoint, since they cannot be designed before the
+   endpoint is. Folded in at the owner's request on 2026-08-31, after the
+   original plan left "DTOs" implicit. **Done 2026-08-31** — the owner chose
+   offset paging with a total count; written up as decision `0015`.
 3. **Error contracts.** Fill in the extension point deliberately left in
    `GlobalExceptionHandler.Map(...)` during WP-2, generalizing it into a
    domain-exception → reason-code mapping rather than adding a third one-off
@@ -175,6 +184,13 @@ Taken by the repo owner on 2026-08-28, in response to this plan. To be written
 up as numbered records as the implementing phase lands.
 
 ### D1 — `AvailabilityWindows` and `BlackoutPeriods` get their own `OrgId`
+
+**Implemented 2026-08-31 and promoted to
+[`docs/decisions/0014-child-table-tenant-scoping.md`](decisions/0014-child-table-tenant-scoping.md)**,
+which is now the authoritative record — including the migration details this
+plan could not have anticipated (nullable-add-then-backfill, and switching the
+RLS policy off around the backfill because the migration's own connection
+cannot grant itself a bypass).
 
 **Decided: denormalize.** Add `OrgId` to both tables, implement `ITenantOwned`,
 extend the global query filters and the RLS policy to cover them.

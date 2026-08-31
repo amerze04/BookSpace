@@ -92,10 +92,12 @@ request was made (FR-7.5, AC-5).
 FR-1.2 requires isolation that cannot be bypassed by forgetting a filter.
 Three mechanisms, all required:
 
-- Global query filters on `Users`, `Resources`, `Bookings` in `OnModelCreating`
+- Global query filters on `Users`, `Resources`, `Bookings`,
+  `AvailabilityWindows`, `BlackoutPeriods` in `OnModelCreating`
 - `OrgId` set in `SaveChangesAsync` for added `ITenantOwned` entities
 - SQL Server row-level security via a connection interceptor calling
-  `sp_set_session_context`
+  `sp_set_session_context`, with `Security.TenantAccessPolicy` covering the
+  same five tables
 
 Use `FirstOrDefaultAsync`, not `DbSet.Find()` — `Find` returns tracked entities
 without querying and bypasses query filters. `IgnoreQueryFilters()` is allowed
@@ -283,14 +285,34 @@ index; when a new decision doc is added, add its one-liner here too.
    property has no setter to "stamp." RLS gets its own explicit bypass signal
    (`TenantBypassScope` + a `TenantInit`/`TenantBypass` session-context pair)
    rather than treating an unset session as "allow all."
+14. [`0014`](docs/decisions/0014-child-table-tenant-scoping.md) — `AvailabilityWindows`
+   and `BlackoutPeriods` carry their own `OrgId` and fall inside all three
+   §4.2 mechanisms, instead of being reached by `ResourceId` alone. Composite
+   FKs against `UQ_Resources_Org_Id` make the denormalized value unable to
+   disagree with its resource's — decision `0006`'s technique, reapplied.
+   `AvailabilityWindow`'s constructor is `internal`, so `Resource` is its only
+   creator; `BlackoutPeriod`'s stays public because it sits outside that
+   aggregate. **Promoted from WP-3's D1** when Phase 1 landed.
+15. [`0015`](docs/decisions/0015-api-contract-and-pagination.md) — API contract
+   conventions: **offset pagination with a total count** (`page`/`pageSize`/
+   `sort` in, `PagedResult<T>` out), page size default 20 and maximum 100
+   **rejected rather than clamped**, `sort=field` / `-field` against a
+   per-endpoint whitelist, and every paged query ordered by a unique column —
+   `ToPagedResultAsync` throws on an unordered query, since offset paging over
+   one silently returns undefined pages. Also writes down the DTO rules WP-2
+   followed implicitly: request records in the controller, commands/queries and
+   response DTOs in the feature folder, sealed records, no domain entity on the
+   wire, hand-written mapping, full-representation `PUT` for edits. Keyset
+   paging was rejected — revisit only if an endpoint pages over `Bookings`.
 
-**Decided but not yet written up as numbered records** — four WP-3 decisions
-(D1–D4) were settled by the repo owner on 2026-08-28 before that package
+**Decided but not yet written up as numbered records** — three WP-3 decisions
+(D2–D4) were settled by the repo owner on 2026-08-28 before that package
 started, and live in `docs/wp3-plan.md` until the phase implementing each one
-lands and promotes it to `0014`+: child-table `OrgId` denormalization,
-interval-plus-`remainingCapacity` slot semantics, DST handling for
+lands and promotes it to the next free number (`0016`+, now that `0015` is
+taken): interval-plus-`remainingCapacity` slot semantics, DST handling for
 availability *ranges*, and a raw-SQL carve-out for seeding `Bookings` in
-integration tests. Treat them as settled, not open.
+integration tests. Treat them as settled, not open. D1 was promoted to `0014`
+above when WP-3 Phase 1 landed.
 
 **Still open** — flag before building the affected feature, don't decide
 silently: the DST **fall-back** case (clocks go back, a local time occurs
@@ -647,7 +669,7 @@ implemented, covered by 257 automated tests (192 unit, 65 integration against
 real SQL Server), and the login/rotation/reuse-detection paths additionally
 verified by hand against a running instance.
 
-### WP-3 — Resources & Availability API — **Planned, not started**
+### WP-3 — Resources & Availability API — **In progress**
 Source doc: `docs/Work Packages - Week 3.pdf` (weeks 2–3, backend track).
 Plan and settled decisions: `docs/wp3-plan.md`.
 
@@ -658,7 +680,13 @@ Plan and settled decisions: `docs/wp3-plan.md`.
 - [ ] Mark resources `RequiresApproval` and assign approvers. FR-3.3.
 - [ ] Build an availability query: given a resource and date range, return
       bookable slots.
-- [ ] Design clean DTOs, error contracts, and pagination.
+- [ ] Design clean DTOs, error contracts, and pagination — pagination and the
+      DTO conventions landed with Phase 1 (offset paging with a total count,
+      `PagedResult<T>`, the `sort` whitelist, and the DTO rules WP-2 had only
+      implicitly: [`0015`](docs/decisions/0015-api-contract-and-pagination.md)).
+      Left unchecked: the error-contract work (generalized domain-exception
+      mapping + the WP-3 reason-code catalogue) is still to come, and the
+      concrete per-endpoint DTOs land with the phase that owns each endpoint.
 
 Acceptance criteria (source doc):
 - [ ] An admin can publish a resource with availability and blackout rules.
@@ -671,20 +699,33 @@ Planned phasing — detail and reasoning in `docs/wp3-plan.md`, which was
 approved by the repo owner on 2026-08-28 before any code was written:
 
 1. **API contract foundations** — tenant-scope the child tables (D1),
-   pagination, error contracts, WP-3 reason codes.
+   pagination + DTO conventions, error contracts, WP-3 reason codes.
+   *In progress.* Delivered so far: the D1 child-table scoping, in three
+   steps — domain (`OrgId` + `ITenantOwned` on both entities,
+   `Resource.AddAvailabilityWindow` now the only creator of an
+   `AvailabilityWindow`), persistence (query filters, composite same-org FKs,
+   the `AddChildTableTenantScoping` migration applied to the dev database and
+   its `Down` verified by an actual revert/re-apply, RLS predicates for both
+   tables), and documentation (this list, §4.2, decision `0014`, the schema
+   doc); and pagination + the DTO conventions (`PagedResult<T>`, `IPagedQuery`,
+   `PagingDefaults`, `SortOption`, `PagedQueryRules`, `ToPagedResultAsync`,
+   decision `0015`) — unit-tested but with no consumer until Phase 2's
+   `GET /resources`. Still to come in this phase: the generalized
+   domain-exception mapping, and the WP-3 reason-code catalogue.
 2. **Resource CRUD** — FR-3.1/FR-3.5.
 3. **Availability windows + approvers** — FR-3.2/FR-3.3.
 4. **Blackout periods** — FR-3.4 plus decision `0001`'s cancellation cascade.
 5. **The availability query** — consumes all of the above; final AC sweep.
 
 **Four decisions were settled up front** (`docs/wp3-plan.md`), to be written
-up as numbered records 0014+ as each implementing phase lands:
+up as numbered records 0014+ as each implementing phase lands (D1 is done —
+see `0014`):
 - **D1** — `AvailabilityWindows` and `BlackoutPeriods` get their own `OrgId`,
-  `ITenantOwned`, query filters and RLS coverage. They are currently outside
-  **all three** §4.2 mechanisms, which makes a cross-tenant read the *natural*
-  way to write a child-entity handler. Follows decision `0006`'s precedent.
-  **§4.2's mechanism list must be updated when this migration lands** — it
-  presently names only `Users`, `Resources`, `Bookings`.
+  `ITenantOwned`, query filters and RLS coverage. They were outside **all
+  three** §4.2 mechanisms, which made a cross-tenant read the *natural* way to
+  write a child-entity handler. Follows decision `0006`'s precedent.
+  **Landed 2026-08-31, promoted to [`0014`](docs/decisions/0014-child-table-tenant-scoping.md)**;
+  §4.2's mechanism list and `docs/bookspace-schema-v2.sql` are updated to match.
 - **D2** — a "bookable slot" is a free/busy interval carrying
   `remainingCapacity`, not a fixed grid; forced by decision `0005`'s
   concurrent-units capacity model.
