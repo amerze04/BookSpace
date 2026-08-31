@@ -123,6 +123,44 @@ The aggregate root everything else hangs off.
 - Archiving already exists on the entity. There is no `Unarchive`, and the PRD
   does not ask for one; not adding it.
 
+#### Step split (agreed with the owner on 2026-08-31, before Phase 2 started)
+
+Four steps, at the owner's request that this phase be shorter than Phase 1's
+six. Each is built and handed back for review on its own, per the delivery
+style above.
+
+1. **Domain mutators.** `Resource` gains methods for name/description/type,
+   capacity, timezone, durations, and the `RequiresApproval` flag, each keeping
+   the invariants that belong in the entity (capacity > 0, non-blank name) and
+   touching the audit columns. Unit tests only — no EF, no HTTP, no endpoint
+   yet.
+2. **The read side.** `GET /resources` (paginated) and `GET /resources/{id}`:
+   query + validator + handler + response DTO + controller on the
+   `TenantMember` policy, with integration tests through the real pipeline.
+3. **The write side.** `POST /resources` and `PUT /resources/{id}` on
+   `TenantAdmin`. First throwers for `InvalidTimeZone`, `ApproversRequired` and
+   `CapacityBelowExistingBookings` (decision `0016`'s catalogue).
+4. **Archive plus the AC sweep.** The archive endpoint, then the cross-cutting
+   assertions: a non-admin write refused, another tenant's real id returning
+   404, and each reason code producing the right status over real HTTP. Roadmap
+   and doc updates land here.
+
+**Why the read side comes before the write side.** Nothing built in Phase 1 has
+a caller yet — the pagination envelope, the `sort` whitelist and the error
+contract are all covered by unit tests against synthetic input. Step 2 puts a
+real consumer in front of all three at the earliest possible point, so an
+awkward envelope or a wrong status code surfaces with one endpoint built on it
+rather than four. It also means there is something worth pointing Postman at
+one step sooner.
+
+Step 3's `CapacityBelowExistingBookings` check needs `Bookings` rows to be
+testable, and no booking write path exists (CLAUDE.md §4.1). It is therefore
+the first real user of decision **D4**'s raw-SQL fixture carve-out; expect that
+decision to be promoted to a numbered record when this step lands.
+
+Manual verification in Postman begins once these four steps are done — see
+"Manual verification with Postman" below.
+
 ### Phase 3 — Availability windows and approvers (FR-3.2, FR-3.3)
 
 Grouped because they are the same shape of problem: a child collection managed
@@ -181,6 +219,78 @@ The final AC sweep lands here: publishing a resource with rules end-to-end,
 the query excluding blackouts and bookings, non-admin writes rejected, and
 structured errors throughout. Per-phase tests are written inside each phase;
 this is the cross-cutting pass.
+
+---
+
+## Manual verification with Postman (from the end of Phase 2)
+
+Agreed with the owner on 2026-08-31: once Phase 2 lands there are real
+endpoints, and the owner will exercise them by hand in Postman **in addition
+to** the unit and integration tests, not instead of them. Phase 1's contract
+(the paged envelope, the error shapes) has no consumer until then, so a human
+hitting live endpoints is the first honest test of whether it is pleasant to
+consume.
+
+The API already serves an OpenAPI document in Development
+(`Program.cs` calls `AddOpenApi()`/`MapOpenApi()`), so
+`GET http://localhost:5270/openapi/v1.json` can be imported straight into
+Postman rather than hand-building every request. Endpoints appear in it as they
+are written.
+
+- URLs: `http://localhost:5270`, or `https://localhost:7079` (the dev
+  certificate will need SSL verification turned off for that environment).
+- Seeded accounts, all with password `Passw0rd!` (`SeedData.SeedPassword`,
+  development only):
+
+  | Email | Role | Use for |
+  |---|---|---|
+  | `admin@acme.test` | TenantAdmin | create / edit / archive resources |
+  | `member1@acme.test` | Member | reads, and proving a non-admin write is refused |
+  | `approver@acme.test` | Approver | Phase 3's approver assignment |
+  | `admin@globex.test` | TenantAdmin | the second tenant, for cross-tenant checks |
+  | `sysadmin@bookspace.local` | SysAdmin | *not* the resource endpoints — see below |
+
+### Three behaviours that look like bugs and are not
+
+1. **A SysAdmin token gets 403 on resource endpoints.** The `TenantMember`
+   policy requires an `orgId` claim, and decision `0012` deliberately omits
+   that claim for a SysAdmin (PRD §2: the Platform Operator must never see
+   tenant booking content in routine operation). Use `admin@acme.test`.
+2. **Re-sending an already-rotated refresh token kills the whole token
+   family** (decision `0011`), so the next call fails with 401
+   `RefreshTokenReuseDetected`. That is the feature working; in Postman, where
+   re-sending an old request is one click, it reads as a random 401. Log in
+   again. Access tokens last 15 minutes.
+3. **403 and 422 come from different layers.** A non-admin write is refused by
+   the authorization policy — a plain 403 with no reason code. A rule refusal
+   comes from a handler as 422 with a `reasonCode` (decision `0016`). Both are
+   correct; which one you get tells you whether you are testing RBAC or the
+   domain.
+
+### Two checks worth doing deliberately
+
+These are the acceptance criteria a demo turns on, and both are easier to be
+convinced by from a client than from a test log:
+
+- Log in as `member1@acme.test` and request a **real** Globex resource id.
+  Expect 404 with no hint the id exists anywhere (AC-4).
+- Attempt `POST /resources` as `member1@acme.test`. Expect 403 — the WP-3 AC
+  "non-admins cannot create or edit resources".
+
+Setting an `X-Correlation-Id` header on requests makes the console output
+readable while poking around: it comes back on the response and tags every
+Serilog line for that request.
+
+### What Postman does not cover
+
+The automated suite stays the source of truth for the things a client cannot
+prove: concurrency (AC-1), RLS enforcement at the database level with no EF
+involved, and job idempotence (AC-6). Postman is for response shapes, error
+contracts and demonstration — a different job, not a substitute.
+
+**Open, for the owner to decide:** whether the collection is committed
+(`docs/postman/`, plus an environment file and a README section) or kept local.
+It is not part of the work package either way.
 
 ---
 

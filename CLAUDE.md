@@ -752,7 +752,12 @@ approved by the repo owner on 2026-08-28 before any code was written:
    Nothing in the phase is consumed by an endpoint yet — Phase 2 is the first
    caller of all of it, which is the accepted cost of building the contract
    before the endpoints.
-2. **Resource CRUD** — FR-3.1/FR-3.5.
+2. **Resource CRUD** — FR-3.1/FR-3.5. Split into four steps in
+   `docs/wp3-plan.md` (domain mutators — reads — writes — archive + AC
+   sweep), reads deliberately before writes so Phase 1's contract gets a real
+   consumer early. Manual Postman verification of the live endpoints starts
+   once this phase lands; the same doc records the seeded accounts and the
+   three behaviours that look like bugs and are not.
 3. **Availability windows + approvers** — FR-3.2/FR-3.3.
 4. **Blackout periods** — FR-3.4 plus decision `0001`'s cancellation cascade.
 5. **The availability query** — consumes all of the above; final AC sweep.

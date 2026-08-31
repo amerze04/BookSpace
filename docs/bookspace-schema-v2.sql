@@ -158,7 +158,18 @@ CREATE TABLE Resources (
         REFERENCES Users (Id),
     CONSTRAINT FK_Resources_UpdatedBy FOREIGN KEY (UpdatedByUserId)
         REFERENCES Users (Id),
-    CONSTRAINT CK_Resources_Capacity CHECK (Capacity > 0)
+    CONSTRAINT CK_Resources_Capacity CHECK (Capacity > 0),
+    -- interval sanity on the duration bounds, added by WP-3 Phase 2 (migration
+    -- AddResourceDurationLimitsCheck). NULL means "no limit" on either column,
+    -- so each clause admits NULL explicitly. Mirrored by
+    -- Resource.ValidateDurationLimits in Domain, which is where the API-facing
+    -- message comes from; this is the floor under it.
+    CONSTRAINT CK_Resources_DurationLimits CHECK (
+        (MinDurationMinutes IS NULL OR MinDurationMinutes > 0)
+        AND (MaxDurationMinutes IS NULL OR MaxDurationMinutes > 0)
+        AND (MinDurationMinutes IS NULL OR MaxDurationMinutes IS NULL
+             OR MaxDurationMinutes >= MinDurationMinutes)
+    )
 );
 
 -- FR-3.3 one or more assigned approvers per resource

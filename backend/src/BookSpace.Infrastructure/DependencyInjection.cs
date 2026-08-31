@@ -44,6 +44,7 @@ public static class DependencyInjection
         // Scoped: these hold the request's DbContext.
         services.AddScoped<IAuthenticationUserRepository, AuthenticationUserRepository>();
         services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
+        services.AddScoped<IResourceRepository, ResourceRepository>();
 
         return services;
     }

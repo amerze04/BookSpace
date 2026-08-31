@@ -8,8 +8,24 @@ internal sealed class ResourceConfiguration : IEntityTypeConfiguration<Resource>
 {
     public void Configure(EntityTypeBuilder<Resource> builder)
     {
-        builder.ToTable("Resources", t => t.HasCheckConstraint(
-            "CK_Resources_Capacity", "[Capacity] > 0"));
+        builder.ToTable("Resources", t =>
+        {
+            t.HasCheckConstraint("CK_Resources_Capacity", "[Capacity] > 0");
+            // Interval sanity on the duration bounds — tier 1 under CLAUDE.md
+            // §6, beside CK_AvailabilityWindows_Window and CK_Bookings_Interval.
+            // Both columns are nullable and NULL means "no limit", so every
+            // clause admits NULL explicitly rather than relying on a comparison
+            // against NULL evaluating to UNKNOWN (which a CHECK constraint
+            // passes). Mirrored by Resource.ValidateDurationLimits in Domain,
+            // which is where the API-facing message comes from; this is the
+            // floor under it.
+            t.HasCheckConstraint(
+                "CK_Resources_DurationLimits",
+                "([MinDurationMinutes] IS NULL OR [MinDurationMinutes] > 0) " +
+                "AND ([MaxDurationMinutes] IS NULL OR [MaxDurationMinutes] > 0) " +
+                "AND ([MinDurationMinutes] IS NULL OR [MaxDurationMinutes] IS NULL " +
+                "OR [MaxDurationMinutes] >= [MinDurationMinutes])");
+        });
         builder.HasKey(r => r.Id).HasName("PK_Resources");
         // Alternate key: target of Bookings' composite tenant FK (Decision #6).
         builder.HasAlternateKey(r => new { r.OrgId, r.Id }).HasName("UQ_Resources_Org_Id");
