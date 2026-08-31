@@ -89,6 +89,65 @@ public class TenantOwnershipValidationTests
         await Assert.ThrowsAsync<TenantIsolationViolationException>(() => readerContext.SaveChangesAsync());
     }
 
+    // WP-3 decision D1: AvailabilityWindows and BlackoutPeriods became
+    // ITenantOwned in this step, so mechanism 2 now covers them as well.
+    [Fact]
+    public async Task SaveChanges_AddedAvailabilityWindowMatchingCurrentTenant_Succeeds()
+    {
+        var orgId = Guid.NewGuid();
+        var actorId = Guid.NewGuid();
+        await using var context = CreateContext(Guid.NewGuid().ToString(), orgId);
+
+        var resource = NewResource(orgId, actorId);
+        resource.AddAvailabilityWindow(
+            Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), actorId, Now);
+        context.Resources.Add(resource);
+
+        await context.SaveChangesAsync();
+
+        Assert.Equal(1, await context.AvailabilityWindows.CountAsync());
+    }
+
+    // A window's OrgId can only come from its resource
+    // (Resource.AddAvailabilityWindow is its only creator), so the way it goes
+    // wrong is a resource belonging to another tenant. Only the window is
+    // tracked here — it has no navigation back to Resource — which keeps the
+    // entity the guard reports deterministic.
+    [Fact]
+    public async Task SaveChanges_AddedAvailabilityWindowUnderAnotherTenant_Throws()
+    {
+        var currentOrgId = Guid.NewGuid();
+        var otherOrgId = Guid.NewGuid();
+        var actorId = Guid.NewGuid();
+        await using var context = CreateContext(Guid.NewGuid().ToString(), currentOrgId);
+
+        var foreignResource = NewResource(otherOrgId, actorId);
+        var window = foreignResource.AddAvailabilityWindow(
+            Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), actorId, Now);
+        context.AvailabilityWindows.Add(window);
+
+        var exception = await Assert.ThrowsAsync<TenantIsolationViolationException>(() => context.SaveChangesAsync());
+        Assert.Equal(otherOrgId, exception.EntityOrgId);
+        Assert.Equal(currentOrgId, exception.CurrentTenantOrgId);
+    }
+
+    [Fact]
+    public async Task SaveChanges_AddedBlackoutPeriodUnderAnotherTenant_Throws()
+    {
+        var currentOrgId = Guid.NewGuid();
+        var otherOrgId = Guid.NewGuid();
+        var actorId = Guid.NewGuid();
+        await using var context = CreateContext(Guid.NewGuid().ToString(), currentOrgId);
+
+        context.BlackoutPeriods.Add(new BlackoutPeriod(
+            Guid.NewGuid(), otherOrgId, Guid.NewGuid(),
+            Now.AddDays(1), Now.AddDays(2), "Maintenance", actorId, Now));
+
+        var exception = await Assert.ThrowsAsync<TenantIsolationViolationException>(() => context.SaveChangesAsync());
+        Assert.Equal(otherOrgId, exception.EntityOrgId);
+        Assert.Equal(currentOrgId, exception.CurrentTenantOrgId);
+    }
+
     private static BookSpaceDbContext CreateContext(string databaseName, Guid? currentTenantOrgId)
     {
         var options = new DbContextOptionsBuilder<BookSpaceDbContext>()

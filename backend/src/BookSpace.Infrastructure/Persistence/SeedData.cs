@@ -111,7 +111,7 @@ public static class SeedData
         context.Resources.Add(approvedResource);
 
         var blackout = new BlackoutPeriod(
-            Guid.NewGuid(), openResource.Id,
+            Guid.NewGuid(), openResource.OrgId, openResource.Id,
             startsAtUtc: new DateTime(2026, 12, 25, 0, 0, 0, DateTimeKind.Utc),
             endsAtUtc: new DateTime(2026, 12, 26, 0, 0, 0, DateTimeKind.Utc),
             reason: "Public holiday", createdByUserId: tenantAdmin.Id, nowUtc: now);
@@ -141,8 +141,7 @@ public static class SeedData
         foreach (var weekday in weekdays)
         {
             resource.AddAvailabilityWindow(
-                new AvailabilityWindow(Guid.NewGuid(), resource.Id, weekday, new TimeOnly(9, 0), new TimeOnly(17, 0)),
-                actorUserId, now);
+                Guid.NewGuid(), weekday, new TimeOnly(9, 0), new TimeOnly(17, 0), actorUserId, now);
         }
     }
 }

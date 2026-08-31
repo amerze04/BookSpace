@@ -101,9 +101,9 @@ public class ResourceTests
     public void AddAvailabilityWindow_AddsWindow()
     {
         var resource = CreateValid();
-        var window = new AvailabilityWindow(Guid.NewGuid(), resource.Id, DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0));
 
-        resource.AddAvailabilityWindow(window, ActorId, NowUtc);
+        var window = resource.AddAvailabilityWindow(
+            Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), ActorId, NowUtc);
 
         Assert.Contains(window, resource.AvailabilityWindows);
     }
@@ -112,8 +112,8 @@ public class ResourceTests
     public void RemoveAvailabilityWindow_RemovesById()
     {
         var resource = CreateValid();
-        var window = new AvailabilityWindow(Guid.NewGuid(), resource.Id, DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0));
-        resource.AddAvailabilityWindow(window, ActorId, NowUtc);
+        var window = resource.AddAvailabilityWindow(
+            Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), ActorId, NowUtc);
 
         resource.RemoveAvailabilityWindow(window.Id, ActorId, NowUtc.AddMinutes(1));
 

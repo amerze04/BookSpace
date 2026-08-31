@@ -12,6 +12,7 @@ internal sealed class BlackoutPeriodConfiguration : IEntityTypeConfiguration<Bla
             "CK_BlackoutPeriods_Interval", "[EndsAtUtc] > [StartsAtUtc]"));
         builder.HasKey(b => b.Id).HasName("PK_BlackoutPeriods");
 
+        builder.Property(b => b.OrgId).IsRequired();
         builder.Property(b => b.Reason).HasMaxLength(300);
         builder.Property(b => b.StartsAtUtc).IsRequired();
         builder.Property(b => b.EndsAtUtc).IsRequired();
@@ -20,9 +21,14 @@ internal sealed class BlackoutPeriodConfiguration : IEntityTypeConfiguration<Bla
         builder.Property(b => b.CreatedByUserId).IsRequired();
         builder.Property(b => b.UpdatedAtUtc).IsRequired();
 
+        // WP-3 decision D1, same technique as FK_Bookings_Resources_SameOrg
+        // (docs/decisions/0006): the composite FK against Resources' (OrgId, Id)
+        // alternate key is what makes a blackout's denormalized OrgId
+        // physically unable to disagree with its resource's.
         builder.HasOne<Resource>().WithMany()
-            .HasForeignKey(b => b.ResourceId)
-            .HasConstraintName("FK_BlackoutPeriods_Resources")
+            .HasForeignKey(b => new { b.OrgId, b.ResourceId })
+            .HasPrincipalKey(r => new { r.OrgId, r.Id })
+            .HasConstraintName("FK_BlackoutPeriods_Resources_SameOrg")
             .OnDelete(DeleteBehavior.Cascade);
 
         builder.HasOne<User>().WithMany()

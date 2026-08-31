@@ -31,17 +31,25 @@ public class BookSpaceDbContext : DbContext
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(BookSpaceDbContext).Assembly);
 
         // CLAUDE.md §4.2, mechanism 1: global query filters on Users, Resources,
-        // Bookings. The lambda captures _currentTenant (the instance, not a
-        // value) and EF re-evaluates it per query — the standard, documented
-        // EF Core multi-tenancy pattern. Nullable-Guid equality gets EF's
-        // null-safe translation for free, which gives the right fail-closed
-        // behavior with no extra code: with no tenant context
-        // (_currentTenant.OrgId == null), Resources/Bookings (OrgId NOT NULL)
-        // match zero rows, and Users matches only other OrgId-IS-NULL rows
-        // (SysAdmins) — never a real tenant's data.
+        // Bookings, AvailabilityWindows and BlackoutPeriods. The lambda
+        // captures _currentTenant (the instance, not a value) and EF
+        // re-evaluates it per query — the standard, documented EF Core
+        // multi-tenancy pattern. Nullable-Guid equality gets EF's null-safe
+        // translation for free, which gives the right fail-closed behavior
+        // with no extra code: with no tenant context (_currentTenant.OrgId ==
+        // null), the four OrgId-NOT-NULL entity types match zero rows, and
+        // Users matches only other OrgId-IS-NULL rows (SysAdmins) — never a
+        // real tenant's data.
         modelBuilder.Entity<User>().HasQueryFilter(u => u.OrgId == _currentTenant.OrgId);
         modelBuilder.Entity<Resource>().HasQueryFilter(r => r.OrgId == _currentTenant.OrgId);
         modelBuilder.Entity<Booking>().HasQueryFilter(b => b.OrgId == _currentTenant.OrgId);
+        // WP-3 decision D1: AvailabilityWindows and BlackoutPeriods were
+        // reachable by ResourceId alone until now, which made a cross-tenant
+        // read the natural way to write a child-entity handler. Their OrgId is
+        // NOT NULL and FK-bound to their resource's, so the same fail-closed
+        // behavior applies: no tenant context matches zero rows.
+        modelBuilder.Entity<AvailabilityWindow>().HasQueryFilter(w => w.OrgId == _currentTenant.OrgId);
+        modelBuilder.Entity<BlackoutPeriod>().HasQueryFilter(b => b.OrgId == _currentTenant.OrgId);
 
         // CLAUDE.md §4.3: every instant is datetime2(0)/time(0) — set once here
         // instead of a HasPrecision(0) call on every DateTime/TimeOnly property

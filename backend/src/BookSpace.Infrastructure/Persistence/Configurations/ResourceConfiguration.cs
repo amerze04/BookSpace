@@ -53,9 +53,14 @@ internal sealed class ResourceConfiguration : IEntityTypeConfiguration<Resource>
         // AvailabilityWindows IS a real entity (its own Id/table), so it's a
         // normal collection navigation — just needs field access since the
         // property only exposes an AsReadOnly() wrapper, never the list itself.
+        // The FK is composite ((OrgId, ResourceId) -> UQ_Resources_Org_Id) per
+        // WP-3 decision D1, so a window's denormalized OrgId cannot disagree
+        // with its resource's — the same technique decision 0006 used for
+        // FK_Bookings_Resources_SameOrg.
         builder.HasMany(r => r.AvailabilityWindows).WithOne()
-            .HasForeignKey(w => w.ResourceId)
-            .HasConstraintName("FK_AvailabilityWindows_Resources")
+            .HasForeignKey(w => new { w.OrgId, w.ResourceId })
+            .HasPrincipalKey(r => new { r.OrgId, r.Id })
+            .HasConstraintName("FK_AvailabilityWindows_Resources_SameOrg")
             .OnDelete(DeleteBehavior.Cascade);
         builder.Navigation(r => r.AvailabilityWindows)
             .UsePropertyAccessMode(PropertyAccessMode.Field);

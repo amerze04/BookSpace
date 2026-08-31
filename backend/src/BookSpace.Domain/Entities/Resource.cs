@@ -99,10 +99,22 @@ public class Resource : IAuditable, ITenantOwned
             Touch(actorUserId, nowUtc);
     }
 
-    public void AddAvailabilityWindow(AvailabilityWindow window, Guid actorUserId, DateTime nowUtc)
+    // WP-3 decision D1: this is the only creator of AvailabilityWindow — its
+    // constructor is internal to the Domain assembly — so a window can never
+    // carry an OrgId that disagrees with its resource's. Returns the created
+    // window so a caller can shape a response from it without re-reading.
+    public AvailabilityWindow AddAvailabilityWindow(
+        Guid availabilityWindowId,
+        DayOfWeek weekday,
+        TimeOnly opensAt,
+        TimeOnly closesAt,
+        Guid actorUserId,
+        DateTime nowUtc)
     {
+        var window = new AvailabilityWindow(availabilityWindowId, OrgId, Id, weekday, opensAt, closesAt);
         _availabilityWindows.Add(window);
         Touch(actorUserId, nowUtc);
+        return window;
     }
 
     public void RemoveAvailabilityWindow(Guid availabilityWindowId, Guid actorUserId, DateTime nowUtc)

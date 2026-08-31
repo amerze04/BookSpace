@@ -67,6 +67,45 @@ public class TenantIsolationTests
         Assert.All(users, u => Assert.Equal(acmeOrgId, u.OrgId));
     }
 
+    // WP-3 decision D1: before this step neither child table had an OrgId, a
+    // query filter, or an RLS predicate, so this probe — which filters by Id
+    // alone — would have handed Acme's member a Globex blackout.
+    [Fact]
+    public async Task BlackoutById_WithOtherTenantsRealId_ReturnsNotFound()
+    {
+        var globexBlackoutId = await GetAnyBlackoutIdAsync("globex");
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var response = await client.GetAsync($"/test-probe-tenant/blackouts/{globexBlackoutId}");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task BlackoutById_WithOwnTenantsId_IsStillReachable()
+    {
+        var acmeBlackoutId = await GetAnyBlackoutIdAsync("acme");
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var response = await client.GetAsync($"/test-probe-tenant/blackouts/{acmeBlackoutId}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task AvailabilityWindowList_NeverContainsOtherTenantRows()
+    {
+        var acmeOrgId = await GetOrgIdAsync("acme");
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var windows = await client.GetFromJsonAsync<List<AvailabilityWindowDto>>(
+            "/test-probe-tenant/availability-windows");
+
+        // Seed: 2 Acme resources x 5 weekday windows. The other 10 belong to Globex.
+        Assert.Equal(10, windows!.Count);
+        Assert.All(windows, w => Assert.Equal(acmeOrgId, w.OrgId));
+    }
+
     // No Bookings are seeded yet (CLAUDE.md §4.1 — dbo.CreateBooking doesn't
     // exist yet, so there's nothing legitimate to seed), so a real
     // cross-tenant Bookings leak test would be vacuous. This is a smoke check
@@ -92,6 +131,19 @@ public class TenantIsolationTests
         var count = await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.Resources;");
 
         Assert.Equal(0, count);
+    }
+
+    // The DB half of D1: no EF, no query filter — just the two new RLS
+    // predicates. Rows physically exist (the bypass-scoped helpers above read
+    // them), yet an uninitialized connection sees none.
+    [Fact]
+    public async Task RawConnection_WithNoSessionContext_SeesZeroChildTableRows()
+    {
+        await using var connection = new SqlConnection(ConnectionString);
+        await connection.OpenAsync();
+
+        Assert.Equal(0, await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.AvailabilityWindows;"));
+        Assert.Equal(0, await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.BlackoutPeriods;"));
     }
 
     // Regression test for the TenantInit gap specifically: a predicate that
@@ -123,9 +175,14 @@ public class TenantIsolationTests
 
         var resourceCount = await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.Resources;");
         var userCount = await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.Users;");
+        var windowCount = await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.AvailabilityWindows;");
+        var blackoutCount = await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.BlackoutPeriods;");
 
         Assert.Equal(2, resourceCount);
         Assert.Equal(4, userCount);
+        // Acme's half of the seeded 20 windows and 2 blackouts.
+        Assert.Equal(10, windowCount);
+        Assert.Equal(1, blackoutCount);
     }
 
     private async Task<HttpClient> AuthenticatedClientAsync(string email)
@@ -172,6 +229,21 @@ public class TenantIsolationTests
         return resource.Id;
     }
 
+    private async Task<Guid> GetAnyBlackoutIdAsync(string orgSlug)
+    {
+        await using var scope = _host.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<BookSpaceDbContext>();
+
+        var orgId = await context.Organizations.Where(o => o.Slug == orgSlug).Select(o => o.Id).SingleAsync();
+
+        // Both layers bypassed, same reasoning as GetAnyResourceIdAsync — which
+        // now applies to BlackoutPeriods too, since D1 brought it under the
+        // query filter and RLS.
+        using var _ = TenantBypassScope.Enter();
+        var blackout = await context.BlackoutPeriods.IgnoreQueryFilters().FirstAsync(b => b.OrgId == orgId);
+        return blackout.Id;
+    }
+
     private static async Task ExecuteAsync(SqlConnection connection, string commandText)
     {
         await using var command = connection.CreateCommand();
@@ -188,4 +260,5 @@ public class TenantIsolationTests
 
     private sealed record ResourceDto(Guid Id, Guid OrgId, string Name);
     private sealed record UserDto(Guid Id, Guid? OrgId, string Email);
+    private sealed record AvailabilityWindowDto(Guid Id, Guid OrgId, Guid ResourceId);
 }

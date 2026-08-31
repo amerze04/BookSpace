@@ -1,9 +1,11 @@
+using BookSpace.Domain.Common;
 using BookSpace.Domain.Entities;
 
 namespace BookSpace.UnitTests;
 
 public class BlackoutPeriodTests
 {
+    private static readonly Guid OrgId = Guid.NewGuid();
     private static readonly Guid ResourceId = Guid.NewGuid();
     private static readonly Guid ActorId = Guid.NewGuid();
     private static readonly DateTime NowUtc = new(2026, 8, 21, 12, 0, 0, DateTimeKind.Utc);
@@ -11,13 +13,24 @@ public class BlackoutPeriodTests
     private static readonly DateTime Ends = new(2026, 12, 26, 0, 0, 0, DateTimeKind.Utc);
 
     private static BlackoutPeriod CreateValid() =>
-        new(Guid.NewGuid(), ResourceId, Starts, Ends, "Public holiday", ActorId, NowUtc);
+        new(Guid.NewGuid(), OrgId, ResourceId, Starts, Ends, "Public holiday", ActorId, NowUtc);
+
+    // WP-3 decision D1: a blackout carries its own OrgId so it falls inside
+    // all three CLAUDE.md §4.2 isolation mechanisms.
+    [Fact]
+    public void Constructor_SetsOrgId()
+    {
+        var blackout = CreateValid();
+
+        Assert.Equal(OrgId, blackout.OrgId);
+        Assert.Equal(OrgId, ((ITenantOwned)blackout).OrgId);
+    }
 
     [Fact]
     public void Constructor_Throws_WhenEndsAtUtcIsNotAfterStartsAtUtc()
     {
         Assert.Throws<ArgumentException>(() =>
-            new BlackoutPeriod(Guid.NewGuid(), ResourceId, Starts, Starts, null, ActorId, NowUtc));
+            new BlackoutPeriod(Guid.NewGuid(), OrgId, ResourceId, Starts, Starts, null, ActorId, NowUtc));
     }
 
     [Theory]
