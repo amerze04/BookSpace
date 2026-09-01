@@ -27,14 +27,14 @@ namespace BookSpace.Application.Abstractions;
 // makes another tenant's id return null (AC-4).
 public interface IResourceRepository
 {
-    Task<PagedResult<ResourceSummaryResponse>> ListAsync(
-        ListResourcesQuery query,
+    Task<PagedResult<ListResourcesQueryResponse>> ListAsync(
+        ListResourcesQueryRequest query,
         SortOption? sort,
         CancellationToken cancellationToken);
 
     // Null means "no such resource in this tenant" — which, per ErrorKind
     // .NotFound, is also the answer for another tenant's real id.
-    Task<ResourceDetailResponse?> FindDetailAsync(Guid resourceId, CancellationToken cancellationToken);
+    Task<GetResourceQueryResponse?> FindDetailAsync(Guid resourceId, CancellationToken cancellationToken);
 
     // ---- Writes (FR-3.1 / FR-3.5) ----
 

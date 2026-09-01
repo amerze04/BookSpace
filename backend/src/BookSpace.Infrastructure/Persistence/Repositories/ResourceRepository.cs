@@ -23,8 +23,8 @@ internal sealed class ResourceRepository : IResourceRepository
         _context = context;
     }
 
-    public Task<PagedResult<ResourceSummaryResponse>> ListAsync(
-        ListResourcesQuery query,
+    public Task<PagedResult<ListResourcesQueryResponse>> ListAsync(
+        ListResourcesQueryRequest query,
         SortOption? sort,
         CancellationToken cancellationToken)
     {
@@ -41,7 +41,7 @@ internal sealed class ResourceRepository : IResourceRepository
         // sees the OrderBy in the expression tree, and so COUNT(*) runs over
         // the filtered set rather than a materialized list.
         return ApplyOrder(resources, sort)
-            .Select(r => new ResourceSummaryResponse(
+            .Select(r => new ListResourcesQueryResponse(
                 r.Id,
                 r.Name,
                 r.ResourceType,
@@ -55,10 +55,10 @@ internal sealed class ResourceRepository : IResourceRepository
     // FirstOrDefaultAsync, never DbSet.Find(): Find can return a tracked
     // entity without querying at all, which would skip the query filter
     // (CLAUDE.md §4.2).
-    public Task<ResourceDetailResponse?> FindDetailAsync(Guid resourceId, CancellationToken cancellationToken) =>
+    public Task<GetResourceQueryResponse?> FindDetailAsync(Guid resourceId, CancellationToken cancellationToken) =>
         _context.Resources
             .Where(r => r.Id == resourceId)
-            .Select(r => new ResourceDetailResponse(
+            .Select(r => new GetResourceQueryResponse(
                 r.Id,
                 r.Name,
                 r.Description,

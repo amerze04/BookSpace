@@ -14,8 +14,8 @@ namespace BookSpace.UnitTests.Resources;
 // not notice if the edit validator stopped calling it.
 public class ResourceWriteValidatorTests
 {
-    private static readonly CreateResourceCommandValidator CreateValidator = new();
-    private static readonly UpdateResourceCommandValidator UpdateValidator = new();
+    private static readonly CreateResourceCommandRequestValidator CreateValidator = new();
+    private static readonly UpdateResourceCommandRequestValidator UpdateValidator = new();
 
     private static ValidationResult ValidateCreate(
         string name = "Room A",
@@ -25,7 +25,7 @@ public class ResourceWriteValidatorTests
         string timeZoneId = "America/New_York",
         int? min = null,
         int? max = null) =>
-        CreateValidator.Validate(new CreateResourceCommand(
+        CreateValidator.Validate(new CreateResourceCommandRequest(
             name, description, resourceType, capacity, timeZoneId, false, min, max));
 
     private static ValidationResult ValidateUpdate(
@@ -37,7 +37,7 @@ public class ResourceWriteValidatorTests
         string timeZoneId = "America/New_York",
         int? min = null,
         int? max = null) =>
-        UpdateValidator.Validate(new UpdateResourceCommand(
+        UpdateValidator.Validate(new UpdateResourceCommandRequest(
             resourceId ?? Guid.NewGuid(), name, description, resourceType, capacity, timeZoneId, false, min, max));
 
     private static void AssertFailsOn(ValidationResult result, string propertyName)
@@ -58,8 +58,8 @@ public class ResourceWriteValidatorTests
     [InlineData("   ")]
     public void Name_MustNotBeBlank(string name)
     {
-        AssertFailsOn(ValidateCreate(name: name), nameof(CreateResourceCommand.Name));
-        AssertFailsOn(ValidateUpdate(name: name), nameof(UpdateResourceCommand.Name));
+        AssertFailsOn(ValidateCreate(name: name), nameof(CreateResourceCommandRequest.Name));
+        AssertFailsOn(ValidateUpdate(name: name), nameof(UpdateResourceCommandRequest.Name));
     }
 
     // The column is NVARCHAR(200): without this, an oversized name would reach
@@ -69,8 +69,8 @@ public class ResourceWriteValidatorTests
     {
         var tooLong = new string('x', ResourceFieldRules.NameMaxLength + 1);
 
-        AssertFailsOn(ValidateCreate(name: tooLong), nameof(CreateResourceCommand.Name));
-        AssertFailsOn(ValidateUpdate(name: tooLong), nameof(UpdateResourceCommand.Name));
+        AssertFailsOn(ValidateCreate(name: tooLong), nameof(CreateResourceCommandRequest.Name));
+        AssertFailsOn(ValidateUpdate(name: tooLong), nameof(UpdateResourceCommandRequest.Name));
     }
 
     [Fact]
@@ -78,8 +78,8 @@ public class ResourceWriteValidatorTests
     {
         var tooLong = new string('x', ResourceFieldRules.DescriptionMaxLength + 1);
 
-        AssertFailsOn(ValidateCreate(description: tooLong), nameof(CreateResourceCommand.Description));
-        AssertFailsOn(ValidateUpdate(description: tooLong), nameof(UpdateResourceCommand.Description));
+        AssertFailsOn(ValidateCreate(description: tooLong), nameof(CreateResourceCommandRequest.Description));
+        AssertFailsOn(ValidateUpdate(description: tooLong), nameof(UpdateResourceCommandRequest.Description));
     }
 
     // Null is "no description", which is not the same as an invalid one.
@@ -95,8 +95,8 @@ public class ResourceWriteValidatorTests
     [InlineData("   ")]
     public void ResourceType_MustNotBeBlank(string resourceType)
     {
-        AssertFailsOn(ValidateCreate(resourceType: resourceType), nameof(CreateResourceCommand.ResourceType));
-        AssertFailsOn(ValidateUpdate(resourceType: resourceType), nameof(UpdateResourceCommand.ResourceType));
+        AssertFailsOn(ValidateCreate(resourceType: resourceType), nameof(CreateResourceCommandRequest.ResourceType));
+        AssertFailsOn(ValidateUpdate(resourceType: resourceType), nameof(UpdateResourceCommandRequest.ResourceType));
     }
 
     [Fact]
@@ -104,8 +104,8 @@ public class ResourceWriteValidatorTests
     {
         var tooLong = new string('x', ResourceFieldRules.ResourceTypeMaxLength + 1);
 
-        AssertFailsOn(ValidateCreate(resourceType: tooLong), nameof(CreateResourceCommand.ResourceType));
-        AssertFailsOn(ValidateUpdate(resourceType: tooLong), nameof(UpdateResourceCommand.ResourceType));
+        AssertFailsOn(ValidateCreate(resourceType: tooLong), nameof(CreateResourceCommandRequest.ResourceType));
+        AssertFailsOn(ValidateUpdate(resourceType: tooLong), nameof(UpdateResourceCommandRequest.ResourceType));
     }
 
     // CK_Resources_Capacity, and decision 0005: zero concurrent units is a
@@ -115,8 +115,8 @@ public class ResourceWriteValidatorTests
     [InlineData(-1)]
     public void Capacity_MustBePositive(int capacity)
     {
-        AssertFailsOn(ValidateCreate(capacity: capacity), nameof(CreateResourceCommand.Capacity));
-        AssertFailsOn(ValidateUpdate(capacity: capacity), nameof(UpdateResourceCommand.Capacity));
+        AssertFailsOn(ValidateCreate(capacity: capacity), nameof(CreateResourceCommandRequest.Capacity));
+        AssertFailsOn(ValidateUpdate(capacity: capacity), nameof(UpdateResourceCommandRequest.Capacity));
     }
 
     [Theory]
@@ -124,8 +124,8 @@ public class ResourceWriteValidatorTests
     [InlineData("   ")]
     public void TimeZoneId_MustNotBeBlank(string timeZoneId)
     {
-        AssertFailsOn(ValidateCreate(timeZoneId: timeZoneId), nameof(CreateResourceCommand.TimeZoneId));
-        AssertFailsOn(ValidateUpdate(timeZoneId: timeZoneId), nameof(UpdateResourceCommand.TimeZoneId));
+        AssertFailsOn(ValidateCreate(timeZoneId: timeZoneId), nameof(CreateResourceCommandRequest.TimeZoneId));
+        AssertFailsOn(ValidateUpdate(timeZoneId: timeZoneId), nameof(UpdateResourceCommandRequest.TimeZoneId));
     }
 
     [Fact]
@@ -133,8 +133,8 @@ public class ResourceWriteValidatorTests
     {
         var tooLong = new string('x', ResourceFieldRules.TimeZoneIdMaxLength + 1);
 
-        AssertFailsOn(ValidateCreate(timeZoneId: tooLong), nameof(CreateResourceCommand.TimeZoneId));
-        AssertFailsOn(ValidateUpdate(timeZoneId: tooLong), nameof(UpdateResourceCommand.TimeZoneId));
+        AssertFailsOn(ValidateCreate(timeZoneId: tooLong), nameof(CreateResourceCommandRequest.TimeZoneId));
+        AssertFailsOn(ValidateUpdate(timeZoneId: tooLong), nameof(UpdateResourceCommandRequest.TimeZoneId));
     }
 
     // The validator's half of CK_Resources_DurationLimits — a named field error
@@ -144,8 +144,8 @@ public class ResourceWriteValidatorTests
     [InlineData(-5)]
     public void MinDuration_WhenSupplied_MustBePositive(int min)
     {
-        AssertFailsOn(ValidateCreate(min: min), nameof(CreateResourceCommand.MinDurationMinutes));
-        AssertFailsOn(ValidateUpdate(min: min), nameof(UpdateResourceCommand.MinDurationMinutes));
+        AssertFailsOn(ValidateCreate(min: min), nameof(CreateResourceCommandRequest.MinDurationMinutes));
+        AssertFailsOn(ValidateUpdate(min: min), nameof(UpdateResourceCommandRequest.MinDurationMinutes));
     }
 
     [Theory]
@@ -153,15 +153,15 @@ public class ResourceWriteValidatorTests
     [InlineData(-5)]
     public void MaxDuration_WhenSupplied_MustBePositive(int max)
     {
-        AssertFailsOn(ValidateCreate(max: max), nameof(CreateResourceCommand.MaxDurationMinutes));
-        AssertFailsOn(ValidateUpdate(max: max), nameof(UpdateResourceCommand.MaxDurationMinutes));
+        AssertFailsOn(ValidateCreate(max: max), nameof(CreateResourceCommandRequest.MaxDurationMinutes));
+        AssertFailsOn(ValidateUpdate(max: max), nameof(UpdateResourceCommandRequest.MaxDurationMinutes));
     }
 
     [Fact]
     public void MaxDuration_MustNotBeBelowMin()
     {
-        AssertFailsOn(ValidateCreate(min: 120, max: 60), nameof(CreateResourceCommand.MaxDurationMinutes));
-        AssertFailsOn(ValidateUpdate(min: 120, max: 60), nameof(UpdateResourceCommand.MaxDurationMinutes));
+        AssertFailsOn(ValidateCreate(min: 120, max: 60), nameof(CreateResourceCommandRequest.MaxDurationMinutes));
+        AssertFailsOn(ValidateUpdate(min: 120, max: 60), nameof(UpdateResourceCommandRequest.MaxDurationMinutes));
     }
 
     [Fact]
@@ -185,6 +185,6 @@ public class ResourceWriteValidatorTests
     [Fact]
     public void UpdateValidator_RejectsAnEmptyResourceId()
     {
-        AssertFailsOn(ValidateUpdate(resourceId: Guid.Empty), nameof(UpdateResourceCommand.ResourceId));
+        AssertFailsOn(ValidateUpdate(resourceId: Guid.Empty), nameof(UpdateResourceCommandRequest.ResourceId));
     }
 }

@@ -32,7 +32,7 @@ public sealed class TokenIssuer
     // familyId: a fresh Guid at login, the existing family on rotation (FR-2.2).
     // expiresAtUtc: null at login (start the absolute window now), or the
     // rotated token's own expiry, which rotation inherits rather than extending.
-    public (AuthenticationResult Result, RefreshToken Issued) Issue(
+    public (IssuedTokens Tokens, RefreshToken Issued) Issue(
         User user,
         Guid familyId,
         DateTime? expiresAtUtc = null)
@@ -52,6 +52,6 @@ public sealed class TokenIssuer
         _refreshTokens.Add(refreshToken);
 
         var expiresIn = (int)Math.Max(0, Math.Round((accessToken.ExpiresAtUtc - now).TotalSeconds));
-        return (new AuthenticationResult(accessToken.Token, expiresIn, generated.RawToken), refreshToken);
+        return (new IssuedTokens(accessToken.Token, expiresIn, generated.RawToken), refreshToken);
     }
 }

@@ -350,6 +350,17 @@ index; when a new decision doc is added, add its one-liner here too.
    response DTOs in the feature folder, sealed records, no domain entity on the
    wire, hand-written mapping, full-representation `PUT` for edits. Keyset
    paging was rejected — revisit only if an endpoint pages over `Bookings`.
+   **Amended 2026-09-01 on the mentor's advice** (see the record's amendment
+   section): every `IRequest<T>` implementation is named `…CommandRequest` /
+   `…QueryRequest`, with its handler and validator following suit; and **response
+   DTOs are per-endpoint, in their own files, never shared** — even when the
+   fields are currently identical, because Phase 3's availability windows belong
+   on the read detail and would otherwise appear in the create and archive
+   responses too. `PagedResult<T>` stays shared (it is the envelope, not a
+   response), and `IssuedTokens` — formerly `AuthenticationResult` — is
+   `TokenIssuer`'s output rather than any endpoint's contract. One wire change:
+   `PUT /resources/{id}` is now flat instead of wrapping the resource in a
+   `resource` property.
 16. [`0016`](docs/decisions/0016-error-contract-and-reason-codes.md) — one error
    contract: a handler rejects a request by throwing an `AppException`, and
    `GlobalExceptionHandler` maps `ErrorKind` —
@@ -779,10 +790,15 @@ Plan and settled decisions: `docs/wp3-plan.md`.
       The error contract landed too: `AppException` + `ErrorKind` mapped to
       status codes once, and the `ReasonCodes` catalogue behind §6's list
       ([`0016`](docs/decisions/0016-error-contract-and-reason-codes.md)).
-      Phase 2 added the resource DTOs against those conventions
-      (`ResourceSummaryResponse`, `ResourceDetailResponse`,
-      `UpdateResourceResponse` + `TimeZoneChangeNotice`, request records nested
-      in the controller). Left unchecked: the availability-window, blackout and
+      Phase 2 added the resource DTOs against those conventions, and on
+      2026-09-01 the mentor refined the conventions themselves: `IRequest<T>`
+      types are named `…CommandRequest`/`…QueryRequest`, and every endpoint owns
+      its own response record rather than sharing one (both written up in
+      `0015`'s amendment). The resource endpoints now declare
+      `ListResourcesQueryResponse`, `GetResourceQueryResponse`,
+      `CreateResourceCommandResponse`, `UpdateResourceCommandResponse` +
+      `TimeZoneChangeNotice` and `ArchiveResourceCommandResponse`, with the HTTP
+      request records still nested in the controller. Left unchecked: the availability-window, blackout and
       slot DTOs, which land with Phases 3–5.
 
 Acceptance criteria (source doc):

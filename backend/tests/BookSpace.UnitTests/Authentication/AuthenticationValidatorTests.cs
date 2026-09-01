@@ -15,51 +15,51 @@ public class AuthenticationValidatorTests
     [InlineData("   ", "Passw0rd!")]
     [InlineData("not-an-email", "Passw0rd!")]
     [InlineData("user@acme.test", "")]
-    public void LoginCommand_InvalidInput_FailsValidation(string email, string password)
+    public void LoginCommandRequest_InvalidInput_FailsValidation(string email, string password)
     {
-        var result = new LoginCommandValidator().Validate(new LoginCommand(email, password));
+        var result = new LoginCommandRequestValidator().Validate(new LoginCommandRequest(email, password));
 
         Assert.False(result.IsValid);
     }
 
     [Fact]
-    public void LoginCommand_ValidInput_PassesValidation()
+    public void LoginCommandRequest_ValidInput_PassesValidation()
     {
-        var result = new LoginCommandValidator().Validate(new LoginCommand("user@acme.test", "Passw0rd!"));
+        var result = new LoginCommandRequestValidator().Validate(new LoginCommandRequest("user@acme.test", "Passw0rd!"));
 
         Assert.True(result.IsValid);
     }
 
     [Fact]
-    public void LoginCommand_ReportsTheOffendingFieldByName()
+    public void LoginCommandRequest_ReportsTheOffendingFieldByName()
     {
-        var result = new LoginCommandValidator().Validate(new LoginCommand("user@acme.test", ""));
+        var result = new LoginCommandRequestValidator().Validate(new LoginCommandRequest("user@acme.test", ""));
 
-        Assert.Contains(result.Errors, e => e.PropertyName == nameof(LoginCommand.Password));
+        Assert.Contains(result.Errors, e => e.PropertyName == nameof(LoginCommandRequest.Password));
     }
 
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
-    public void RefreshTokenCommand_EmptyToken_FailsValidation(string token)
+    public void RefreshTokenCommandRequest_EmptyToken_FailsValidation(string token)
     {
-        var result = new RefreshTokenCommandValidator().Validate(new RefreshTokenCommand(token));
+        var result = new RefreshTokenCommandRequestValidator().Validate(new RefreshTokenCommandRequest(token));
 
         Assert.False(result.IsValid);
     }
 
     [Fact]
-    public void RefreshTokenCommand_ValidToken_PassesValidation()
+    public void RefreshTokenCommandRequest_ValidToken_PassesValidation()
     {
-        var result = new RefreshTokenCommandValidator().Validate(new RefreshTokenCommand("some-token"));
+        var result = new RefreshTokenCommandRequestValidator().Validate(new RefreshTokenCommandRequest("some-token"));
 
         Assert.True(result.IsValid);
     }
 
     [Fact]
-    public void LogoutCommand_EmptyToken_FailsValidation()
+    public void LogoutCommandRequest_EmptyToken_FailsValidation()
     {
-        var result = new LogoutCommandValidator().Validate(new LogoutCommand(string.Empty));
+        var result = new LogoutCommandRequestValidator().Validate(new LogoutCommandRequest(string.Empty));
 
         Assert.False(result.IsValid);
     }

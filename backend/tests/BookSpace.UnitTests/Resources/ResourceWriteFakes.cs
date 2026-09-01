@@ -50,13 +50,13 @@ internal sealed class FakeResourceRepository : IResourceRepository
     }
 
     // Read side: not exercised by the write handler tests.
-    public Task<PagedResult<ResourceSummaryResponse>> ListAsync(
-        ListResourcesQuery query,
+    public Task<PagedResult<ListResourcesQueryResponse>> ListAsync(
+        ListResourcesQueryRequest query,
         SortOption? sort,
         CancellationToken cancellationToken) =>
         throw new NotSupportedException();
 
-    public Task<ResourceDetailResponse?> FindDetailAsync(Guid resourceId, CancellationToken cancellationToken) =>
+    public Task<GetResourceQueryResponse?> FindDetailAsync(Guid resourceId, CancellationToken cancellationToken) =>
         throw new NotSupportedException();
 }
 

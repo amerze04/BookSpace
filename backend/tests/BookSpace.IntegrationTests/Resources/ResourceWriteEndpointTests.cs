@@ -1,7 +1,8 @@
-using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Net;
 using System.Text.Json;
+using BookSpace.Application.Features.Resources.CreateResource;
 using BookSpace.Application.Features.Resources.GetResource;
 using BookSpace.Application.Features.Resources.UpdateResource;
 using BookSpace.Infrastructure.Persistence;
@@ -76,7 +77,7 @@ public class ResourceWriteEndpointTests
 
             Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
-            var created = await response.Content.ReadFromJsonAsync<ResourceDetailResponse>();
+            var created = await response.Content.ReadFromJsonAsync<CreateResourceCommandResponse>();
             createdId = created!.Id;
 
             Assert.NotEqual(Guid.Empty, created.Id);
@@ -93,9 +94,9 @@ public class ResourceWriteEndpointTests
             // URI, hence AbsolutePath rather than a whole-string comparison.
             Assert.Equal($"/resources/{created.Id}", response.Headers.Location!.AbsolutePath);
 
-            var fetched = await client.GetFromJsonAsync<ResourceDetailResponse>(
+            var fetched = await client.GetFromJsonAsync<GetResourceQueryResponse>(
                 response.Headers.Location.AbsolutePath);
-            Assert.Equal(created, fetched);
+            ResourceResponseAssertions.AssertSameResource(created, fetched!);
         }
         finally
         {
@@ -317,18 +318,18 @@ public class ResourceWriteEndpointTests
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-            var updated = await response.Content.ReadFromJsonAsync<UpdateResourceResponse>();
-            Assert.Equal("After Rename", updated!.Resource.Name);
+            var updated = await response.Content.ReadFromJsonAsync<UpdateResourceCommandResponse>();
+            Assert.Equal("After Rename", updated!.Name);
             // Full representation: an omitted nullable field clears it.
-            Assert.Null(updated.Resource.Description);
-            Assert.Equal("MeetingRoom", updated.Resource.ResourceType);
-            Assert.Equal(10, updated.Resource.Capacity);
-            Assert.Equal(15, updated.Resource.MinDurationMinutes);
-            Assert.Equal(60, updated.Resource.MaxDurationMinutes);
+            Assert.Null(updated.Description);
+            Assert.Equal("MeetingRoom", updated.ResourceType);
+            Assert.Equal(10, updated.Capacity);
+            Assert.Equal(15, updated.MinDurationMinutes);
+            Assert.Equal(60, updated.MaxDurationMinutes);
             Assert.Null(updated.TimeZoneChange);
-            Assert.True(updated.Resource.UpdatedAtUtc >= created.UpdatedAtUtc);
+            Assert.True(updated.UpdatedAtUtc >= created.UpdatedAtUtc);
 
-            var fetched = await client.GetFromJsonAsync<ResourceDetailResponse>($"/resources/{created.Id}");
+            var fetched = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}");
             Assert.Equal("After Rename", fetched!.Name);
         }
         finally
@@ -353,7 +354,7 @@ public class ResourceWriteEndpointTests
             Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
 
             // And nothing changed.
-            var fetched = await adminClient.GetFromJsonAsync<ResourceDetailResponse>($"/resources/{created.Id}");
+            var fetched = await adminClient.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}");
             Assert.Equal("Member Cannot Edit", fetched!.Name);
         }
         finally
@@ -382,7 +383,7 @@ public class ResourceWriteEndpointTests
         var globexClient = await AuthenticatedClientAsync(GlobexAdmin);
         var globexResource = (await globexClient.GetFromJsonAsync<
             Application.Common.Pagination.PagedResult<
-                Application.Features.Resources.ListResources.ResourceSummaryResponse>>("/resources"))!
+                Application.Features.Resources.ListResources.ListResourcesQueryResponse>>("/resources"))!
             .Items.First();
 
         var acmeClient = await AuthenticatedClientAsync(AcmeAdmin);
@@ -394,7 +395,7 @@ public class ResourceWriteEndpointTests
         await AssertReasonCodeAsync(response, "ResourceNotFound");
 
         // Globex's own resource is untouched.
-        var unchanged = await globexClient.GetFromJsonAsync<ResourceDetailResponse>(
+        var unchanged = await globexClient.GetFromJsonAsync<GetResourceQueryResponse>(
             $"/resources/{globexResource.Id}");
         Assert.Equal(globexResource.Name, unchanged!.Name);
     }
@@ -416,7 +417,7 @@ public class ResourceWriteEndpointTests
             await AssertReasonCodeAsync(response, "ResourceArchived");
 
             // Still readable, still under its original name.
-            var fetched = await client.GetFromJsonAsync<ResourceDetailResponse>($"/resources/{created.Id}");
+            var fetched = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}");
             Assert.Equal("Archived Before Edit", fetched!.Name);
         }
         finally
@@ -434,9 +435,9 @@ public class ResourceWriteEndpointTests
         var client = await AuthenticatedClientAsync(AcmeAdmin);
         var printer = (await client.GetFromJsonAsync<
             Application.Common.Pagination.PagedResult<
-                Application.Features.Resources.ListResources.ResourceSummaryResponse>>("/resources"))!
+                Application.Features.Resources.ListResources.ListResourcesQueryResponse>>("/resources"))!
             .Items.Single(r => r.Name == "3D Printer");
-        var before = await client.GetFromJsonAsync<ResourceDetailResponse>($"/resources/{printer.Id}");
+        var before = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{printer.Id}");
 
         var response = await client.PutAsJsonAsync(
             $"/resources/{printer.Id}",
@@ -452,10 +453,10 @@ public class ResourceWriteEndpointTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        var updated = await response.Content.ReadFromJsonAsync<UpdateResourceResponse>();
-        Assert.True(updated!.Resource.RequiresApproval);
-        Assert.Equal(before.Name, updated.Resource.Name);
-        Assert.Equal(before.Capacity, updated.Resource.Capacity);
+        var updated = await response.Content.ReadFromJsonAsync<UpdateResourceCommandResponse>();
+        Assert.True(updated!.RequiresApproval);
+        Assert.Equal(before.Name, updated.Name);
+        Assert.Equal(before.Capacity, updated.Capacity);
     }
 
     // ---- PUT: the timezone-change notice (wp3-plan's "smaller calls") ----
@@ -474,8 +475,8 @@ public class ResourceWriteEndpointTests
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-            var updated = await response.Content.ReadFromJsonAsync<UpdateResourceResponse>();
-            Assert.Equal("Europe/Zagreb", updated!.Resource.TimeZoneId);
+            var updated = await response.Content.ReadFromJsonAsync<UpdateResourceCommandResponse>();
+            Assert.Equal("Europe/Zagreb", updated!.TimeZoneId);
             Assert.NotNull(updated.TimeZoneChange);
             Assert.Equal("America/New_York", updated.TimeZoneChange!.PreviousTimeZoneId);
             Assert.Equal("Europe/Zagreb", updated.TimeZoneChange.NewTimeZoneId);
@@ -513,7 +514,7 @@ public class ResourceWriteEndpointTests
             Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
             await AssertReasonCodeAsync(response, "CapacityBelowExistingBookings");
 
-            var unchanged = await client.GetFromJsonAsync<ResourceDetailResponse>($"/resources/{created.Id}");
+            var unchanged = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}");
             Assert.Equal(8, unchanged!.Capacity);
         }
         finally
@@ -541,8 +542,8 @@ public class ResourceWriteEndpointTests
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-            var updated = await response.Content.ReadFromJsonAsync<UpdateResourceResponse>();
-            Assert.Equal(3, updated!.Resource.Capacity);
+            var updated = await response.Content.ReadFromJsonAsync<UpdateResourceCommandResponse>();
+            Assert.Equal(3, updated!.Capacity);
         }
         finally
         {
@@ -594,11 +595,11 @@ public class ResourceWriteEndpointTests
         return client;
     }
 
-    private static async Task<ResourceDetailResponse> PostAndReadAsync(HttpClient client, object payload)
+    private static async Task<CreateResourceCommandResponse> PostAndReadAsync(HttpClient client, object payload)
     {
         var response = await client.PostAsJsonAsync("/resources", payload);
         response.EnsureSuccessStatusCode();
-        return (await response.Content.ReadFromJsonAsync<ResourceDetailResponse>())!;
+        return (await response.Content.ReadFromJsonAsync<CreateResourceCommandResponse>())!;
     }
 
     private static async Task AssertReasonCodeAsync(HttpResponseMessage response, string expected)

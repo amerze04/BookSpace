@@ -4,9 +4,9 @@ namespace BookSpace.Application.Common.Pagination;
 
 // Shared paging validation, added by each list query's own validator:
 //
-//     public sealed class ListResourcesQueryValidator : AbstractValidator<ListResourcesQuery>
+//     public sealed class ListResourcesQueryRequestValidator : AbstractValidator<ListResourcesQueryRequest>
 //     {
-//         public ListResourcesQueryValidator() => this.AddPagingRules(SortableFields);
+//         public ListResourcesQueryRequestValidator() => this.AddPagingRules(SortableFields);
 //     }
 //
 // An extension method rather than a base validator class, for two reasons.
