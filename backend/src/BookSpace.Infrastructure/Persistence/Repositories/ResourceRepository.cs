@@ -55,6 +55,13 @@ internal sealed class ResourceRepository : IResourceRepository
     // FirstOrDefaultAsync, never DbSet.Find(): Find can return a tracked
     // entity without querying at all, which would skip the query filter
     // (CLAUDE.md §4.2).
+    //
+    // The availability windows are projected in the same query rather than
+    // Include'd (FR-3.2). Include would materialize whole AvailabilityWindow
+    // entities to read four columns off each, and — more to the point — the
+    // ordering has to be part of the SQL: a client rendering a week should not
+    // have to sort, and the PUT response next door orders identically, so the
+    // two endpoints agree on what "the schedule" looks like.
     public Task<GetResourceQueryResponse?> FindDetailAsync(Guid resourceId, CancellationToken cancellationToken) =>
         _context.Resources
             .Where(r => r.Id == resourceId)
@@ -70,7 +77,12 @@ internal sealed class ResourceRepository : IResourceRepository
                 r.MaxDurationMinutes,
                 r.IsArchived,
                 r.CreatedAtUtc,
-                r.UpdatedAtUtc))
+                r.UpdatedAtUtc,
+                r.AvailabilityWindows
+                    .OrderBy(w => w.Weekday)
+                    .ThenBy(w => w.OpensAt)
+                    .Select(w => new AvailabilityWindowDetail(w.Id, w.Weekday, w.OpensAt, w.ClosesAt))
+                    .ToList()))
             .FirstOrDefaultAsync(cancellationToken);
 
     // ---- Writes (FR-3.1 / FR-3.5) ----
@@ -90,6 +102,12 @@ internal sealed class ResourceRepository : IResourceRepository
             .FirstOrDefaultAsync(r => r.Id == resourceId, cancellationToken);
 
     public void Add(Resource resource) => _context.Resources.Add(resource);
+
+    // AddRange, not "let EF work it out from the navigation": see
+    // IResourceRepository.AddAvailabilityWindows for why a window discovered
+    // through the navigation is marked Modified and saves as a zero-row UPDATE.
+    public void AddAvailabilityWindows(IEnumerable<AvailabilityWindow> windows) =>
+        _context.AddRange(windows);
 
     // Decision 0005's capacity model, evaluated at a point in time rather than
     // over a range: concurrency only ever *rises* at a booking's start instant,

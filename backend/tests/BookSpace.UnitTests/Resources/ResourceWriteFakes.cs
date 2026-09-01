@@ -34,6 +34,14 @@ internal sealed class FakeResourceRepository : IResourceRepository
 
     public void Add(Resource resource) => Added = resource;
 
+    // Records what the handler stated as inserts. The real repository has to say
+    // this explicitly (see IResourceRepository.AddAvailabilityWindows); the fake
+    // only has to prove the handler said it.
+    public List<AvailabilityWindow> AddedAvailabilityWindows { get; } = new();
+
+    public void AddAvailabilityWindows(IEnumerable<AvailabilityWindow> windows) =>
+        AddedAvailabilityWindows.AddRange(windows);
+
     public Task<int> PeakConcurrentBookedQuantityAsync(
         Guid resourceId,
         DateTime asOfUtc,

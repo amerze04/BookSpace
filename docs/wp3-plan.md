@@ -245,19 +245,128 @@ Grouped because they are the same shape of problem: a child collection managed
 have domain methods (`AddAvailabilityWindow`/`RemoveAvailabilityWindow`,
 `AddApprover`/`RemoveApprover`), so this is mostly Application and API work.
 
-- **Availability windows get replace-the-set (PUT) semantics**, not per-row
-  POST/DELETE. `AvailabilityWindow`'s own doc comment already records why it
-  has no audit columns: entries are "typically bulk-replaced as a weekly set
-  rather than individually edited". The domain hints at the intended API
-  shape; following it keeps the two consistent.
+#### Step split (agreed with the owner on 2026-09-01, before Phase 3 started)
+
+**Two steps.** The owner asked for the smallest honest number; the two features
+are independent — neither blocks the other — so there is no ordering to exploit,
+and the only real question was whether to do both in one round. Two keeps each
+review to one wire contract.
+
+1. **Availability windows** (FR-3.2) — the domain replace method, the overlap
+   rule, `PUT /resources/{id}/availability-windows`, and the schedule on the
+   read detail. **Done 2026-09-01.**
+2. **Approvers** (FR-3.3) plus the doc pass — the eligibility port and its
+   implementation, `PUT /resources/{id}/approvers`, the approver list on the
+   read detail, the `RequiresApproval` invariant enforced from the approver
+   side, and the roadmap/plan updates.
+
+#### Decisions taken before step 1, by the owner (2026-09-01)
+
+- **Approvers use `PUT` replace-the-set too**, symmetric with windows. Per-row
+  POST/DELETE would force an admin swapping approvers to empty-then-fill, which
+  the `RequiresApproval` invariant would reject mid-swap.
+- **Approver eligibility = holds `Approver` *or* `TenantAdmin`, in the caller's
+  own tenant, and `IsActive`.** Mirrors `AuthorizationPolicies.Approver`, so
+  "who may be assigned" and "who may actually approve" describe the same set —
+  under the strictest reading a TenantAdmin could not be assigned even though the
+  policy would let them approve. It also unblocks the practical problem that each
+  tenant seeds exactly one `Role.Approver` account and no endpoint can grant the
+  role. All three failures collapse to `ApproverNotEligible`, which is the point
+  (decision `0016`: naming which one leaks whether the id exists at all). A
+  deactivated user is refused because an inactive approver would silently stall
+  approvals.
+- **Windows and approvers on an archived resource are refused** (422
+  `ResourceArchived`), consistent with `PUT /resources/{id}`.
+- **Adjacent windows are not overlapping.** `ClosesAt` is exclusive, so
+  09:00-12:00 and 12:00-17:00 coexist. Phase 5 may merge them when expanding to
+  UTC intervals; that is its business, not a reason to refuse the admin's shape.
+
+#### Availability windows (step 1)
+
+- **Replace-the-set (PUT)**, not per-row POST/DELETE. `AvailabilityWindow`'s own
+  doc comment already records why it has no audit columns: entries are
+  "typically bulk-replaced as a weekly set rather than individually edited". The
+  domain hinted at the API shape; following it keeps the two consistent, and
+  makes the operation idempotent for free.
+- **Its own endpoint, not a field on `PUT /resources/{id}`.** That payload is a
+  full representation, so an admin renaming a room while omitting the windows
+  array would silently wipe the schedule. The *read* detail does carry the
+  schedule — asymmetric on purpose, and the one place the read response and the
+  edit command deliberately diverge.
+- **An empty array is legal**, meaning "opens at no time at all"; a *missing*
+  array is a 400. Clearing a schedule has to be stated, never achieved by
+  omission.
+
+#### What step 1 actually delivered, and the calls made along the way
+
+Endpoint: `PUT /resources/{id}/availability-windows` on `TenantAdmin`;
+`GET /resources/{id}` now returns `availabilityWindows`, ordered by weekday then
+opening time. 418 unit + 158 integration tests pass.
+
+Three things the plan had not anticipated:
+
+- **Enums now serialize as their names, app-wide** (`JsonStringEnumConverter`,
+  `Program.cs`). `DayOfWeek` is the first enum this API ever put on the wire, and
+  `{"weekday": 1}` is unreadable — 0 = Sunday is the off-by-one a client discovers
+  in production. Made global rather than per-property because CLAUDE.md §5 already
+  stores enums as strings and never as int, so the wire now agrees with the
+  database and with the PRD's own status names; WP-4's `BookingStatus` arriving as
+  `"Confirmed"` is the payoff. Safe to do globally *now* precisely because nothing
+  else serialized an enum yet — a phase later it would have been a breaking change.
+  Cost: the integration suite needed `Support/TestJson.cs`, since
+  `System.Text.Json` reads enums from numbers only unless a client opts in.
+- **`IResourceRepository.AddAvailabilityWindows`**, forced by an EF Core trap the
+  integration tests found rather than one anybody reasoned about. An entity
+  discovered through a collection navigation is marked **Modified**, not Added,
+  when its key is already set — the same "is the key set?" heuristic
+  `DbContext.Update` applies to a graph. Because `Resource` mints no ids (house
+  style), every new window carried a Guid, so EF issued an `UPDATE` against a row
+  that did not exist, affected zero rows, and threw
+  `DbUpdateConcurrencyException`: the endpoint returned **409 `ConcurrencyConflict`
+  for what was plainly an insert**, which is a spectacularly misleading symptom.
+  Stating the inserts explicitly is the fix.
+  Worth knowing: `Resource.AddAvailabilityWindow` has exactly the same exposure
+  and hides it only because its one caller (`SeedData`) adds windows to a resource
+  that is itself `Added`, so the children cascade with it. Removals need no
+  equivalent — EF watches orphans leave and marks them `Deleted` correctly.
+- **Sub-second times are rejected, not truncated.** `OpensAt`/`ClosesAt` are
+  `time(0)`, so a fractional value would be *rounded* on write and the response
+  would then disagree with the row a client reads back — the same trap CLAUDE.md
+  §4.3 records for `IClock.UtcNow` and `datetime2(0)`. Rejected rather than
+  clamped, matching how an oversized `pageSize` is rejected (decision `0015`):
+  silently altering a submitted value is the behaviour being avoided in both.
+
+One unrelated fix folded in at the owner's request: `POST /resources/{id}/archive`
+was annotated `[ProducesResponseType<GetResourceQueryResponse>]` while returning
+`ArchiveResourceCommandResponse` — leftover from before the 2026-09-01
+per-endpoint DTO amendment split the two.
+
+**Left open for the owner** (flagged rather than decided, per CLAUDE.md §11):
+there is **no cap on the number of windows** in one payload. A weekly schedule is
+naturally small, but the array is unbounded and nothing rejects a thousand-entry
+request. Picking a limit is inventing a requirement, so it was not done; the
+`pageSize` precedent (100, rejected rather than clamped) is the obvious model if
+one is wanted.
+
+**Also worth recording**: `CK_AvailabilityWindows_Window` requires
+`ClosesAt > OpensAt`, so **a window cannot cross midnight**. A resource open
+22:00-02:00 has to be expressed as two windows on consecutive weekdays. That is
+pre-existing schema behaviour, not something this phase introduced, but it is the
+first phase where a client can hit it, and Phase 5 will have to expand such a pair
+into one continuous UTC interval.
+
+#### Approvers (step 2, not yet built)
+
 - **Approver assignment needs validation the domain does not do.**
   `AddApprover(Guid userId, ...)` takes a bare id and checks only for
-  duplicates. The Application layer must confirm the user is in the same
-  tenant and holds the `Approver` role — cross-tenant approver assignment is
-  otherwise a leak vector.
+  duplicates. The Application layer must confirm the user is in the same tenant,
+  holds `Approver` or `TenantAdmin`, and is active — cross-tenant approver
+  assignment is otherwise a leak vector.
 - `RequiresApproval` (the flag, a plain `Resource` property) is set in Phase 2;
-  the approver list is managed here. The invariant spanning the two is
-  enforced at edit time — see "Smaller calls" below.
+  the approver list is managed here. The invariant spanning the two is enforced
+  at edit time on both sides — emptying the approver set on a resource that
+  requires approval must throw `ApproversRequired`, or the state Phase 2 blocked
+  on create and edit comes back through the side door.
 
 ### Phase 4 — Blackout periods (FR-3.4, Decision 0001)
 
@@ -472,6 +581,12 @@ cheaply; none changes the schema.
 
 - **Overlapping availability windows on the same weekday are rejected**, not
   unioned. The schema has no constraint either way.
+  **Landed Phase 3 step 1** as `ReasonCodes.OverlappingAvailabilityWindow`, 409 —
+  `ErrorKind.Conflict` rather than `Validation`, because every window in the
+  payload is individually well-formed and it is the *set* that contradicts
+  itself, which no per-field validator error can point at. **Adjacent windows are
+  not overlapping**: `ClosesAt` is exclusive, so 09:00-12:00 and 12:00-17:00 are
+  two legal windows (owner's call, 2026-09-01).
 - **`RequiresApproval = true` with zero approvers is blocked** at edit time.
   FR-3.3 reads "can be marked `RequiresApproval`, with one or more assigned
   approvers", so the empty state is not a valid resting state.

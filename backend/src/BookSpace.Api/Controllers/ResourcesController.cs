@@ -4,6 +4,7 @@ using BookSpace.Application.Features.Resources.ArchiveResource;
 using BookSpace.Application.Features.Resources.CreateResource;
 using BookSpace.Application.Features.Resources.GetResource;
 using BookSpace.Application.Features.Resources.ListResources;
+using BookSpace.Application.Features.Resources.ReplaceAvailabilityWindows;
 using BookSpace.Application.Features.Resources.UpdateResource;
 using BookSpace.Application.Messaging;
 using Microsoft.AspNetCore.Authorization;
@@ -185,7 +186,7 @@ public sealed class ResourcesController : ControllerBase
     // is the row with isArchived flipped.
     [HttpPost("{id:guid}/archive")]
     [Authorize(Policy = AuthorizationPolicies.TenantAdmin)]
-    [ProducesResponseType<GetResourceQueryResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ArchiveResourceCommandResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
@@ -193,6 +194,44 @@ public sealed class ResourcesController : ControllerBase
     public async Task<IActionResult> Archive(Guid id, CancellationToken cancellationToken)
     {
         var result = await _sender.Send(new ArchiveResourceCommandRequest(id), cancellationToken);
+        return Ok(result);
+    }
+
+    // FR-3.2. The whole weekly schedule in one payload; see
+    // ReplaceAvailabilityWindowsCommandRequest for why replace-the-set rather
+    // than per-row POST/DELETE.
+    //
+    // Deliberately its own endpoint rather than a field on PUT /resources/{id}:
+    // that payload is a full representation, so an admin renaming a room while
+    // omitting the windows array would silently wipe the schedule. Separating
+    // them means a schedule can only be cleared by asking to clear it.
+    //
+    // The route is a sub-resource of the resource, so the TenantAdmin policy and
+    // the AC-4 404 both come out the same as the parent's.
+    public sealed record ReplaceAvailabilityWindowsRequest(
+        IReadOnlyList<AvailabilityWindowCommandItem> Windows);
+
+    // 409 is the one status here the other resource endpoints do not produce:
+    // OverlappingAvailabilityWindow is ErrorKind.Conflict, because each window is
+    // individually valid and it is the set that contradicts itself.
+    [HttpPut("{id:guid}/availability-windows")]
+    [Authorize(Policy = AuthorizationPolicies.TenantAdmin)]
+    [ProducesResponseType<ReplaceAvailabilityWindowsCommandResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
+    public async Task<IActionResult> ReplaceAvailabilityWindows(
+        Guid id,
+        ReplaceAvailabilityWindowsRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(
+            new ReplaceAvailabilityWindowsCommandRequest(id, request.Windows),
+            cancellationToken);
+
         return Ok(result);
     }
 }

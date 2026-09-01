@@ -34,6 +34,8 @@ public class AppExceptionCatalogueTests
         [typeof(ApproversRequiredException)] = (ReasonCodes.ApproversRequired, ErrorKind.RuleViolation),
         [typeof(CapacityBelowExistingBookingsException)] =
             (ReasonCodes.CapacityBelowExistingBookings, ErrorKind.RuleViolation),
+        [typeof(OverlappingAvailabilityWindowException)] =
+            (ReasonCodes.OverlappingAvailabilityWindow, ErrorKind.Conflict),
     };
 
     // AuthenticationException is excluded deliberately, and it is the one

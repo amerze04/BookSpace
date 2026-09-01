@@ -74,4 +74,97 @@ public class AvailabilityWindowTests
 
         Assert.Empty(resource.AvailabilityWindows);
     }
+
+    // ---- ReplaceAvailabilityWindows (WP-3 Phase 3, FR-3.2) ----
+
+    [Fact]
+    public void ReplaceAvailabilityWindows_ReplacesTheWholeSet()
+    {
+        var resource = CreateResource();
+        resource.AddAvailabilityWindow(
+            Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), ActorId, NowUtc);
+
+        var tuesdayId = Guid.NewGuid();
+        var replaced = resource.ReplaceAvailabilityWindows(
+            new[]
+            {
+                new AvailabilityWindowDefinition(
+                    tuesdayId, DayOfWeek.Tuesday, new TimeOnly(8, 0), new TimeOnly(12, 0)),
+            },
+            ActorId,
+            NowUtc.AddMinutes(1));
+
+        // Replace, not merge: Monday is gone because it was not resent.
+        var window = Assert.Single(resource.AvailabilityWindows);
+        Assert.Equal(tuesdayId, window.Id);
+        Assert.Equal(DayOfWeek.Tuesday, window.Weekday);
+        Assert.Equal(resource.Id, window.ResourceId);
+        Assert.Equal(OrgId, window.OrgId);
+        Assert.Equal(resource.AvailabilityWindows, replaced);
+    }
+
+    // An empty set is a legitimate schedule meaning "opens at no time at all",
+    // not a malformed request — see the validator for why the two are kept apart.
+    [Fact]
+    public void ReplaceAvailabilityWindows_WithAnEmptySet_ClearsTheSchedule()
+    {
+        var resource = CreateResource();
+        resource.AddAvailabilityWindow(
+            Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), ActorId, NowUtc);
+
+        resource.ReplaceAvailabilityWindows(
+            Array.Empty<AvailabilityWindowDefinition>(), ActorId, NowUtc.AddMinutes(1));
+
+        Assert.Empty(resource.AvailabilityWindows);
+    }
+
+    [Fact]
+    public void ReplaceAvailabilityWindows_TouchesTheAuditColumns()
+    {
+        var resource = CreateResource();
+        var editor = Guid.NewGuid();
+        var later = NowUtc.AddHours(3);
+
+        resource.ReplaceAvailabilityWindows(
+            new[]
+            {
+                new AvailabilityWindowDefinition(
+                    Guid.NewGuid(), DayOfWeek.Friday, new TimeOnly(9, 0), new TimeOnly(10, 0)),
+            },
+            editor,
+            later);
+
+        // The windows carry no audit columns of their own, so the resource's are
+        // the only record that the schedule changed.
+        Assert.Equal(editor, resource.UpdatedByUserId);
+        Assert.Equal(later, resource.UpdatedAtUtc);
+    }
+
+    // The replacement is built before anything is removed, so a window that fails
+    // CK_AvailabilityWindows_Window leaves the previous schedule intact rather
+    // than half-applied. Without that ordering the resource would end up with no
+    // windows at all after a rejected request.
+    [Fact]
+    public void ReplaceAvailabilityWindows_WithAnInvalidWindow_LeavesTheExistingScheduleUntouched()
+    {
+        var resource = CreateResource();
+        var originalId = Guid.NewGuid();
+        resource.AddAvailabilityWindow(
+            originalId, DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), ActorId, NowUtc);
+
+        Assert.Throws<ArgumentException>(() => resource.ReplaceAvailabilityWindows(
+            new[]
+            {
+                new AvailabilityWindowDefinition(
+                    Guid.NewGuid(), DayOfWeek.Tuesday, new TimeOnly(8, 0), new TimeOnly(12, 0)),
+                new AvailabilityWindowDefinition(
+                    Guid.NewGuid(), DayOfWeek.Wednesday, new TimeOnly(17, 0), new TimeOnly(9, 0)),
+            },
+            ActorId,
+            NowUtc.AddMinutes(1)));
+
+        var window = Assert.Single(resource.AvailabilityWindows);
+        Assert.Equal(originalId, window.Id);
+        Assert.Equal(NowUtc, resource.UpdatedAtUtc);
+    }
 }

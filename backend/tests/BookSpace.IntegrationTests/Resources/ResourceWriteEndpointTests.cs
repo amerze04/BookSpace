@@ -7,6 +7,7 @@ using BookSpace.Application.Features.Resources.GetResource;
 using BookSpace.Application.Features.Resources.UpdateResource;
 using BookSpace.Infrastructure.Persistence;
 using BookSpace.IntegrationTests.Authentication;
+using BookSpace.IntegrationTests.Support;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -95,7 +96,7 @@ public class ResourceWriteEndpointTests
             Assert.Equal($"/resources/{created.Id}", response.Headers.Location!.AbsolutePath);
 
             var fetched = await client.GetFromJsonAsync<GetResourceQueryResponse>(
-                response.Headers.Location.AbsolutePath);
+                response.Headers.Location.AbsolutePath, TestJson.Options);
             ResourceResponseAssertions.AssertSameResource(created, fetched!);
         }
         finally
@@ -329,7 +330,7 @@ public class ResourceWriteEndpointTests
             Assert.Null(updated.TimeZoneChange);
             Assert.True(updated.UpdatedAtUtc >= created.UpdatedAtUtc);
 
-            var fetched = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}");
+            var fetched = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}", TestJson.Options);
             Assert.Equal("After Rename", fetched!.Name);
         }
         finally
@@ -354,7 +355,7 @@ public class ResourceWriteEndpointTests
             Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
 
             // And nothing changed.
-            var fetched = await adminClient.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}");
+            var fetched = await adminClient.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}", TestJson.Options);
             Assert.Equal("Member Cannot Edit", fetched!.Name);
         }
         finally
@@ -396,7 +397,7 @@ public class ResourceWriteEndpointTests
 
         // Globex's own resource is untouched.
         var unchanged = await globexClient.GetFromJsonAsync<GetResourceQueryResponse>(
-            $"/resources/{globexResource.Id}");
+            $"/resources/{globexResource.Id}", TestJson.Options);
         Assert.Equal(globexResource.Name, unchanged!.Name);
     }
 
@@ -417,7 +418,7 @@ public class ResourceWriteEndpointTests
             await AssertReasonCodeAsync(response, "ResourceArchived");
 
             // Still readable, still under its original name.
-            var fetched = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}");
+            var fetched = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}", TestJson.Options);
             Assert.Equal("Archived Before Edit", fetched!.Name);
         }
         finally
@@ -437,7 +438,7 @@ public class ResourceWriteEndpointTests
             Application.Common.Pagination.PagedResult<
                 Application.Features.Resources.ListResources.ListResourcesQueryResponse>>("/resources"))!
             .Items.Single(r => r.Name == "3D Printer");
-        var before = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{printer.Id}");
+        var before = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{printer.Id}", TestJson.Options);
 
         var response = await client.PutAsJsonAsync(
             $"/resources/{printer.Id}",
@@ -514,7 +515,7 @@ public class ResourceWriteEndpointTests
             Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
             await AssertReasonCodeAsync(response, "CapacityBelowExistingBookings");
 
-            var unchanged = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}");
+            var unchanged = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}", TestJson.Options);
             Assert.Equal(8, unchanged!.Capacity);
         }
         finally
