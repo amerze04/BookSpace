@@ -44,7 +44,7 @@ public class ResourceReadEndpointTests
     {
         var client = await AuthenticatedClientAsync(AcmeMember);
 
-        var page = await client.GetFromJsonAsync<PagedResult<ResourceSummaryResponse>>("/resources");
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>("/resources");
 
         Assert.Equal(2, page!.TotalCount);
         Assert.Equal(2, page.Items.Count);
@@ -62,9 +62,9 @@ public class ResourceReadEndpointTests
     {
         var client = await AuthenticatedClientAsync(AcmeMember);
 
-        var first = await client.GetFromJsonAsync<PagedResult<ResourceSummaryResponse>>(
+        var first = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
             "/resources?page=1&pageSize=1");
-        var second = await client.GetFromJsonAsync<PagedResult<ResourceSummaryResponse>>(
+        var second = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
             "/resources?page=2&pageSize=1");
 
         Assert.Equal(2, first!.TotalCount);
@@ -84,7 +84,7 @@ public class ResourceReadEndpointTests
     {
         var client = await AuthenticatedClientAsync(AcmeMember);
 
-        var page = await client.GetFromJsonAsync<PagedResult<ResourceSummaryResponse>>(
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
             "/resources?page=50&pageSize=20");
 
         Assert.Empty(page!.Items);
@@ -98,7 +98,7 @@ public class ResourceReadEndpointTests
     {
         var client = await AuthenticatedClientAsync(AcmeMember);
 
-        var page = await client.GetFromJsonAsync<PagedResult<ResourceSummaryResponse>>("/resources");
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>("/resources");
 
         Assert.Equal(["3D Printer", "Conference Room A"], page!.Items.Select(r => r.Name));
     }
@@ -108,7 +108,7 @@ public class ResourceReadEndpointTests
     {
         var client = await AuthenticatedClientAsync(AcmeMember);
 
-        var page = await client.GetFromJsonAsync<PagedResult<ResourceSummaryResponse>>("/resources?sort=-name");
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>("/resources?sort=-name");
 
         Assert.Equal(["Conference Room A", "3D Printer"], page!.Items.Select(r => r.Name));
     }
@@ -118,7 +118,7 @@ public class ResourceReadEndpointTests
     {
         var client = await AuthenticatedClientAsync(AcmeMember);
 
-        var page = await client.GetFromJsonAsync<PagedResult<ResourceSummaryResponse>>(
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
             "/resources?sort=-capacity");
 
         Assert.Equal([8, 1], page!.Items.Select(r => r.Capacity));
@@ -130,7 +130,7 @@ public class ResourceReadEndpointTests
     {
         var client = await AuthenticatedClientAsync(AcmeMember);
 
-        var page = await client.GetFromJsonAsync<PagedResult<ResourceSummaryResponse>>(
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
             "/resources?sort=-CAPACITY");
 
         Assert.Equal([8, 1], page!.Items.Select(r => r.Capacity));
@@ -187,10 +187,10 @@ public class ResourceReadEndpointTests
     public async Task GetById_ReturnsTheFullDetailRepresentation()
     {
         var client = await AuthenticatedClientAsync(AcmeMember);
-        var page = await client.GetFromJsonAsync<PagedResult<ResourceSummaryResponse>>("/resources");
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>("/resources");
         var printer = page!.Items.Single(r => r.Name == "3D Printer");
 
-        var detail = await client.GetFromJsonAsync<ResourceDetailResponse>($"/resources/{printer.Id}");
+        var detail = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{printer.Id}");
 
         Assert.Equal(printer.Id, detail!.Id);
         Assert.Equal("3D Printer", detail.Name);
@@ -206,14 +206,14 @@ public class ResourceReadEndpointTests
 
     // The wire contract for instants, asserted on the raw JSON rather than the
     // deserialized DTO — System.Text.Json accepts an offset-less timestamp
-    // happily, so a round trip through ResourceDetailResponse would not notice
+    // happily, so a round trip through GetResourceQueryResponse would not notice
     // the "Z" going missing. A browser client parsing "2026-08-31T13:49:35"
     // would read it as local time (CLAUDE.md §4.3).
     [Fact]
     public async Task GetById_SerializesTimestampsAsUtcWithAnExplicitZ()
     {
         var client = await AuthenticatedClientAsync(AcmeMember);
-        var page = await client.GetFromJsonAsync<PagedResult<ResourceSummaryResponse>>("/resources");
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>("/resources");
         var anyResource = page!.Items.First();
 
         var body = await client.GetFromJsonAsync<JsonElement>($"/resources/{anyResource.Id}");
@@ -271,7 +271,7 @@ public class ResourceReadEndpointTests
         var globexResourceId = await GetAnyResourceIdAsync("globex");
         var client = await AuthenticatedClientAsync(AcmeMember);
 
-        var page = await client.GetFromJsonAsync<PagedResult<ResourceSummaryResponse>>(
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
             $"/resources?pageSize={PagingDefaults.MaxPageSize}&includeArchived=true");
 
         Assert.DoesNotContain(globexResourceId, page!.Items.Select(r => r.Id));
@@ -310,7 +310,7 @@ public class ResourceReadEndpointTests
     {
         var client = await AuthenticatedClientAsync(AcmeAdmin);
 
-        var page = await client.GetFromJsonAsync<PagedResult<ResourceSummaryResponse>>("/resources");
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>("/resources");
 
         Assert.Equal(2, page!.TotalCount);
     }
@@ -329,7 +329,7 @@ public class ResourceReadEndpointTests
         {
             var client = await AuthenticatedClientAsync(AcmeMember);
 
-            var page = await client.GetFromJsonAsync<PagedResult<ResourceSummaryResponse>>(
+            var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
                 $"/resources?pageSize={PagingDefaults.MaxPageSize}");
 
             Assert.DoesNotContain(archivedId, page!.Items.Select(r => r.Id));
@@ -341,7 +341,7 @@ public class ResourceReadEndpointTests
         {
             var client = await AuthenticatedClientAsync(AcmeMember);
 
-            var page = await client.GetFromJsonAsync<PagedResult<ResourceSummaryResponse>>(
+            var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
                 $"/resources?pageSize={PagingDefaults.MaxPageSize}&includeArchived=true");
 
             var archived = page!.Items.Single(r => r.Id == archivedId);
@@ -356,7 +356,7 @@ public class ResourceReadEndpointTests
         {
             var client = await AuthenticatedClientAsync(AcmeMember);
 
-            var detail = await client.GetFromJsonAsync<ResourceDetailResponse>($"/resources/{archivedId}");
+            var detail = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{archivedId}");
 
             Assert.Equal(archivedId, detail!.Id);
             Assert.True(detail.IsArchived);

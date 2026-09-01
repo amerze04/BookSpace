@@ -35,32 +35,32 @@ public sealed class AuthController : ControllerBase
     public sealed record RefreshRequest(string RefreshToken);
 
     [HttpPost("login")]
-    [ProducesResponseType<AuthenticationResult>(StatusCodes.Status200OK)]
+    [ProducesResponseType<LoginCommandResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<IActionResult> Login(LoginRequest request, CancellationToken cancellationToken)
     {
-        var result = await _sender.Send(new LoginCommand(request.Email, request.Password), cancellationToken);
+        var result = await _sender.Send(new LoginCommandRequest(request.Email, request.Password), cancellationToken);
         return Ok(result);
     }
 
     [HttpPost("refresh")]
-    [ProducesResponseType<AuthenticationResult>(StatusCodes.Status200OK)]
+    [ProducesResponseType<RefreshTokenCommandResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<IActionResult> Refresh(RefreshRequest request, CancellationToken cancellationToken)
     {
-        var result = await _sender.Send(new RefreshTokenCommand(request.RefreshToken), cancellationToken);
+        var result = await _sender.Send(new RefreshTokenCommandRequest(request.RefreshToken), cancellationToken);
         return Ok(result);
     }
 
-    // 204 whether or not the token was recognized — see LogoutCommandHandler.
+    // 204 whether or not the token was recognized — see LogoutCommandRequestHandler.
     [HttpPost("logout")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Logout(RefreshRequest request, CancellationToken cancellationToken)
     {
-        await _sender.Send(new LogoutCommand(request.RefreshToken), cancellationToken);
+        await _sender.Send(new LogoutCommandRequest(request.RefreshToken), cancellationToken);
         return NoContent();
     }
 }

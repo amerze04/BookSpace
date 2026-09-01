@@ -2,7 +2,7 @@ using FluentValidation;
 
 namespace BookSpace.Application.Features.Resources;
 
-// Shape validation shared by CreateResourceCommand and UpdateResourceCommand,
+// Shape validation shared by CreateResourceCommandRequest and UpdateResourceCommandRequest,
 // added by each concrete validator — same pattern as
 // PagedQueryRules.AddPagingRules, and for the same reason (a base validator
 // class would spend C#'s single inheritance slot on this).

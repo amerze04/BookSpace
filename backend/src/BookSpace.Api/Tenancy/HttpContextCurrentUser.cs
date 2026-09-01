@@ -12,7 +12,7 @@ namespace BookSpace.Api.Tenancy;
 // for the same reason HttpContextCurrentTenant does: null is a meaningful state
 // (no request, anonymous endpoint, background work), and it is the caller that
 // knows whether null is acceptable. The write handlers treat it as a wiring
-// bug; see CreateResourceCommandHandler.
+// bug; see CreateResourceCommandRequestHandler.
 internal sealed class HttpContextCurrentUser : ICurrentUser
 {
     private const string SubClaim = "sub";

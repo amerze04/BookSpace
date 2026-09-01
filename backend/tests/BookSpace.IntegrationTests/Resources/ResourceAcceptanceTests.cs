@@ -1,8 +1,10 @@
-using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Net;
 using System.Text.Json;
 using BookSpace.Application.Common.Pagination;
+using BookSpace.Application.Features.Resources.ArchiveResource;
+using BookSpace.Application.Features.Resources.CreateResource;
 using BookSpace.Application.Features.Resources.GetResource;
 using BookSpace.Application.Features.Resources.ListResources;
 using BookSpace.Infrastructure.Persistence;
@@ -70,7 +72,7 @@ public class ResourceAcceptanceTests
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-            var archived = await response.Content.ReadFromJsonAsync<ResourceDetailResponse>();
+            var archived = await response.Content.ReadFromJsonAsync<ArchiveResourceCommandResponse>();
             Assert.True(archived!.IsArchived);
             // FR-3.5: archiving preserves the resource, it does not blank it.
             Assert.Equal("Room To Archive", archived.Name);
@@ -78,14 +80,14 @@ public class ResourceAcceptanceTests
             Assert.Equal(created.CreatedAtUtc, archived.CreatedAtUtc);
 
             // Still readable by id, and now hidden from the default list.
-            var fetched = await client.GetFromJsonAsync<ResourceDetailResponse>($"/resources/{created.Id}");
+            var fetched = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}");
             Assert.True(fetched!.IsArchived);
 
-            var defaultList = await client.GetFromJsonAsync<PagedResult<ResourceSummaryResponse>>(
+            var defaultList = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
                 $"/resources?pageSize={PagingDefaults.MaxPageSize}");
             Assert.DoesNotContain(created.Id, defaultList!.Items.Select(r => r.Id));
 
-            var fullList = await client.GetFromJsonAsync<PagedResult<ResourceSummaryResponse>>(
+            var fullList = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
                 $"/resources?pageSize={PagingDefaults.MaxPageSize}&includeArchived=true");
             Assert.Contains(created.Id, fullList!.Items.Select(r => r.Id));
         }
@@ -111,8 +113,8 @@ public class ResourceAcceptanceTests
             Assert.Equal(HttpStatusCode.OK, first.StatusCode);
             Assert.Equal(HttpStatusCode.OK, second.StatusCode);
 
-            var firstBody = await first.Content.ReadFromJsonAsync<ResourceDetailResponse>();
-            var secondBody = await second.Content.ReadFromJsonAsync<ResourceDetailResponse>();
+            var firstBody = await first.Content.ReadFromJsonAsync<ArchiveResourceCommandResponse>();
+            var secondBody = await second.Content.ReadFromJsonAsync<ArchiveResourceCommandResponse>();
 
             // Byte-for-byte identical, including UpdatedAtUtc: the second call
             // changed nothing, so it must not move "last changed".
@@ -174,14 +176,14 @@ public class ResourceAcceptanceTests
         {
             var memberClient = await AuthenticatedClientAsync(AcmeMember);
 
-            var list = await memberClient.GetFromJsonAsync<PagedResult<ResourceSummaryResponse>>(
+            var list = await memberClient.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
                 $"/resources?pageSize={PagingDefaults.MaxPageSize}");
             var summary = list!.Items.Single(r => r.Id == created.Id);
             Assert.Equal("Published Room", summary.Name);
             Assert.Equal(12, summary.Capacity);
 
-            var detail = await memberClient.GetFromJsonAsync<ResourceDetailResponse>($"/resources/{created.Id}");
-            Assert.Equal(created, detail);
+            var detail = await memberClient.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}");
+            ResourceResponseAssertions.AssertSameResource(created, detail!);
         }
         finally
         {
@@ -217,8 +219,8 @@ public class ResourceAcceptanceTests
             Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
 
             // And the resource is untouched.
-            var unchanged = await adminClient.GetFromJsonAsync<ResourceDetailResponse>($"/resources/{created.Id}");
-            Assert.Equal(created, unchanged);
+            var unchanged = await adminClient.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}");
+            ResourceResponseAssertions.AssertSameResource(created, unchanged!);
         }
         finally
         {
@@ -275,7 +277,7 @@ public class ResourceAcceptanceTests
 
         // Nothing happened on the other side of the boundary.
         var globexClient = await AuthenticatedClientAsync(GlobexAdmin);
-        var untouched = await globexClient.GetFromJsonAsync<ResourceDetailResponse>(
+        var untouched = await globexClient.GetFromJsonAsync<GetResourceQueryResponse>(
             $"/resources/{globexResourceId}");
         Assert.False(untouched!.IsArchived);
     }
@@ -460,11 +462,11 @@ public class ResourceAcceptanceTests
         return client;
     }
 
-    private static async Task<ResourceDetailResponse> PostAndReadAsync(HttpClient client, object payload)
+    private static async Task<CreateResourceCommandResponse> PostAndReadAsync(HttpClient client, object payload)
     {
         var response = await client.PostAsJsonAsync("/resources", payload);
         response.EnsureSuccessStatusCode();
-        return (await response.Content.ReadFromJsonAsync<ResourceDetailResponse>())!;
+        return (await response.Content.ReadFromJsonAsync<CreateResourceCommandResponse>())!;
     }
 
     private static async Task AssertReasonCodeAsync(HttpResponseMessage response, string expected)

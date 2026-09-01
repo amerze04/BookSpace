@@ -6,7 +6,7 @@ namespace BookSpace.Application.Common.Errors;
 //
 // Deliberately not thrown by the archive endpoint itself: archiving something
 // already archived is the state the caller asked for, not a rule violation, so
-// that path is idempotent. See ArchiveResourceCommandHandler.
+// that path is idempotent. See ArchiveResourceCommandRequestHandler.
 public sealed class ResourceArchivedException : AppException
 {
     public ResourceArchivedException(Guid resourceId)

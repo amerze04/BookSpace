@@ -41,7 +41,7 @@ internal static class ResourceWriteRules
     }
 
     // FR-3.5: archiving preserves the resource and its history. It stays
-    // readable (see GetResourceQueryHandler) but accepts no further edits —
+    // readable (see GetResourceQueryRequestHandler) but accepts no further edits —
     // otherwise "archived" would mean nothing beyond a flag.
     public static void EnsureNotArchived(Resource resource)
     {

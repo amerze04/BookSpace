@@ -172,6 +172,14 @@ Manual verification in Postman begins once these four steps are done — see
 
 #### What Phase 2 actually delivered, and the calls made along the way
 
+**Two conventions changed after the phase landed, on the mentor's advice** —
+both written up as amendments rather than new records, so each contract still
+reads in one place: named exception subclasses per failure (amendment to
+`0016`, 2026-09-01) and per-endpoint response DTOs plus `…CommandRequest`
+naming (amendment to `0015`, 2026-09-01). Neither changed behaviour, with one
+exception: `PUT /resources/{id}` now returns a flat body instead of wrapping the
+resource in a `resource` property.
+
 All four steps landed on 2026-08-31, one review round each. 366 unit + 142
 integration tests pass, and every endpoint was additionally exercised by hand
 against a running instance.

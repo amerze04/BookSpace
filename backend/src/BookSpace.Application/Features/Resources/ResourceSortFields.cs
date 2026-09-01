@@ -1,7 +1,7 @@
 namespace BookSpace.Application.Features.Resources;
 
 // The `sort` whitelist for GET /resources (docs/decisions/0015-api-contract-
-// and-pagination.md). Shared by ListResourcesQueryValidator, which rejects
+// and-pagination.md). Shared by ListResourcesQueryRequestValidator, which rejects
 // anything not here, and the repository, which maps a canonical name onto a
 // typed OrderBy — neither invents its own list.
 //
