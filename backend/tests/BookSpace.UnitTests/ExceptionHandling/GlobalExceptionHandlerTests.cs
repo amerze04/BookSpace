@@ -116,9 +116,14 @@ public class GlobalExceptionHandlerTests
         Assert.Equal(1, logCount);
     }
 
-    // WP-3 Phase 1: one AppException case, mapped by Kind. A new failure needs a
-    // reason code and a Kind, not a new switch case — these four rows are the
-    // whole contract WP-4's booking rejections will arrive through.
+    // One arm for the whole AppException hierarchy, mapped by Kind. A new failure
+    // needs a subclass and a catalogue entry, not a new switch case — these five
+    // rows are the whole contract WP-4's booking rejections will arrive through.
+    //
+    // Deliberately thrown as ProbeAppException rather than one of the real
+    // subclasses: what is under test is the mapping mechanism, which must work
+    // for any Kind, including combinations no concrete exception uses today. A
+    // test built on ResourceNotFoundException would only ever prove the 404 row.
     [Theory]
     [InlineData(ErrorKind.Validation, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorKind.Unauthorized, StatusCodes.Status401Unauthorized)]
@@ -127,7 +132,7 @@ public class GlobalExceptionHandlerTests
     [InlineData(ErrorKind.RuleViolation, StatusCodes.Status422UnprocessableEntity)]
     public async Task TryHandleAsync_AppException_MapsKindToStatusCode(ErrorKind kind, int expectedStatusCode)
     {
-        var exception = new AppException(kind, "SomeReasonCode", "internal detail");
+        var exception = new ProbeAppException(kind, "SomeReasonCode", "internal detail");
 
         var (handled, statusCode, body, _) = await InvokeAsync(exception);
 
@@ -145,7 +150,7 @@ public class GlobalExceptionHandlerTests
     [InlineData(ErrorKind.RuleViolation)]
     public async Task TryHandleAsync_AppException_DoesNotLeakTheExceptionMessage(ErrorKind kind)
     {
-        var exception = new AppException(kind, "SomeReasonCode", "resource 4f2c belongs to org globex");
+        var exception = new ProbeAppException(kind, "SomeReasonCode", "resource 4f2c belongs to org globex");
 
         var (_, _, body, _) = await InvokeAsync(exception);
 
@@ -159,7 +164,7 @@ public class GlobalExceptionHandlerTests
     public async Task TryHandleAsync_AppException_LogsExactlyOnce()
     {
         var (_, _, _, logCount) = await InvokeAsync(
-            new AppException(ErrorKind.RuleViolation, "ResourceArchived", "resource is archived"));
+            new ProbeAppException(ErrorKind.RuleViolation, "ResourceArchived", "resource is archived"));
 
         Assert.Equal(1, logCount);
     }
@@ -188,6 +193,20 @@ public class GlobalExceptionHandlerTests
         var body = JsonDocument.Parse(json).RootElement;
 
         return (handled, context.Response.StatusCode, body, testLogger.LogCount);
+    }
+
+    // AppException is abstract with a protected constructor, so production code
+    // can only throw a named failure — which is the point of the 2026-09-01
+    // refactor. This is the sanctioned way to exercise the base contract: a
+    // test-only subclass that can take any Kind/code pair, including ones no
+    // real exception uses. If a production file ever needs something like this,
+    // that's the signal a new named exception is missing.
+    private sealed class ProbeAppException : AppException
+    {
+        public ProbeAppException(ErrorKind kind, string reasonCode, string message)
+            : base(kind, reasonCode, message)
+        {
+        }
     }
 
     private sealed class CountingLogger<T> : ILogger<T>

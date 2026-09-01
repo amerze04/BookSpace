@@ -25,9 +25,6 @@ public sealed class GetResourceQueryHandler : IRequestHandler<GetResourceQuery, 
 
         // The message is for the log only (see AppException) — the response
         // carries the reason code and nothing else.
-        return resource ?? throw new AppException(
-            ErrorKind.NotFound,
-            ReasonCodes.ResourceNotFound,
-            $"Resource {request.ResourceId} was not found in the current tenant.");
+        return resource ?? throw new ResourceNotFoundException(request.ResourceId);
     }
 }

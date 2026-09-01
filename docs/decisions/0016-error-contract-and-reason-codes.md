@@ -143,3 +143,98 @@ that rationale sits with the codes it constrains. The cost is two files to
 check when adding a code; `ReasonCodesTests` covers the risk that comes with
 the split by asserting every code is unique across both, and that each code's
 value matches its member name.
+
+---
+
+## Amendment (2026-09-01) — one named exception per failure
+
+**Status:** Amended and implemented (2026-09-01). Everything above still holds
+except the shape of the throw site; the parts that changed are marked below.
+**Raised by:** the mentor, reviewing the WP-3 Phase 2 code.
+
+### What was wrong with the original decision
+
+`AppException(kind, reasonCode, message)` took the kind and the code as two
+independent parameters. Nothing tied them together, so
+
+- `ErrorKind.NotFound` alongside `ReasonCodes.ResourceArchived` compiled
+  cleanly and would have shipped a 404 for something that must be a 422, and
+- a throw site could pass a string literal instead of a catalogue constant.
+
+The catalogue records the correct kind beside every code — **in a comment**.
+The original record even acknowledged this, arguing that enforcing it would
+mean consulting a code-to-kind map at every throw site to be worth anything.
+That framing was the mistake: a named subclass fixes the pairing once, at
+declaration, and costs nothing at the throw site.
+
+### The amendment
+
+**Each distinct failure is a `sealed` class deriving from `AppException`, fixing
+its own kind and reason code in its constructor and composing its own log
+message.** `AppException` is now **abstract with a protected constructor**, so a
+bare one cannot be thrown at all — the rule is enforced by the compiler rather
+than by remembering it, which is the same standard CLAUDE.md §4.2 sets for
+tenant isolation.
+
+Five classes exist, in `BookSpace.Application.Common.Errors` beside the
+catalogue they draw from: `ResourceNotFoundException`,
+`ResourceArchivedException`, `InvalidTimeZoneIdException`,
+`ApproversRequiredException`, `CapacityBelowExistingBookingsException`.
+
+**Deliberately unchanged:**
+
+- `GlobalExceptionHandler` still has **one arm for the whole hierarchy** and
+  still maps `ErrorKind` → status exactly once. It never learns a subclass
+  name. This was the part worth protecting: a design where the handler grew a
+  `case` per exception type would undo the reason the original decision existed,
+  and WP-4's six booking rejections would each need API-layer plumbing.
+- The **`ReasonCodes` catalogue stays**, and subclasses pass its constants. The
+  string is the wire contract, one place to look, and `ReasonCodesTests` proves
+  uniqueness across both catalogue files.
+- The **message is still log-only**, and `ErrorKind` is unchanged.
+- **`AuthenticationException` is unchanged** and is the one sanctioned exception
+  to "one class per failure": it carries five different codes on purpose, so
+  every credential failure looks identical to the client (FR-2.1). It was
+  already a subclass, which is what made this amendment obvious in hindsight.
+
+### Codes without a class yet
+
+Seven catalogue codes have no thrower — `OverlappingAvailabilityWindow` and
+`ApproverNotEligible` (WP-3 Phase 3), `BlackoutPeriod` (Phase 4), and WP-4's
+`SlotUnavailable`, `CapacityExceeded`, `OutsideAvailability`,
+`ApprovalRequired`. **No speculative classes were created for them.** The
+abstract base makes that safe: a code with no class simply cannot be thrown, so
+the phase that adds the thrower must add the class, and there is no way to
+shortcut it with a bare `AppException`. Declaring the codes up front still does
+its job — WP-4 adds throwers rather than inventing spellings.
+
+### Naming
+
+`<ReasonCode>Exception`, with one documented bend: the `InvalidTimeZone` code's
+class is `InvalidTimeZoneIdException`, because **`System.InvalidTimeZoneException`
+already exists** — `TimeZoneInfo` throws it for a corrupt timezone database,
+which this codebase could plausibly encounter. Shadowing a BCL exception name is
+how a `catch` ends up catching something nobody meant. The code itself stays
+`InvalidTimeZone`: the wire contract should not be reshaped by what the BCL
+happens to have named a type.
+
+### What now enforces the pairing
+
+`AppExceptionCatalogueTests` discovers every concrete `AppException` subclass by
+reflection and asserts that each one appears in an expected `(code, kind)` table,
+carries a code that exists in the catalogue, and has a non-empty message. It
+also fails if the table lists a type that no longer exists. Adding a failure
+therefore means writing the pairing down deliberately, and a mispaired kind
+fails the build — verified by deliberately mispairing
+`ResourceArchivedException` and watching it fail.
+
+### Migration cost, for the record
+
+Seven throw sites in `src`, five new classes, four unit-test files tightened
+from "base type plus string comparison" to the specific type, and one test-local
+`ProbeAppException` so the mapping tests can still exercise any kind. **The 142
+integration tests did not change at all** — they assert `reasonCode` and status
+over real HTTP, and the observable contract is identical. That is the clearest
+evidence this was a refactor and not a redesign, and it was only that cheap
+because the original decision funnelled everything through one base type and one
+mapping point.

@@ -19,10 +19,7 @@ internal static class ResourceWriteRules
     {
         if (!timeZones.IsKnownIanaId(timeZoneId))
         {
-            throw new AppException(
-                ErrorKind.Validation,
-                ReasonCodes.InvalidTimeZone,
-                $"'{timeZoneId}' is not a recognized IANA timezone id.");
+            throw new InvalidTimeZoneIdException(timeZoneId);
         }
     }
 
@@ -39,10 +36,7 @@ internal static class ResourceWriteRules
     {
         if (requiresApproval && approverCount == 0)
         {
-            throw new AppException(
-                ErrorKind.RuleViolation,
-                ReasonCodes.ApproversRequired,
-                "A resource cannot require approval with no approvers assigned.");
+            throw new ApproversRequiredException();
         }
     }
 
@@ -53,10 +47,7 @@ internal static class ResourceWriteRules
     {
         if (resource.IsArchived)
         {
-            throw new AppException(
-                ErrorKind.RuleViolation,
-                ReasonCodes.ResourceArchived,
-                $"Resource {resource.Id} is archived and cannot be edited.");
+            throw new ResourceArchivedException(resource.Id);
         }
     }
 
@@ -76,11 +67,7 @@ internal static class ResourceWriteRules
     {
         if (newCapacity < peakConcurrentQuantity)
         {
-            throw new AppException(
-                ErrorKind.RuleViolation,
-                ReasonCodes.CapacityBelowExistingBookings,
-                $"Capacity {newCapacity} is below the {peakConcurrentQuantity} units already "
-                + "committed at one instant by existing bookings.");
+            throw new CapacityBelowExistingBookingsException(newCapacity, peakConcurrentQuantity);
         }
     }
 }

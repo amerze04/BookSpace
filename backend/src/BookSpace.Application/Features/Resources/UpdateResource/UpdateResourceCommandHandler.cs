@@ -45,10 +45,7 @@ public sealed class UpdateResourceCommandHandler
         // CLAUDE.md §4.2's whole point is that isolation must not depend on a
         // handler remembering one.
         var resource = await _resources.FindForUpdateAsync(request.ResourceId, cancellationToken)
-            ?? throw new AppException(
-                ErrorKind.NotFound,
-                ReasonCodes.ResourceNotFound,
-                $"Resource {request.ResourceId} was not found in the current tenant.");
+            ?? throw new ResourceNotFoundException(request.ResourceId);
 
         ResourceWriteRules.EnsureNotArchived(resource);
         ResourceWriteRules.EnsureKnownTimeZone(_timeZones, request.TimeZoneId);

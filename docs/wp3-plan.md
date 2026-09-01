@@ -98,6 +98,14 @@ how the inconsistency the AC forbids gets in.
    slot into the same mechanism in WP-4 with no further plumbing.
    **Done 2026-08-31** — `AppException` carries an `ErrorKind`, and
    `GlobalExceptionHandler` maps kind to status once; decision `0016`.
+   **Refined 2026-09-01, after Phase 2, on the mentor's advice**: each failure
+   is now a named `sealed` subclass of `AppException`, which is abstract with a
+   protected constructor, so a kind and a code can no longer be paired wrongly
+   at a throw site — the original design could only document the pairing in a
+   comment. The single mapping arm and the `ReasonCodes` catalogue are
+   unchanged, and the integration suite needed no edits because the wire
+   contract is identical. Written up as the amendment section of decision
+   `0016`.
 4. **Reason-code catalogue for WP-3**, extending `CLAUDE.md` §6's list.
    `ResourceArchived` and `BlackoutPeriod` are already there; resource-not-
    found, approver-not-in-tenant, and invalid-timezone are new.

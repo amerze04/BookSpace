@@ -71,7 +71,7 @@ public class CreateResourceCommandHandlerTests
     {
         var repository = new FakeResourceRepository();
 
-        var exception = await Assert.ThrowsAsync<AppException>(() =>
+        var exception = await Assert.ThrowsAsync<InvalidTimeZoneIdException>(() =>
             Handler(repository).Handle(ValidCommand(timeZoneId: "Mars/Olympus"), CancellationToken.None));
 
         Assert.Equal(ReasonCodes.InvalidTimeZone, exception.ReasonCode);
@@ -88,7 +88,7 @@ public class CreateResourceCommandHandlerTests
     {
         var repository = new FakeResourceRepository();
 
-        var exception = await Assert.ThrowsAsync<AppException>(() =>
+        var exception = await Assert.ThrowsAsync<ApproversRequiredException>(() =>
             Handler(repository).Handle(ValidCommand(requiresApproval: true), CancellationToken.None));
 
         Assert.Equal(ReasonCodes.ApproversRequired, exception.ReasonCode);

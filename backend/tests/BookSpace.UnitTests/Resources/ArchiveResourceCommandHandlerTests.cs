@@ -60,7 +60,7 @@ public class ArchiveResourceCommandHandlerTests
     {
         var repository = new FakeResourceRepository(ExistingResource());
 
-        var exception = await Assert.ThrowsAsync<AppException>(() =>
+        var exception = await Assert.ThrowsAsync<ResourceNotFoundException>(() =>
             Handler(repository).Handle(new ArchiveResourceCommand(Guid.NewGuid()), CancellationToken.None));
 
         Assert.Equal(ReasonCodes.ResourceNotFound, exception.ReasonCode);

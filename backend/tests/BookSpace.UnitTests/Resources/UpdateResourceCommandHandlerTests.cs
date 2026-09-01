@@ -84,7 +84,7 @@ public class UpdateResourceCommandHandlerTests
     {
         var repository = new FakeResourceRepository(ExistingResource());
 
-        var exception = await Assert.ThrowsAsync<AppException>(() =>
+        var exception = await Assert.ThrowsAsync<ResourceNotFoundException>(() =>
             Handler(repository).Handle(Command(Guid.NewGuid()), CancellationToken.None));
 
         Assert.Equal(ReasonCodes.ResourceNotFound, exception.ReasonCode);
@@ -99,7 +99,7 @@ public class UpdateResourceCommandHandlerTests
         resource.Archive(ActorId, CreatedUtc);
         var repository = new FakeResourceRepository(resource);
 
-        var exception = await Assert.ThrowsAsync<AppException>(() =>
+        var exception = await Assert.ThrowsAsync<ResourceArchivedException>(() =>
             Handler(repository).Handle(Command(resource.Id), CancellationToken.None));
 
         Assert.Equal(ReasonCodes.ResourceArchived, exception.ReasonCode);
@@ -115,7 +115,7 @@ public class UpdateResourceCommandHandlerTests
         var resource = ExistingResource();
         var repository = new FakeResourceRepository(resource);
 
-        var exception = await Assert.ThrowsAsync<AppException>(() =>
+        var exception = await Assert.ThrowsAsync<InvalidTimeZoneIdException>(() =>
             Handler(repository).Handle(
                 Command(resource.Id, timeZoneId: "Eastern Standard Time"), CancellationToken.None));
 
@@ -129,7 +129,7 @@ public class UpdateResourceCommandHandlerTests
         var resource = ExistingResource();
         var repository = new FakeResourceRepository(resource);
 
-        var exception = await Assert.ThrowsAsync<AppException>(() =>
+        var exception = await Assert.ThrowsAsync<ApproversRequiredException>(() =>
             Handler(repository).Handle(
                 Command(resource.Id, requiresApproval: true), CancellationToken.None));
 
@@ -161,7 +161,7 @@ public class UpdateResourceCommandHandlerTests
         var resource = ExistingResource(capacity: 8);
         var repository = new FakeResourceRepository(resource, peakConcurrentBookedQuantity: 5);
 
-        var exception = await Assert.ThrowsAsync<AppException>(() =>
+        var exception = await Assert.ThrowsAsync<CapacityBelowExistingBookingsException>(() =>
             Handler(repository).Handle(Command(resource.Id, capacity: 4), CancellationToken.None));
 
         Assert.Equal(ReasonCodes.CapacityBelowExistingBookings, exception.ReasonCode);

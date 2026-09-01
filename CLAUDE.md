@@ -204,8 +204,19 @@ Resources and availability (WP-3): `ResourceNotFound`, `InvalidTimeZone`,
 
 A code travels with the `ErrorKind` recorded beside it in `ReasonCodes`, so
 the same failure never arrives as a 404 from one handler and a 422 from
-another. `AppException(kind, reasonCode, message)` is how a handler raises
-one; the message is for the log only.
+another. **Each failure is a named `sealed` subclass of `AppException`** that
+fixes its own kind and code — `throw new ResourceArchivedException(id)`, never
+a kind and a code passed as arguments. `AppException` is abstract with a
+protected constructor, so the compiler enforces that; a mispaired kind is
+caught by `AppExceptionCatalogueTests`. The message is for the log only.
+
+`GlobalExceptionHandler` still has **one arm for the whole hierarchy** and maps
+kind → status once, so a new failure needs a subclass and a catalogue entry,
+never a case in that switch. A code with no subclass yet cannot be thrown at
+all, which is why the phase that adds a thrower adds the class.
+`AuthenticationException` is the one sanctioned multi-code subclass (FR-2.1
+needs every credential failure to look identical). Reasoning in the amendment
+section of `docs/decisions/0016-error-contract-and-reason-codes.md`.
 
 ---
 
@@ -340,8 +351,8 @@ index; when a new decision doc is added, add its one-liner here too.
    wire, hand-written mapping, full-representation `PUT` for edits. Keyset
    paging was rejected — revisit only if an endpoint pages over `Bookings`.
 16. [`0016`](docs/decisions/0016-error-contract-and-reason-codes.md) — one error
-   contract: a handler rejects a request by throwing `AppException(kind,
-   reasonCode, message)`, and `GlobalExceptionHandler` maps `ErrorKind` —
+   contract: a handler rejects a request by throwing an `AppException`, and
+   `GlobalExceptionHandler` maps `ErrorKind` —
    Validation/Unauthorized/NotFound/Conflict/RuleViolation — onto
    400/401/404/409/**422** once. A new failure needs a code and a kind, not a
    new switch case, so WP-4's booking rejections need no further plumbing.
@@ -352,6 +363,13 @@ index; when a new decision doc is added, add its one-liner here too.
    each code's kind beside it; authentication's five stay in
    `AuthenticationFailureReason`, and a test proves every code is unique across
    both files and matches its own member name.
+   **Amended 2026-09-01 on the mentor's advice** (see the record's amendment
+   section): `AppException` is now **abstract with a protected constructor**, and
+   each failure is a named `sealed` subclass fixing its own kind and code, so the
+   two can no longer be paired wrongly — the original design could only document
+   the pairing in a comment. The single mapping arm, the catalogue, the log-only
+   message and `AuthenticationException` are all unchanged, and the 142
+   integration tests needed no edits, since the wire contract is identical.
 17. [`0017`](docs/decisions/0017-test-fixture-booking-inserts.md) — integration
    **test fixtures** may insert `Bookings` rows with **raw SQL** — never LINQ,
    never `SaveChanges`, and only in fixtures. A narrow, documented carve-out

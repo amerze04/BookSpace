@@ -36,10 +36,7 @@ public sealed class ArchiveResourceCommandHandler
         // Tenant-filtered, so another tenant's real id is a 404 here exactly as
         // it is on the read and edit paths (AC-4).
         var resource = await _resources.FindForUpdateAsync(request.ResourceId, cancellationToken)
-            ?? throw new AppException(
-                ErrorKind.NotFound,
-                ReasonCodes.ResourceNotFound,
-                $"Resource {request.ResourceId} was not found in the current tenant.");
+            ?? throw new ResourceNotFoundException(request.ResourceId);
 
         // Idempotent, deliberately, and this is the one place ResourceArchived is
         // *not* thrown: archiving is a transition to a terminal state, so asking
