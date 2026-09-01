@@ -106,7 +106,7 @@ how the inconsistency the AC forbids gets in.
    `ApproverNotInTenant`, so it cannot confirm a cross-tenant id exists
    (reasoning in decision `0016`).
 
-### Phase 2 — Resource CRUD (FR-3.1, FR-3.5)
+### Phase 2 — Resource CRUD (FR-3.1, FR-3.5) — **Done 2026-08-31**
 
 The aggregate root everything else hangs off.
 
@@ -156,10 +156,71 @@ one step sooner.
 Step 3's `CapacityBelowExistingBookings` check needs `Bookings` rows to be
 testable, and no booking write path exists (CLAUDE.md §4.1). It is therefore
 the first real user of decision **D4**'s raw-SQL fixture carve-out; expect that
-decision to be promoted to a numbered record when this step lands.
+decision to be promoted to a numbered record when this step lands. **It was —
+[`0017`](decisions/0017-test-fixture-booking-inserts.md).**
 
 Manual verification in Postman begins once these four steps are done — see
 "Manual verification with Postman" below.
+
+#### What Phase 2 actually delivered, and the calls made along the way
+
+All four steps landed on 2026-08-31, one review round each. 366 unit + 142
+integration tests pass, and every endpoint was additionally exercised by hand
+against a running instance.
+
+Endpoints: `GET /resources` (paged, `sort=name|resourceType|capacity`,
+`includeArchived`), `GET /resources/{id}` on `TenantMember`; `POST /resources`,
+`PUT /resources/{id}`, `POST /resources/{id}/archive` on `TenantAdmin`.
+
+Decisions taken during the phase, none of which the plan had anticipated:
+
+- **`ApproversRequired` is enforced on create as well as edit.** The "smaller
+  calls" section below says "at edit time"; blocking it on create too means the
+  state FR-3.3 rules out is never a resting state. Accepted consequence,
+  confirmed by the owner: until Phase 3 adds approver assignment, only a
+  resource that already has an approver can carry the flag.
+- **Archive is `POST /resources/{id}/archive`, not `DELETE`.** §4.5 deletes
+  nothing and there is no `Unarchive`, so a `DELETE` quietly meaning "archive,
+  irreversibly" would mislead a client. Leaving `DELETE` unimplemented is itself
+  the honest answer for a row that cannot be deleted.
+- **Archive is idempotent** — a terminal state already reached is not a rule
+  violation, and a retry after a dropped response has to be safe. It returns
+  the resource unchanged, without moving `UpdatedAtUtc`. It is the one place
+  `ResourceArchived` is deliberately *not* thrown; editing an archived resource
+  still is.
+- **`ResourceArchived` on `PUT`** was implemented here even though the step
+  split did not list it. Step 1 had recorded that the write handlers own FR-3.5's
+  edit refusal, and leaving `PUT` willing to edit archived resources would have
+  been a real gap.
+- **The timezone-change notice.** "The response says so explicitly" (below) is
+  implemented as a nullable `TimeZoneChangeNotice` on the `PUT` response,
+  carrying the previous id, the new id and the number of availability windows
+  reinterpreted — a machine-readable notice rather than a prose warning, for the
+  same reason a rejection carries a reason code.
+- **`CK_Resources_DurationLimits`** was added (migration
+  `AddResourceDurationLimitsCheck`). The schema had a `CHECK` for capacity but
+  none for the duration pair, which by §6's tiering looked like a tier-1 gap;
+  the owner chose consistency.
+- **Two §4.3 time conventions**, both found by a failing test and a smoke check
+  rather than reasoned about up front: `IClock.UtcNow` is truncated to whole
+  seconds (`datetime2(0)` rounds, so a create response otherwise disagreed with
+  the row it had just written), and every `DateTime` read from the database has
+  `DateTimeKind.Utc` stamped back on (`datetime2` carries no offset, so JSON
+  omitted the `Z` and a browser would read the value as local time).
+
+Two things a reader might expect in the resource DTOs and will not find until
+Phase 3: **availability windows** and the **assigned approver list**. Both are
+Phase 3's to manage, and the approver list is worth more once there are
+eligibility rules to report than as bare Guids. `requiresApproval` can
+therefore read `true` with no visible approvers until then; adding either field
+later is additive.
+
+One piece of pre-existing test debt was fixed rather than worked around:
+`AuthenticationEndpointTests.Login_DeactivatedUser_Returns401` permanently
+deactivated the seeded `approver@acme.test` in the shared test database. That
+was harmless while nothing else needed an Approver; Phase 2's "an Approver is a
+non-admin too" assertions failed against it, and only in a full run. The test
+now reactivates the account in a `finally`, so the suite is order-independent.
 
 ### Phase 3 — Availability windows and approvers (FR-3.2, FR-3.3)
 
@@ -236,6 +297,19 @@ The API already serves an OpenAPI document in Development
 `GET http://localhost:5270/openapi/v1.json` can be imported straight into
 Postman rather than hand-building every request. Endpoints appear in it as they
 are written.
+
+**Correction, found 2026-08-31 while verifying Phase 2 step 2:** that URL
+returns **401** without a bearer token. The deny-by-default `FallbackPolicy`
+(decision `0012`) covers `MapOpenApi()` too, so the document has to be fetched
+with a token attached like any other request. Open for the owner: either leave
+it and remember the token step, or `MapOpenApi().AllowAnonymous()` in the
+Development branch only — opening an endpoint is an authorization decision, so
+it was left alone.
+
+Minor, related: the document names the list endpoint's query parameters
+`Page`/`PageSize`/`Sort`/`IncludeArchived` (PascalCase, from the request
+record's properties), so a Postman import generates `?Page=1`. Query binding is
+case-insensitive, so both spellings work.
 
 - URLs: `http://localhost:5270`, or `https://localhost:7079` (the dev
   certificate will need SSL verification turned off for that environment).
@@ -352,6 +426,13 @@ it for ranges here does not resolve it for instants.
 
 ### D4 — Bookings are inserted by raw SQL in the integration fixture
 
+**Implemented 2026-08-31 (Phase 2 step 3) and promoted to
+[`docs/decisions/0017-test-fixture-booking-inserts.md`](decisions/0017-test-fixture-booking-inserts.md)**,
+which is now the authoritative record — including the gotcha this plan could not
+have anticipated: the fixture connection needs an explicit RLS bypass, because
+the `INSERT`'s own `SELECT` over `Resources`/`Users` (and the cleanup `DELETE`)
+silently affects zero rows without one.
+
 **Decided: allow it, document it.** The AC "the availability query correctly
 excludes … existing bookings" cannot be tested without booking rows, and
 `dbo.CreateBooking` is WP-4 work that §11/§12 forbid pulling forward.
@@ -378,10 +459,21 @@ cheaply; none changes the schema.
 - **`RequiresApproval = true` with zero approvers is blocked** at edit time.
   FR-3.3 reads "can be marked `RequiresApproval`, with one or more assigned
   approvers", so the empty state is not a valid resting state.
+  **Landed Phase 2 step 3, widened to create as well as edit** — see "What
+  Phase 2 actually delivered" above. `ReasonCodes.ApproversRequired`, 422.
 - **A capacity decrease that would put existing bookings over the new limit is
-  rejected.**
+  rejected.** **Landed Phase 2 step 3** as
+  `ReasonCodes.CapacityBelowExistingBookings`, 422. It compares the new capacity
+  against the **peak of concurrent `Quantity`** (the maximum, over every future
+  booking's start instant, of the units held at that instant) — not a sum over
+  the range, which would overcount, since two bookings can both overlap a third
+  without overlapping each other. `Pending`/`Confirmed` only, future only:
+  reducing capacity cannot invalidate history. Advisory by design — §4.1 keeps
+  the real capacity guarantee in `dbo.CreateBooking` under a range lock.
 - **Changing `TimeZoneId` reinterprets all existing availability windows**, and
   the response says so explicitly rather than silently shifting them.
+  **Landed Phase 2 step 3** as a nullable `TimeZoneChangeNotice` on the `PUT`
+  response.
 
 ---
 

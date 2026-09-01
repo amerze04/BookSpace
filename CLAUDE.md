@@ -114,6 +114,25 @@ using the rule's IANA `TimeZoneId`, then converts to UTC. Do not split timezone
 logic across the app and the database; `AT TIME ZONE` takes Windows zone IDs
 and will not match what .NET produces (FR-6.1, FR-6.2, FR-6.3).
 
+A stored `TimeZoneId` is an **IANA** id, and only an IANA id. On Windows
+`TimeZoneInfo` resolves Windows ids too, so "can we find it" is not a
+sufficient check — `ITimeZoneCatalog` also requires
+`TryConvertIanaIdToWindowsId` to succeed, which is true only for a canonical
+IANA id. Rejecting `"Eastern Standard Time"` and `"america/new_york"` is the
+point, not an accident.
+
+Two conventions keep app-time and stored-time from disagreeing. Both were added
+in WP-3 Phase 2; break either and the mismatch is silent.
+
+- **`IClock.UtcNow` is truncated to whole seconds.** `datetime2(0)` *rounds* on
+  write, so an entity stamped at `12:00:32.9` is stored as `:33` and a create
+  response built from that entity does not match the row a client reads back.
+- **Every `DateTime` read from the database gets `DateTimeKind.Utc` stamped
+  back on**, via a value converter applied to every `DateTime`/`DateTime?`
+  property in `OnModelCreating`. `datetime2` carries no offset, so EF
+  materializes `Unspecified` and `System.Text.Json` then omits the trailing
+  `Z` — which a browser client parses as *local* time.
+
 ### 4.4 Secrets
 
 Passwords and refresh tokens are hashed, never stored or logged in plaintext
@@ -160,10 +179,10 @@ never" in tier 4.
 
 | Tier | Enforced by | Contains |
 |---|---|---|
-| 1 | Database constraints | Interval sanity, status domains, uniqueness, composite tenant FK |
+| 1 | Database constraints | Interval sanity (a booking's, and a resource's duration bounds), status domains, uniqueness, composite tenant FK |
 | 2 | Locking protocol | No overbooking beyond capacity, approval re-check |
 | 3 | RLS + query filters | Tenant isolation |
-| 4 | Application code | Availability windows, blackouts, duration limits, approval routing |
+| 4 | Application code | Availability windows, blackouts, a booking's length against the resource's duration limits, approval routing |
 
 Rule of thumb: PRD wording of "must never" belongs in tier 1–3. "Should"
 belongs in tier 4.
@@ -333,16 +352,24 @@ index; when a new decision doc is added, add its one-liner here too.
    each code's kind beside it; authentication's five stay in
    `AuthenticationFailureReason`, and a test proves every code is unique across
    both files and matches its own member name.
+17. [`0017`](docs/decisions/0017-test-fixture-booking-inserts.md) — integration
+   **test fixtures** may insert `Bookings` rows with **raw SQL** — never LINQ,
+   never `SaveChanges`, and only in fixtures. A narrow, documented carve-out
+   from §4.1, because `CapacityBelowExistingBookings` (WP-3 Phase 2) and the
+   availability query's "excludes existing bookings" AC (Phase 5) cannot be
+   tested before `dbo.CreateBooking` exists in WP-4. Raw SQL specifically so it
+   cannot be mistaken for a production path and adds no reusable domain method.
+   **Gotcha recorded there**: the fixture connection needs an explicit RLS
+   bypass, or the `INSERT`'s own `SELECT` (and the cleanup `DELETE`) silently
+   affects zero rows. **Promoted from WP-3's D4** when Phase 2 step 3 landed.
 
-**Decided but not yet written up as numbered records** — three WP-3 decisions
-(D2–D4) were settled by the repo owner on 2026-08-28 before that package
-started, and live in `docs/wp3-plan.md` until the phase implementing each one
-lands and promotes it to the next free number (`0017`+, now that `0015` and
-`0016` are taken): interval-plus-`remainingCapacity` slot semantics, DST
-handling for availability *ranges*, and a raw-SQL carve-out for seeding
-`Bookings` in
-integration tests. Treat them as settled, not open. D1 was promoted to `0014`
-above when WP-3 Phase 1 landed.
+**Decided but not yet written up as numbered records** — two WP-3 decisions
+(D2, D3) were settled by the repo owner on 2026-08-28 before that package
+started, and live in `docs/wp3-plan.md` until the phase implementing them
+lands (Phase 5) and promotes them to the next free numbers (`0018`+):
+interval-plus-`remainingCapacity` slot semantics, and DST handling for
+availability *ranges*. Treat them as settled, not open. D1 was promoted to
+`0014` when WP-3 Phase 1 landed, and D4 to `0017` when Phase 2 did.
 
 **Still open** — flag before building the affected feature, don't decide
 silently: the DST **fall-back** case (clocks go back, a local time occurs
@@ -703,8 +730,25 @@ verified by hand against a running instance.
 Source doc: `docs/Work Packages - Week 3.pdf` (weeks 2–3, backend track).
 Plan and settled decisions: `docs/wp3-plan.md`.
 
-- [ ] CRUD for resources (type, capacity, timezone, description) —
-      TenantAdmin only. FR-3.1, FR-3.5.
+- [x] CRUD for resources (type, capacity, timezone, description) —
+      TenantAdmin only. FR-3.1, FR-3.5. **Done 2026-08-31** (Phase 2):
+      `GET /resources` (paginated, `sort`, `includeArchived`) and
+      `GET /resources/{id}` on `TenantMember`; `POST /resources`,
+      `PUT /resources/{id}` (full representation) and
+      `POST /resources/{id}/archive` on `TenantAdmin`. Reads are deliberately
+      **not** admin-only — a member has to browse resources in order to book
+      one; the AC says non-admins cannot *create or edit*.
+      Archive is `POST .../archive`, not `DELETE`: §4.5 deletes nothing and
+      there is no `Unarchive`, so a `DELETE` that quietly meant "archive,
+      irreversibly" would mislead. It is idempotent (a terminal state already
+      reached is not a rule violation, and a retry has to be safe) — the one
+      place `ResourceArchived` is deliberately not thrown; editing an archived
+      resource still is.
+      `RequiresApproval = true` is refused on **create** as well as edit
+      (`ApproversRequired`), so the state FR-3.3 rules out is never a resting
+      state. Consequence, accepted by the owner: until Phase 3 adds approver
+      assignment, only a resource that already has an approver can carry the
+      flag.
 - [ ] Manage availability windows per resource. FR-3.2.
 - [ ] Manage blackout periods; ensure they override availability. FR-3.4.
 - [ ] Mark resources `RequiresApproval` and assign approvers. FR-3.3.
@@ -717,16 +761,38 @@ Plan and settled decisions: `docs/wp3-plan.md`.
       The error contract landed too: `AppException` + `ErrorKind` mapped to
       status codes once, and the `ReasonCodes` catalogue behind §6's list
       ([`0016`](docs/decisions/0016-error-contract-and-reason-codes.md)).
-      Left unchecked: the concrete per-endpoint DTOs, which land with the
-      phase that owns each endpoint — nothing here has a caller until
-      Phase 2.
+      Phase 2 added the resource DTOs against those conventions
+      (`ResourceSummaryResponse`, `ResourceDetailResponse`,
+      `UpdateResourceResponse` + `TimeZoneChangeNotice`, request records nested
+      in the controller). Left unchecked: the availability-window, blackout and
+      slot DTOs, which land with Phases 3–5.
 
 Acceptance criteria (source doc):
-- [ ] An admin can publish a resource with availability and blackout rules.
+- [ ] An admin can publish a resource with availability and blackout rules —
+      the *resource* half is done and swept end to end
+      (`ResourceAcceptanceTests`: an admin creates, a member of the same tenant
+      immediately sees it in the list and reads its detail). Availability and
+      blackout rules are Phases 3 and 4, so the criterion as written is not met
+      yet.
 - [ ] The availability query correctly excludes blackout periods and existing
       bookings.
-- [ ] Non-admins cannot create or edit resources.
-- [ ] API returns clear, structured errors.
+- [x] Non-admins cannot create or edit resources — **met 2026-08-31**. Every
+      write route is asserted forbidden to a Member *and* to an Approver
+      (`Approver` sits between Member and TenantAdmin, so "non-admin" has to
+      mean every non-admin), parameterized over the routes so a write endpoint
+      added later without `[Authorize]` is a visible omission from the list.
+      A SysAdmin is refused too — `TenantMember` requires the `orgId` claim
+      that decision `0012` omits for them.
+- [x] API returns clear, structured errors — **met for everything with a
+      thrower, 2026-08-31**. One table asserts each reason code this phase can
+      raise against the status its `ErrorKind` promises
+      (`ResourceNotFound` 404, `InvalidTimeZone` 400, `ApproversRequired` 422,
+      `ResourceArchived` 422, `ValidationFailed` 400 with per-field errors),
+      plus that every error body is a `ProblemDetails` carrying the correlation
+      id, and that the exception message never reaches the client. The codes
+      without throwers yet (`OverlappingAvailabilityWindow`,
+      `ApproverNotEligible`, `BlackoutPeriod`, and WP-4's six) join that table
+      as their phases land.
 
 Planned phasing — detail and reasoning in `docs/wp3-plan.md`, which was
 approved by the repo owner on 2026-08-28 before any code was written:
@@ -752,19 +818,35 @@ approved by the repo owner on 2026-08-28 before any code was written:
    Nothing in the phase is consumed by an endpoint yet — Phase 2 is the first
    caller of all of it, which is the accepted cost of building the contract
    before the endpoints.
-2. **Resource CRUD** — FR-3.1/FR-3.5. Split into four steps in
-   `docs/wp3-plan.md` (domain mutators — reads — writes — archive + AC
-   sweep), reads deliberately before writes so Phase 1's contract gets a real
-   consumer early. Manual Postman verification of the live endpoints starts
-   once this phase lands; the same doc records the seeded accounts and the
-   three behaviours that look like bugs and are not.
+2. **Resource CRUD** — FR-3.1/FR-3.5. **Done 2026-08-31**, in the four steps
+   `docs/wp3-plan.md` planned (domain mutators — reads — writes — archive + AC
+   sweep), reads deliberately before writes so Phase 1's contract got a real
+   consumer early. 366 unit + 142 integration tests pass, and every endpoint
+   was additionally exercised by hand against a running instance.
+   Beyond the endpoints themselves, the phase produced:
+   - `CK_Resources_DurationLimits` (migration
+     `AddResourceDurationLimitsCheck`, applied and its `Down` verified by an
+     actual revert/re-apply) — the tier-1 floor under
+     `Resource.ValidateDurationLimits`. The schema had a `CHECK` for capacity
+     but none for the duration pair; the owner chose to add it for consistency.
+   - Decision [`0017`](docs/decisions/0017-test-fixture-booking-inserts.md),
+     promoted from D4 when step 3 needed booking rows for
+     `CapacityBelowExistingBookings`.
+   - The two §4.3 time conventions (`IClock` truncated to seconds; `Utc` Kind
+     restored on read), both found by a test and a smoke check rather than
+     reasoned about up front.
+   - `ICurrentUser` (the `sub` claim) and `ITimeZoneCatalog` (IANA-only, see
+     §4.3) as new Application ports.
+   Manual Postman verification of the live endpoints can start now; the plan
+   doc records the seeded accounts and the three behaviours that look like bugs
+   and are not.
 3. **Availability windows + approvers** — FR-3.2/FR-3.3.
 4. **Blackout periods** — FR-3.4 plus decision `0001`'s cancellation cascade.
 5. **The availability query** — consumes all of the above; final AC sweep.
 
 **Four decisions were settled up front** (`docs/wp3-plan.md`), to be written
-up as numbered records 0014+ as each implementing phase lands (D1 is done —
-see `0014`):
+up as numbered records 0014+ as each implementing phase lands (D1 and D4 are
+done — see `0014` and `0017`; D2 and D3 land with Phase 5):
 - **D1** — `AvailabilityWindows` and `BlackoutPeriods` get their own `OrgId`,
   `ITenantOwned`, query filters and RLS coverage. They were outside **all
   three** §4.2 mechanisms, which made a cross-tenant read the *natural* way to
@@ -782,6 +864,8 @@ see `0014`):
   or `SaveChanges`), a narrow documented carve-out from §4.1 so the
   "excludes existing bookings" AC is testable before `dbo.CreateBooking`
   exists in WP-4.
+  **Landed 2026-08-31, promoted to [`0017`](docs/decisions/0017-test-fixture-booking-inserts.md)**
+  — first used by Phase 2 step 3 for `CapacityBelowExistingBookings`.
 
 Notes:
 - Delivery style: each phase is built in **small, reviewable chunks** with

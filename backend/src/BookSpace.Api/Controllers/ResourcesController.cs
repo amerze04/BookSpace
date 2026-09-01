@@ -1,5 +1,6 @@
 using BookSpace.Api.Authorization;
 using BookSpace.Application.Common.Pagination;
+using BookSpace.Application.Features.Resources.ArchiveResource;
 using BookSpace.Application.Features.Resources.CreateResource;
 using BookSpace.Application.Features.Resources.GetResource;
 using BookSpace.Application.Features.Resources.ListResources;
@@ -165,6 +166,33 @@ public sealed class ResourcesController : ControllerBase
                 request.MaxDurationMinutes),
             cancellationToken);
 
+        return Ok(result);
+    }
+
+    // FR-3.5. POST /resources/{id}/archive, deliberately not
+    // DELETE /resources/{id}.
+    //
+    // DELETE is the REST idiom for taking something out of a collection, and
+    // soft-delete-behind-DELETE is a common pattern — but CLAUDE.md §4.5 says
+    // nothing in this system is deleted, and there is no Unarchive (the PRD does
+    // not ask for one). A DELETE that silently means "archive, irreversibly"
+    // invites a client to assume the row is gone. Naming the transition says
+    // what actually happens, and leaves DELETE unimplemented, which is itself
+    // the honest answer for a resource that cannot be deleted.
+    //
+    // No payload, and 200 with the resource's own representation rather than 204:
+    // the resource still exists and stays readable (FR-3.5), so the useful reply
+    // is the row with isArchived flipped.
+    [HttpPost("{id:guid}/archive")]
+    [Authorize(Policy = AuthorizationPolicies.TenantAdmin)]
+    [ProducesResponseType<ResourceDetailResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Archive(Guid id, CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(new ArchiveResourceCommand(id), cancellationToken);
         return Ok(result);
     }
 }

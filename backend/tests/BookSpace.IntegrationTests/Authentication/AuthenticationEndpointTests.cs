@@ -289,30 +289,56 @@ public class AuthenticationEndpointTests
     }
 
     // And once deactivated, the account can't start a fresh session either.
+    //
+    // Reactivated in the finally, unlike the test above: that one sacrifices
+    // member2@acme.test permanently, but this one needs an account that is
+    // otherwise live, and approver@acme.test is the only seeded Approver — WP-3's
+    // resource-write tests use it to prove an Approver is a non-admin too. A test
+    // that left it deactivated broke those from a distance, and only in a full
+    // run, which is exactly the kind of failure shared fixtures produce.
     [Fact]
     public async Task Login_DeactivatedUser_Returns401()
     {
         var client = _host.CreateClient();
         var email = "approver@acme.test";
 
-        await using (var scope = _host.CreateScope())
+        try
         {
-            var context = scope.ServiceProvider.GetRequiredService<BookSpaceDbContext>();
+            await SetUserActiveAsync(email, isActive: false);
 
-            // No HttpContext in this scope, so ICurrentTenant.OrgId is null —
-            // simulating an admin action against a real tenant user needs the
-            // same bypass SeedData and AuthenticationUserRepository use
-            // (CLAUDE.md §4.2), at both the EF filter and RLS layers.
-            using var _ = TenantBypassScope.Enter();
-            var user = await context.Users.IgnoreQueryFilters().FirstAsync(u => u.Email == email);
+            var response = await client.PostAsJsonAsync(
+                "/auth/login", new { email, password = SeedData.SeedPassword });
+
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        }
+        finally
+        {
+            await SetUserActiveAsync(email, isActive: true);
+        }
+    }
+
+    // No HttpContext in this scope, so ICurrentTenant.OrgId is null — simulating
+    // an admin action against a real tenant user needs the same bypass SeedData
+    // and AuthenticationUserRepository use (CLAUDE.md §4.2), at both the EF
+    // filter and RLS layers.
+    private async Task SetUserActiveAsync(string email, bool isActive)
+    {
+        await using var scope = _host.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<BookSpaceDbContext>();
+
+        using var _ = TenantBypassScope.Enter();
+        var user = await context.Users.IgnoreQueryFilters().FirstAsync(u => u.Email == email);
+
+        if (isActive)
+        {
+            user.Reactivate(user.Id, DateTime.UtcNow);
+        }
+        else
+        {
             user.Deactivate(user.Id, DateTime.UtcNow);
-            await context.SaveChangesAsync();
         }
 
-        var response = await client.PostAsJsonAsync(
-            "/auth/login", new { email, password = SeedData.SeedPassword });
-
-        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        await context.SaveChangesAsync();
     }
 
     [Fact]
