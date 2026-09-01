@@ -39,6 +39,8 @@ try
     // gain one just for this. Scoped: it reads the current request's claims.
     builder.Services.AddHttpContextAccessor();
     builder.Services.AddScoped<ICurrentTenant, HttpContextCurrentTenant>();
+    // Same reasoning, for the `sub` claim the write paths audit against.
+    builder.Services.AddScoped<ICurrentUser, HttpContextCurrentUser>();
 
     // FR-2.1. Validation parameters per
     // docs/decisions/0009-jwt-claims-and-token-lifetimes.md. JwtOptions itself is

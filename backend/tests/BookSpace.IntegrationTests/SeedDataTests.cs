@@ -64,10 +64,35 @@ public class SeedDataTests : IAsyncLifetime
         Assert.Equal(9, users.Sum(u => u.Roles.Count)); // owned collections load with the owner
 
         Assert.Equal(4, await _context.Resources.IgnoreQueryFilters().CountAsync());
-        Assert.Equal(20, await _context.AvailabilityWindows.CountAsync());
-        Assert.Equal(2, await _context.BlackoutPeriods.CountAsync());
+        // IgnoreQueryFilters as of WP-3 decision D1: these two tables are now
+        // tenant-filtered like Users/Resources/Bookings, and this context has no
+        // current tenant. TenantBypassScope covers RLS only, not the EF filter.
+        Assert.Equal(20, await _context.AvailabilityWindows.IgnoreQueryFilters().CountAsync());
+        Assert.Equal(2, await _context.BlackoutPeriods.IgnoreQueryFilters().CountAsync());
         Assert.Equal(2, await _context.RecurrenceRules.CountAsync());
         Assert.Equal(0, await _context.Bookings.IgnoreQueryFilters().CountAsync());
+    }
+
+    // WP-3 decision D1: every seeded child row carries the OrgId of the resource
+    // it hangs off. FK_*_Resources_SameOrg enforces this at the database level;
+    // this asserts the seed actually produces it, not just that it could.
+    [Fact]
+    public async Task SeedAsync_ChildRowsCarryTheirResourcesOrgId()
+    {
+        await SeedData.SeedAsync(_context, PasswordHasher);
+
+        using var _ = TenantBypassScope.Enter();
+
+        var resourceOrgById = await _context.Resources.IgnoreQueryFilters()
+            .ToDictionaryAsync(r => r.Id, r => r.OrgId);
+
+        var windows = await _context.AvailabilityWindows.IgnoreQueryFilters().ToListAsync();
+        Assert.NotEmpty(windows);
+        Assert.All(windows, w => Assert.Equal(resourceOrgById[w.ResourceId], w.OrgId));
+
+        var blackouts = await _context.BlackoutPeriods.IgnoreQueryFilters().ToListAsync();
+        Assert.NotEmpty(blackouts);
+        Assert.All(blackouts, b => Assert.Equal(resourceOrgById[b.ResourceId], b.OrgId));
     }
 
     // FR-2.3: the seed stores real hashes now, not the WP-1 placeholder — so the

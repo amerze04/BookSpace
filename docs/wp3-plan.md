@@ -78,20 +78,43 @@ how the inconsistency the AC forbids gets in.
    `AvailabilityWindows` and `BlackoutPeriods`, implement `ITenantOwned` on
    both, add them to the global query filters and to the RLS security policy.
    New migration. Update `CLAUDE.md` §4.2's mechanism list (it currently names
-   only `Users`, `Resources`, `Bookings`) once this lands.
-2. **Pagination.** A shared paged-result envelope plus paging/sorting query
-   parameters. Nothing paginated exists in the codebase yet.
+   only `Users`, `Resources`, `Bookings`) once this lands. **Done 2026-08-31**
+   — see decision `0014`.
+2. **Pagination and DTO conventions.** A shared paged-result envelope plus
+   paging/sorting query parameters — nothing paginated exists in the codebase
+   yet. The WP's "clean DTOs" item lands here as the *convention* (where
+   request/response types live, records not classes, domain entities never on
+   the wire, how an edit payload distinguishes "not supplied" from "set to
+   null", hand-written mapping); the concrete per-endpoint DTOs belong to the
+   phase that owns each endpoint, since they cannot be designed before the
+   endpoint is. Folded in at the owner's request on 2026-08-31, after the
+   original plan left "DTOs" implicit. **Done 2026-08-31** — the owner chose
+   offset paging with a total count; written up as decision `0015`.
 3. **Error contracts.** Fill in the extension point deliberately left in
    `GlobalExceptionHandler.Map(...)` during WP-2, generalizing it into a
    domain-exception → reason-code mapping rather than adding a third one-off
    beside the existing `ValidationException` and `AuthenticationException`
    cases. WP-3 supplies the first real callers; §6's booking reason codes then
    slot into the same mechanism in WP-4 with no further plumbing.
+   **Done 2026-08-31** — `AppException` carries an `ErrorKind`, and
+   `GlobalExceptionHandler` maps kind to status once; decision `0016`.
+   **Refined 2026-09-01, after Phase 2, on the mentor's advice**: each failure
+   is now a named `sealed` subclass of `AppException`, which is abstract with a
+   protected constructor, so a kind and a code can no longer be paired wrongly
+   at a throw site — the original design could only document the pairing in a
+   comment. The single mapping arm and the `ReasonCodes` catalogue are
+   unchanged, and the integration suite needed no edits because the wire
+   contract is identical. Written up as the amendment section of decision
+   `0016`.
 4. **Reason-code catalogue for WP-3**, extending `CLAUDE.md` §6's list.
    `ResourceArchived` and `BlackoutPeriod` are already there; resource-not-
    found, approver-not-in-tenant, and invalid-timezone are new.
+   **Done 2026-08-31** — `ReasonCodes` holds all twelve with their kinds; the
+   approver code shipped as `ApproverNotEligible` rather than
+   `ApproverNotInTenant`, so it cannot confirm a cross-tenant id exists
+   (reasoning in decision `0016`).
 
-### Phase 2 — Resource CRUD (FR-3.1, FR-3.5)
+### Phase 2 — Resource CRUD (FR-3.1, FR-3.5) — **Done 2026-08-31**
 
 The aggregate root everything else hangs off.
 
@@ -107,6 +130,105 @@ The aggregate root everything else hangs off.
   create or edit resources".
 - Archiving already exists on the entity. There is no `Unarchive`, and the PRD
   does not ask for one; not adding it.
+
+#### Step split (agreed with the owner on 2026-08-31, before Phase 2 started)
+
+Four steps, at the owner's request that this phase be shorter than Phase 1's
+six. Each is built and handed back for review on its own, per the delivery
+style above.
+
+1. **Domain mutators.** `Resource` gains methods for name/description/type,
+   capacity, timezone, durations, and the `RequiresApproval` flag, each keeping
+   the invariants that belong in the entity (capacity > 0, non-blank name) and
+   touching the audit columns. Unit tests only — no EF, no HTTP, no endpoint
+   yet.
+2. **The read side.** `GET /resources` (paginated) and `GET /resources/{id}`:
+   query + validator + handler + response DTO + controller on the
+   `TenantMember` policy, with integration tests through the real pipeline.
+3. **The write side.** `POST /resources` and `PUT /resources/{id}` on
+   `TenantAdmin`. First throwers for `InvalidTimeZone`, `ApproversRequired` and
+   `CapacityBelowExistingBookings` (decision `0016`'s catalogue).
+4. **Archive plus the AC sweep.** The archive endpoint, then the cross-cutting
+   assertions: a non-admin write refused, another tenant's real id returning
+   404, and each reason code producing the right status over real HTTP. Roadmap
+   and doc updates land here.
+
+**Why the read side comes before the write side.** Nothing built in Phase 1 has
+a caller yet — the pagination envelope, the `sort` whitelist and the error
+contract are all covered by unit tests against synthetic input. Step 2 puts a
+real consumer in front of all three at the earliest possible point, so an
+awkward envelope or a wrong status code surfaces with one endpoint built on it
+rather than four. It also means there is something worth pointing Postman at
+one step sooner.
+
+Step 3's `CapacityBelowExistingBookings` check needs `Bookings` rows to be
+testable, and no booking write path exists (CLAUDE.md §4.1). It is therefore
+the first real user of decision **D4**'s raw-SQL fixture carve-out; expect that
+decision to be promoted to a numbered record when this step lands. **It was —
+[`0017`](decisions/0017-test-fixture-booking-inserts.md).**
+
+Manual verification in Postman begins once these four steps are done — see
+"Manual verification with Postman" below.
+
+#### What Phase 2 actually delivered, and the calls made along the way
+
+All four steps landed on 2026-08-31, one review round each. 366 unit + 142
+integration tests pass, and every endpoint was additionally exercised by hand
+against a running instance.
+
+Endpoints: `GET /resources` (paged, `sort=name|resourceType|capacity`,
+`includeArchived`), `GET /resources/{id}` on `TenantMember`; `POST /resources`,
+`PUT /resources/{id}`, `POST /resources/{id}/archive` on `TenantAdmin`.
+
+Decisions taken during the phase, none of which the plan had anticipated:
+
+- **`ApproversRequired` is enforced on create as well as edit.** The "smaller
+  calls" section below says "at edit time"; blocking it on create too means the
+  state FR-3.3 rules out is never a resting state. Accepted consequence,
+  confirmed by the owner: until Phase 3 adds approver assignment, only a
+  resource that already has an approver can carry the flag.
+- **Archive is `POST /resources/{id}/archive`, not `DELETE`.** §4.5 deletes
+  nothing and there is no `Unarchive`, so a `DELETE` quietly meaning "archive,
+  irreversibly" would mislead a client. Leaving `DELETE` unimplemented is itself
+  the honest answer for a row that cannot be deleted.
+- **Archive is idempotent** — a terminal state already reached is not a rule
+  violation, and a retry after a dropped response has to be safe. It returns
+  the resource unchanged, without moving `UpdatedAtUtc`. It is the one place
+  `ResourceArchived` is deliberately *not* thrown; editing an archived resource
+  still is.
+- **`ResourceArchived` on `PUT`** was implemented here even though the step
+  split did not list it. Step 1 had recorded that the write handlers own FR-3.5's
+  edit refusal, and leaving `PUT` willing to edit archived resources would have
+  been a real gap.
+- **The timezone-change notice.** "The response says so explicitly" (below) is
+  implemented as a nullable `TimeZoneChangeNotice` on the `PUT` response,
+  carrying the previous id, the new id and the number of availability windows
+  reinterpreted — a machine-readable notice rather than a prose warning, for the
+  same reason a rejection carries a reason code.
+- **`CK_Resources_DurationLimits`** was added (migration
+  `AddResourceDurationLimitsCheck`). The schema had a `CHECK` for capacity but
+  none for the duration pair, which by §6's tiering looked like a tier-1 gap;
+  the owner chose consistency.
+- **Two §4.3 time conventions**, both found by a failing test and a smoke check
+  rather than reasoned about up front: `IClock.UtcNow` is truncated to whole
+  seconds (`datetime2(0)` rounds, so a create response otherwise disagreed with
+  the row it had just written), and every `DateTime` read from the database has
+  `DateTimeKind.Utc` stamped back on (`datetime2` carries no offset, so JSON
+  omitted the `Z` and a browser would read the value as local time).
+
+Two things a reader might expect in the resource DTOs and will not find until
+Phase 3: **availability windows** and the **assigned approver list**. Both are
+Phase 3's to manage, and the approver list is worth more once there are
+eligibility rules to report than as bare Guids. `requiresApproval` can
+therefore read `true` with no visible approvers until then; adding either field
+later is additive.
+
+One piece of pre-existing test debt was fixed rather than worked around:
+`AuthenticationEndpointTests.Login_DeactivatedUser_Returns401` permanently
+deactivated the seeded `approver@acme.test` in the shared test database. That
+was harmless while nothing else needed an Approver; Phase 2's "an Approver is a
+non-admin too" assertions failed against it, and only in a full run. The test
+now reactivates the account in a `finally`, so the suite is order-independent.
 
 ### Phase 3 — Availability windows and approvers (FR-3.2, FR-3.3)
 
@@ -169,12 +291,104 @@ this is the cross-cutting pass.
 
 ---
 
+## Manual verification with Postman (from the end of Phase 2)
+
+Agreed with the owner on 2026-08-31: once Phase 2 lands there are real
+endpoints, and the owner will exercise them by hand in Postman **in addition
+to** the unit and integration tests, not instead of them. Phase 1's contract
+(the paged envelope, the error shapes) has no consumer until then, so a human
+hitting live endpoints is the first honest test of whether it is pleasant to
+consume.
+
+The API already serves an OpenAPI document in Development
+(`Program.cs` calls `AddOpenApi()`/`MapOpenApi()`), so
+`GET http://localhost:5270/openapi/v1.json` can be imported straight into
+Postman rather than hand-building every request. Endpoints appear in it as they
+are written.
+
+**Correction, found 2026-08-31 while verifying Phase 2 step 2:** that URL
+returns **401** without a bearer token. The deny-by-default `FallbackPolicy`
+(decision `0012`) covers `MapOpenApi()` too, so the document has to be fetched
+with a token attached like any other request. Open for the owner: either leave
+it and remember the token step, or `MapOpenApi().AllowAnonymous()` in the
+Development branch only — opening an endpoint is an authorization decision, so
+it was left alone.
+
+Minor, related: the document names the list endpoint's query parameters
+`Page`/`PageSize`/`Sort`/`IncludeArchived` (PascalCase, from the request
+record's properties), so a Postman import generates `?Page=1`. Query binding is
+case-insensitive, so both spellings work.
+
+- URLs: `http://localhost:5270`, or `https://localhost:7079` (the dev
+  certificate will need SSL verification turned off for that environment).
+- Seeded accounts, all with password `Passw0rd!` (`SeedData.SeedPassword`,
+  development only):
+
+  | Email | Role | Use for |
+  |---|---|---|
+  | `admin@acme.test` | TenantAdmin | create / edit / archive resources |
+  | `member1@acme.test` | Member | reads, and proving a non-admin write is refused |
+  | `approver@acme.test` | Approver | Phase 3's approver assignment |
+  | `admin@globex.test` | TenantAdmin | the second tenant, for cross-tenant checks |
+  | `sysadmin@bookspace.local` | SysAdmin | *not* the resource endpoints — see below |
+
+### Three behaviours that look like bugs and are not
+
+1. **A SysAdmin token gets 403 on resource endpoints.** The `TenantMember`
+   policy requires an `orgId` claim, and decision `0012` deliberately omits
+   that claim for a SysAdmin (PRD §2: the Platform Operator must never see
+   tenant booking content in routine operation). Use `admin@acme.test`.
+2. **Re-sending an already-rotated refresh token kills the whole token
+   family** (decision `0011`), so the next call fails with 401
+   `RefreshTokenReuseDetected`. That is the feature working; in Postman, where
+   re-sending an old request is one click, it reads as a random 401. Log in
+   again. Access tokens last 15 minutes.
+3. **403 and 422 come from different layers.** A non-admin write is refused by
+   the authorization policy — a plain 403 with no reason code. A rule refusal
+   comes from a handler as 422 with a `reasonCode` (decision `0016`). Both are
+   correct; which one you get tells you whether you are testing RBAC or the
+   domain.
+
+### Two checks worth doing deliberately
+
+These are the acceptance criteria a demo turns on, and both are easier to be
+convinced by from a client than from a test log:
+
+- Log in as `member1@acme.test` and request a **real** Globex resource id.
+  Expect 404 with no hint the id exists anywhere (AC-4).
+- Attempt `POST /resources` as `member1@acme.test`. Expect 403 — the WP-3 AC
+  "non-admins cannot create or edit resources".
+
+Setting an `X-Correlation-Id` header on requests makes the console output
+readable while poking around: it comes back on the response and tags every
+Serilog line for that request.
+
+### What Postman does not cover
+
+The automated suite stays the source of truth for the things a client cannot
+prove: concurrency (AC-1), RLS enforcement at the database level with no EF
+involved, and job idempotence (AC-6). Postman is for response shapes, error
+contracts and demonstration — a different job, not a substitute.
+
+**Open, for the owner to decide:** whether the collection is committed
+(`docs/postman/`, plus an environment file and a README section) or kept local.
+It is not part of the work package either way.
+
+---
+
 ## Decisions settled before starting
 
 Taken by the repo owner on 2026-08-28, in response to this plan. To be written
 up as numbered records as the implementing phase lands.
 
 ### D1 — `AvailabilityWindows` and `BlackoutPeriods` get their own `OrgId`
+
+**Implemented 2026-08-31 and promoted to
+[`docs/decisions/0014-child-table-tenant-scoping.md`](decisions/0014-child-table-tenant-scoping.md)**,
+which is now the authoritative record — including the migration details this
+plan could not have anticipated (nullable-add-then-backfill, and switching the
+RLS policy off around the backfill because the migration's own connection
+cannot grant itself a bypass).
 
 **Decided: denormalize.** Add `OrgId` to both tables, implement `ITenantOwned`,
 extend the global query filters and the RLS policy to cover them.
@@ -220,6 +434,13 @@ it for ranges here does not resolve it for instants.
 
 ### D4 — Bookings are inserted by raw SQL in the integration fixture
 
+**Implemented 2026-08-31 (Phase 2 step 3) and promoted to
+[`docs/decisions/0017-test-fixture-booking-inserts.md`](decisions/0017-test-fixture-booking-inserts.md)**,
+which is now the authoritative record — including the gotcha this plan could not
+have anticipated: the fixture connection needs an explicit RLS bypass, because
+the `INSERT`'s own `SELECT` over `Resources`/`Users` (and the cleanup `DELETE`)
+silently affects zero rows without one.
+
 **Decided: allow it, document it.** The AC "the availability query correctly
 excludes … existing bookings" cannot be tested without booking rows, and
 `dbo.CreateBooking` is WP-4 work that §11/§12 forbid pulling forward.
@@ -246,10 +467,21 @@ cheaply; none changes the schema.
 - **`RequiresApproval = true` with zero approvers is blocked** at edit time.
   FR-3.3 reads "can be marked `RequiresApproval`, with one or more assigned
   approvers", so the empty state is not a valid resting state.
+  **Landed Phase 2 step 3, widened to create as well as edit** — see "What
+  Phase 2 actually delivered" above. `ReasonCodes.ApproversRequired`, 422.
 - **A capacity decrease that would put existing bookings over the new limit is
-  rejected.**
+  rejected.** **Landed Phase 2 step 3** as
+  `ReasonCodes.CapacityBelowExistingBookings`, 422. It compares the new capacity
+  against the **peak of concurrent `Quantity`** (the maximum, over every future
+  booking's start instant, of the units held at that instant) — not a sum over
+  the range, which would overcount, since two bookings can both overlap a third
+  without overlapping each other. `Pending`/`Confirmed` only, future only:
+  reducing capacity cannot invalidate history. Advisory by design — §4.1 keeps
+  the real capacity guarantee in `dbo.CreateBooking` under a range lock.
 - **Changing `TimeZoneId` reinterprets all existing availability windows**, and
   the response says so explicitly rather than silently shifting them.
+  **Landed Phase 2 step 3** as a nullable `TimeZoneChangeNotice` on the `PUT`
+  response.
 
 ---
 

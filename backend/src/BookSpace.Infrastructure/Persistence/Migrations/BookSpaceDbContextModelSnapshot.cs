@@ -89,6 +89,9 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
                         .HasPrecision(0)
                         .HasColumnType("time(0)");
 
+                    b.Property<Guid>("OrgId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<Guid>("ResourceId")
                         .HasColumnType("uniqueidentifier");
 
@@ -98,7 +101,7 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("PK_AvailabilityWindows");
 
-                    b.HasIndex("ResourceId");
+                    b.HasIndex("OrgId", "ResourceId");
 
                     b.ToTable("AvailabilityWindows", null, t =>
                         {
@@ -125,6 +128,9 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
                         .HasPrecision(0)
                         .HasColumnType("datetime2(0)");
 
+                    b.Property<Guid>("OrgId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<string>("Reason")
                         .HasMaxLength(300)
                         .HasColumnType("nvarchar(300)");
@@ -149,6 +155,8 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
                     b.HasIndex("CreatedByUserId");
 
                     b.HasIndex("UpdatedByUserId");
+
+                    b.HasIndex("OrgId", "ResourceId");
 
                     b.HasIndex("ResourceId", "StartsAtUtc")
                         .HasDatabaseName("IX_BlackoutPeriods_Resource_Start");
@@ -615,6 +623,8 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
                     b.ToTable("Resources", null, t =>
                         {
                             t.HasCheckConstraint("CK_Resources_Capacity", "[Capacity] > 0");
+
+                            t.HasCheckConstraint("CK_Resources_DurationLimits", "([MinDurationMinutes] IS NULL OR [MinDurationMinutes] > 0) AND ([MaxDurationMinutes] IS NULL OR [MaxDurationMinutes] > 0) AND ([MinDurationMinutes] IS NULL OR [MaxDurationMinutes] IS NULL OR [MaxDurationMinutes] >= [MinDurationMinutes])");
                         });
                 });
 
@@ -701,10 +711,11 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
                 {
                     b.HasOne("BookSpace.Domain.Entities.Resource", null)
                         .WithMany("AvailabilityWindows")
-                        .HasForeignKey("ResourceId")
+                        .HasForeignKey("OrgId", "ResourceId")
+                        .HasPrincipalKey("OrgId", "Id")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("FK_AvailabilityWindows_Resources");
+                        .HasConstraintName("FK_AvailabilityWindows_Resources_SameOrg");
                 });
 
             modelBuilder.Entity("BookSpace.Domain.Entities.BlackoutPeriod", b =>
@@ -716,18 +727,19 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasConstraintName("FK_BlackoutPeriods_CreatedBy");
 
-                    b.HasOne("BookSpace.Domain.Entities.Resource", null)
-                        .WithMany()
-                        .HasForeignKey("ResourceId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired()
-                        .HasConstraintName("FK_BlackoutPeriods_Resources");
-
                     b.HasOne("BookSpace.Domain.Entities.User", null)
                         .WithMany()
                         .HasForeignKey("UpdatedByUserId")
                         .OnDelete(DeleteBehavior.NoAction)
                         .HasConstraintName("FK_BlackoutPeriods_UpdatedBy");
+
+                    b.HasOne("BookSpace.Domain.Entities.Resource", null)
+                        .WithMany()
+                        .HasForeignKey("OrgId", "ResourceId")
+                        .HasPrincipalKey("OrgId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_BlackoutPeriods_Resources_SameOrg");
                 });
 
             modelBuilder.Entity("BookSpace.Domain.Entities.Booking", b =>

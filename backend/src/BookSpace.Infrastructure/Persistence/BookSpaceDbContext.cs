@@ -2,11 +2,25 @@ using BookSpace.Application.Abstractions;
 using BookSpace.Domain.Common;
 using BookSpace.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace BookSpace.Infrastructure.Persistence;
 
 public class BookSpaceDbContext : DbContext
 {
+    // Write side is the identity: the value is already UTC going in (§4.3), and
+    // a converter that touched it would be rewriting data. Only the read side
+    // does anything — restoring the Kind the column cannot store. Static so the
+    // instances are shared across every property rather than allocated per model
+    // property.
+    private static readonly ValueConverter<DateTime, DateTime> UtcDateTimeConverter =
+        new(value => value, value => DateTime.SpecifyKind(value, DateTimeKind.Utc));
+
+    private static readonly ValueConverter<DateTime?, DateTime?> NullableUtcDateTimeConverter =
+        new(
+            value => value,
+            value => value.HasValue ? DateTime.SpecifyKind(value.Value, DateTimeKind.Utc) : null);
+
     private readonly ICurrentTenant _currentTenant;
 
     public BookSpaceDbContext(DbContextOptions<BookSpaceDbContext> options, ICurrentTenant currentTenant)
@@ -31,21 +45,38 @@ public class BookSpaceDbContext : DbContext
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(BookSpaceDbContext).Assembly);
 
         // CLAUDE.md §4.2, mechanism 1: global query filters on Users, Resources,
-        // Bookings. The lambda captures _currentTenant (the instance, not a
-        // value) and EF re-evaluates it per query — the standard, documented
-        // EF Core multi-tenancy pattern. Nullable-Guid equality gets EF's
-        // null-safe translation for free, which gives the right fail-closed
-        // behavior with no extra code: with no tenant context
-        // (_currentTenant.OrgId == null), Resources/Bookings (OrgId NOT NULL)
-        // match zero rows, and Users matches only other OrgId-IS-NULL rows
-        // (SysAdmins) — never a real tenant's data.
+        // Bookings, AvailabilityWindows and BlackoutPeriods. The lambda
+        // captures _currentTenant (the instance, not a value) and EF
+        // re-evaluates it per query — the standard, documented EF Core
+        // multi-tenancy pattern. Nullable-Guid equality gets EF's null-safe
+        // translation for free, which gives the right fail-closed behavior
+        // with no extra code: with no tenant context (_currentTenant.OrgId ==
+        // null), the four OrgId-NOT-NULL entity types match zero rows, and
+        // Users matches only other OrgId-IS-NULL rows (SysAdmins) — never a
+        // real tenant's data.
         modelBuilder.Entity<User>().HasQueryFilter(u => u.OrgId == _currentTenant.OrgId);
         modelBuilder.Entity<Resource>().HasQueryFilter(r => r.OrgId == _currentTenant.OrgId);
         modelBuilder.Entity<Booking>().HasQueryFilter(b => b.OrgId == _currentTenant.OrgId);
+        // WP-3 decision D1: AvailabilityWindows and BlackoutPeriods were
+        // reachable by ResourceId alone until now, which made a cross-tenant
+        // read the natural way to write a child-entity handler. Their OrgId is
+        // NOT NULL and FK-bound to their resource's, so the same fail-closed
+        // behavior applies: no tenant context matches zero rows.
+        modelBuilder.Entity<AvailabilityWindow>().HasQueryFilter(w => w.OrgId == _currentTenant.OrgId);
+        modelBuilder.Entity<BlackoutPeriod>().HasQueryFilter(b => b.OrgId == _currentTenant.OrgId);
 
         // CLAUDE.md §4.3: every instant is datetime2(0)/time(0) — set once here
         // instead of a HasPrecision(0) call on every DateTime/TimeOnly property
         // in every configuration.
+        //
+        // The same loop also stamps DateTimeKind.Utc back on every DateTime read
+        // from the database. SQL Server's datetime2 carries no offset, so EF
+        // materializes it as DateTimeKind.Unspecified, and System.Text.Json then
+        // serializes it without the trailing "Z" — while the same property on an
+        // entity still in memory (just stamped from IClock) serializes *with*
+        // one. A client parsing "2026-08-31T13:49:35" reads it as local time,
+        // which is a silent off-by-hours bug rather than a visible one. §4.3
+        // already guarantees the stored value is UTC; this makes the wire say so.
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())
         {
             foreach (var property in entityType.GetProperties())
@@ -54,6 +85,15 @@ public class BookSpaceDbContext : DbContext
                     || property.ClrType == typeof(TimeOnly) || property.ClrType == typeof(TimeOnly?))
                 {
                     property.SetPrecision(0);
+                }
+
+                if (property.ClrType == typeof(DateTime))
+                {
+                    property.SetValueConverter(UtcDateTimeConverter);
+                }
+                else if (property.ClrType == typeof(DateTime?))
+                {
+                    property.SetValueConverter(NullableUtcDateTimeConverter);
                 }
             }
         }

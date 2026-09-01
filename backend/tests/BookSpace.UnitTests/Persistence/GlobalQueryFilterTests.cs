@@ -81,6 +81,78 @@ public class GlobalQueryFilterTests
         Assert.Equal(2, visible.Count);
     }
 
+    // WP-3 decision D1: the two child tables joined mechanism 1 in this step.
+    // Until then they were reachable by ResourceId alone, so a handler written
+    // the obvious way returned another tenant's rows.
+    [Fact]
+    public async Task AvailabilityWindows_OnlyReturnsCurrentTenantsRows()
+    {
+        var acmeOrgId = Guid.NewGuid();
+        var globexOrgId = Guid.NewGuid();
+        var actorId = Guid.NewGuid();
+        var databaseName = Guid.NewGuid().ToString();
+
+        await SeedAsync(databaseName, [
+            NewResourceWithWindow(acmeOrgId, actorId),
+            NewResourceWithWindow(globexOrgId, actorId)]);
+
+        await using var acmeContext = CreateContext(databaseName, acmeOrgId);
+        var visible = await acmeContext.AvailabilityWindows.ToListAsync();
+
+        Assert.Single(visible);
+        Assert.Equal(acmeOrgId, visible[0].OrgId);
+    }
+
+    [Fact]
+    public async Task AvailabilityWindows_WithNoTenantContext_ReturnsNoRows()
+    {
+        var databaseName = Guid.NewGuid().ToString();
+        await SeedAsync(databaseName, [NewResourceWithWindow(Guid.NewGuid(), Guid.NewGuid())]);
+
+        await using var context = CreateContext(databaseName, currentTenantOrgId: null);
+
+        Assert.Empty(await context.AvailabilityWindows.ToListAsync());
+    }
+
+    [Fact]
+    public async Task BlackoutPeriods_OnlyReturnsCurrentTenantsRows()
+    {
+        var acmeOrgId = Guid.NewGuid();
+        var globexOrgId = Guid.NewGuid();
+        var actorId = Guid.NewGuid();
+        var databaseName = Guid.NewGuid().ToString();
+
+        await using (var writer = CreateContext(databaseName, currentTenantOrgId: null))
+        {
+            writer.BlackoutPeriods.AddRange(
+                NewBlackout(acmeOrgId, actorId),
+                NewBlackout(globexOrgId, actorId));
+            await writer.SaveChangesAsync();
+        }
+
+        await using var acmeContext = CreateContext(databaseName, acmeOrgId);
+        var visible = await acmeContext.BlackoutPeriods.ToListAsync();
+
+        Assert.Single(visible);
+        Assert.Equal(acmeOrgId, visible[0].OrgId);
+    }
+
+    [Fact]
+    public async Task BlackoutPeriods_WithNoTenantContext_ReturnsNoRows()
+    {
+        var databaseName = Guid.NewGuid().ToString();
+
+        await using (var writer = CreateContext(databaseName, currentTenantOrgId: null))
+        {
+            writer.BlackoutPeriods.Add(NewBlackout(Guid.NewGuid(), Guid.NewGuid()));
+            await writer.SaveChangesAsync();
+        }
+
+        await using var context = CreateContext(databaseName, currentTenantOrgId: null);
+
+        Assert.Empty(await context.BlackoutPeriods.ToListAsync());
+    }
+
     private static async Task SeedAsync(string databaseName, IEnumerable<Resource> resources)
     {
         await using var writer = CreateContext(databaseName, currentTenantOrgId: null);
@@ -95,6 +167,18 @@ public class GlobalQueryFilterTests
             .Options;
         return new BookSpaceDbContext(options, new FixedCurrentTenant(currentTenantOrgId));
     }
+
+    private static Resource NewResourceWithWindow(Guid orgId, Guid actorId)
+    {
+        var resource = NewResource(orgId, actorId);
+        resource.AddAvailabilityWindow(
+            Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), actorId, Now);
+        return resource;
+    }
+
+    private static BlackoutPeriod NewBlackout(Guid orgId, Guid actorId) => new(
+        Guid.NewGuid(), orgId, Guid.NewGuid(),
+        Now.AddDays(1), Now.AddDays(2), "Maintenance", actorId, Now);
 
     private static Resource NewResource(Guid orgId, Guid actorId) => new(
         Guid.NewGuid(), orgId, "Conference Room A", "Room",

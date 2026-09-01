@@ -39,6 +39,31 @@ public sealed class TenantIsolationProbeController : ControllerBase
         return resource is null ? NotFound() : Ok(resource);
     }
 
+    // WP-3 decision D1. Written the way a handler naturally would be before D1
+    // — filter by Id alone, no OrgId anywhere — which is exactly the shape the
+    // plan flagged as a cross-tenant read. It is safe now only because the
+    // query filter and RLS make it so.
+    [HttpGet("blackouts/{id:guid}")]
+    [Authorize(Policy = AuthorizationPolicies.TenantMember)]
+    public async Task<IActionResult> BlackoutById(Guid id, [FromServices] BookSpaceDbContext db, CancellationToken cancellationToken)
+    {
+        var blackout = await db.BlackoutPeriods
+            .Where(b => b.Id == id)
+            .Select(b => new { b.Id, b.OrgId, b.ResourceId })
+            .FirstOrDefaultAsync(cancellationToken);
+        return blackout is null ? NotFound() : Ok(blackout);
+    }
+
+    [HttpGet("availability-windows")]
+    [Authorize(Policy = AuthorizationPolicies.TenantMember)]
+    public async Task<IActionResult> AvailabilityWindows([FromServices] BookSpaceDbContext db, CancellationToken cancellationToken)
+    {
+        var windows = await db.AvailabilityWindows
+            .Select(w => new { w.Id, w.OrgId, w.ResourceId })
+            .ToListAsync(cancellationToken);
+        return Ok(windows);
+    }
+
     [HttpGet("users")]
     [Authorize(Policy = AuthorizationPolicies.TenantMember)]
     public async Task<IActionResult> Users([FromServices] BookSpaceDbContext db, CancellationToken cancellationToken)

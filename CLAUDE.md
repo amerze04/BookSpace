@@ -92,10 +92,12 @@ request was made (FR-7.5, AC-5).
 FR-1.2 requires isolation that cannot be bypassed by forgetting a filter.
 Three mechanisms, all required:
 
-- Global query filters on `Users`, `Resources`, `Bookings` in `OnModelCreating`
+- Global query filters on `Users`, `Resources`, `Bookings`,
+  `AvailabilityWindows`, `BlackoutPeriods` in `OnModelCreating`
 - `OrgId` set in `SaveChangesAsync` for added `ITenantOwned` entities
 - SQL Server row-level security via a connection interceptor calling
-  `sp_set_session_context`
+  `sp_set_session_context`, with `Security.TenantAccessPolicy` covering the
+  same five tables
 
 Use `FirstOrDefaultAsync`, not `DbSet.Find()` — `Find` returns tracked entities
 without querying and bypasses query filters. `IgnoreQueryFilters()` is allowed
@@ -111,6 +113,25 @@ Recurrence expands in the **application layer**, in local wall-clock time,
 using the rule's IANA `TimeZoneId`, then converts to UTC. Do not split timezone
 logic across the app and the database; `AT TIME ZONE` takes Windows zone IDs
 and will not match what .NET produces (FR-6.1, FR-6.2, FR-6.3).
+
+A stored `TimeZoneId` is an **IANA** id, and only an IANA id. On Windows
+`TimeZoneInfo` resolves Windows ids too, so "can we find it" is not a
+sufficient check — `ITimeZoneCatalog` also requires
+`TryConvertIanaIdToWindowsId` to succeed, which is true only for a canonical
+IANA id. Rejecting `"Eastern Standard Time"` and `"america/new_york"` is the
+point, not an accident.
+
+Two conventions keep app-time and stored-time from disagreeing. Both were added
+in WP-3 Phase 2; break either and the mismatch is silent.
+
+- **`IClock.UtcNow` is truncated to whole seconds.** `datetime2(0)` *rounds* on
+  write, so an entity stamped at `12:00:32.9` is stored as `:33` and a create
+  response built from that entity does not match the row a client reads back.
+- **Every `DateTime` read from the database gets `DateTimeKind.Utc` stamped
+  back on**, via a value converter applied to every `DateTime`/`DateTime?`
+  property in `OnModelCreating`. `datetime2` carries no offset, so EF
+  materializes `Unspecified` and `System.Text.Json` then omits the trailing
+  `Z` — which a browser client parses as *local* time.
 
 ### 4.4 Secrets
 
@@ -158,17 +179,44 @@ never" in tier 4.
 
 | Tier | Enforced by | Contains |
 |---|---|---|
-| 1 | Database constraints | Interval sanity, status domains, uniqueness, composite tenant FK |
+| 1 | Database constraints | Interval sanity (a booking's, and a resource's duration bounds), status domains, uniqueness, composite tenant FK |
 | 2 | Locking protocol | No overbooking beyond capacity, approval re-check |
 | 3 | RLS + query filters | Tenant isolation |
-| 4 | Application code | Availability windows, blackouts, duration limits, approval routing |
+| 4 | Application code | Availability windows, blackouts, a booking's length against the resource's duration limits, approval routing |
 
 Rule of thumb: PRD wording of "must never" belongs in tier 1–3. "Should"
 belongs in tier 4.
 
 Rejections return a machine-readable reason code, not just a message
-(FR-4.5): `SlotUnavailable`, `CapacityExceeded`, `OutsideAvailability`,
-`BlackoutPeriod`, `ResourceArchived`, `ApprovalRequired`.
+(FR-4.5). The catalogue is `ReasonCodes`
+(`BookSpace.Application/Common/Errors/`) — add a code there and here, never
+at a throw site as a literal. Authentication's five codes stay in
+`AuthenticationFailureReason` on purpose; see
+`docs/decisions/0016-error-contract-and-reason-codes.md`.
+
+Bookings (declared by FR-4.5, first thrown in WP-4): `SlotUnavailable`,
+`CapacityExceeded`, `OutsideAvailability`, `BlackoutPeriod`,
+`ResourceArchived`, `ApprovalRequired`.
+
+Resources and availability (WP-3): `ResourceNotFound`, `InvalidTimeZone`,
+`CapacityBelowExistingBookings`, `OverlappingAvailabilityWindow`,
+`ApproversRequired`, `ApproverNotEligible`.
+
+A code travels with the `ErrorKind` recorded beside it in `ReasonCodes`, so
+the same failure never arrives as a 404 from one handler and a 422 from
+another. **Each failure is a named `sealed` subclass of `AppException`** that
+fixes its own kind and code — `throw new ResourceArchivedException(id)`, never
+a kind and a code passed as arguments. `AppException` is abstract with a
+protected constructor, so the compiler enforces that; a mispaired kind is
+caught by `AppExceptionCatalogueTests`. The message is for the log only.
+
+`GlobalExceptionHandler` still has **one arm for the whole hierarchy** and maps
+kind → status once, so a new failure needs a subclass and a catalogue entry,
+never a case in that switch. A code with no subclass yet cannot be thrown at
+all, which is why the phase that adds a thrower adds the class.
+`AuthenticationException` is the one sanctioned multi-code subclass (FR-2.1
+needs every credential failure to look identical). Reasoning in the amendment
+section of `docs/decisions/0016-error-contract-and-reason-codes.md`.
 
 ---
 
@@ -283,14 +331,63 @@ index; when a new decision doc is added, add its one-liner here too.
    property has no setter to "stamp." RLS gets its own explicit bypass signal
    (`TenantBypassScope` + a `TenantInit`/`TenantBypass` session-context pair)
    rather than treating an unset session as "allow all."
+14. [`0014`](docs/decisions/0014-child-table-tenant-scoping.md) — `AvailabilityWindows`
+   and `BlackoutPeriods` carry their own `OrgId` and fall inside all three
+   §4.2 mechanisms, instead of being reached by `ResourceId` alone. Composite
+   FKs against `UQ_Resources_Org_Id` make the denormalized value unable to
+   disagree with its resource's — decision `0006`'s technique, reapplied.
+   `AvailabilityWindow`'s constructor is `internal`, so `Resource` is its only
+   creator; `BlackoutPeriod`'s stays public because it sits outside that
+   aggregate. **Promoted from WP-3's D1** when Phase 1 landed.
+15. [`0015`](docs/decisions/0015-api-contract-and-pagination.md) — API contract
+   conventions: **offset pagination with a total count** (`page`/`pageSize`/
+   `sort` in, `PagedResult<T>` out), page size default 20 and maximum 100
+   **rejected rather than clamped**, `sort=field` / `-field` against a
+   per-endpoint whitelist, and every paged query ordered by a unique column —
+   `ToPagedResultAsync` throws on an unordered query, since offset paging over
+   one silently returns undefined pages. Also writes down the DTO rules WP-2
+   followed implicitly: request records in the controller, commands/queries and
+   response DTOs in the feature folder, sealed records, no domain entity on the
+   wire, hand-written mapping, full-representation `PUT` for edits. Keyset
+   paging was rejected — revisit only if an endpoint pages over `Bookings`.
+16. [`0016`](docs/decisions/0016-error-contract-and-reason-codes.md) — one error
+   contract: a handler rejects a request by throwing an `AppException`, and
+   `GlobalExceptionHandler` maps `ErrorKind` —
+   Validation/Unauthorized/NotFound/Conflict/RuleViolation — onto
+   400/401/404/409/**422** once. A new failure needs a code and a kind, not a
+   new switch case, so WP-4's booking rejections need no further plumbing.
+   The exception **message never reaches the response** (log only); `Title` is
+   generic per kind and the reason code carries the meaning.
+   `AuthenticationException` is now an `AppException`, unchanged from outside.
+   Also holds the reason-code catalogue (`ReasonCodes`), §6's list in code, with
+   each code's kind beside it; authentication's five stay in
+   `AuthenticationFailureReason`, and a test proves every code is unique across
+   both files and matches its own member name.
+   **Amended 2026-09-01 on the mentor's advice** (see the record's amendment
+   section): `AppException` is now **abstract with a protected constructor**, and
+   each failure is a named `sealed` subclass fixing its own kind and code, so the
+   two can no longer be paired wrongly — the original design could only document
+   the pairing in a comment. The single mapping arm, the catalogue, the log-only
+   message and `AuthenticationException` are all unchanged, and the 142
+   integration tests needed no edits, since the wire contract is identical.
+17. [`0017`](docs/decisions/0017-test-fixture-booking-inserts.md) — integration
+   **test fixtures** may insert `Bookings` rows with **raw SQL** — never LINQ,
+   never `SaveChanges`, and only in fixtures. A narrow, documented carve-out
+   from §4.1, because `CapacityBelowExistingBookings` (WP-3 Phase 2) and the
+   availability query's "excludes existing bookings" AC (Phase 5) cannot be
+   tested before `dbo.CreateBooking` exists in WP-4. Raw SQL specifically so it
+   cannot be mistaken for a production path and adds no reusable domain method.
+   **Gotcha recorded there**: the fixture connection needs an explicit RLS
+   bypass, or the `INSERT`'s own `SELECT` (and the cleanup `DELETE`) silently
+   affects zero rows. **Promoted from WP-3's D4** when Phase 2 step 3 landed.
 
-**Decided but not yet written up as numbered records** — four WP-3 decisions
-(D1–D4) were settled by the repo owner on 2026-08-28 before that package
-started, and live in `docs/wp3-plan.md` until the phase implementing each one
-lands and promotes it to `0014`+: child-table `OrgId` denormalization,
-interval-plus-`remainingCapacity` slot semantics, DST handling for
-availability *ranges*, and a raw-SQL carve-out for seeding `Bookings` in
-integration tests. Treat them as settled, not open.
+**Decided but not yet written up as numbered records** — two WP-3 decisions
+(D2, D3) were settled by the repo owner on 2026-08-28 before that package
+started, and live in `docs/wp3-plan.md` until the phase implementing them
+lands (Phase 5) and promotes them to the next free numbers (`0018`+):
+interval-plus-`remainingCapacity` slot semantics, and DST handling for
+availability *ranges*. Treat them as settled, not open. D1 was promoted to
+`0014` when WP-3 Phase 1 landed, and D4 to `0017` when Phase 2 did.
 
 **Still open** — flag before building the affected feature, don't decide
 silently: the DST **fall-back** case (clocks go back, a local time occurs
@@ -647,44 +744,133 @@ implemented, covered by 257 automated tests (192 unit, 65 integration against
 real SQL Server), and the login/rotation/reuse-detection paths additionally
 verified by hand against a running instance.
 
-### WP-3 — Resources & Availability API — **Planned, not started**
+### WP-3 — Resources & Availability API — **In progress**
 Source doc: `docs/Work Packages - Week 3.pdf` (weeks 2–3, backend track).
 Plan and settled decisions: `docs/wp3-plan.md`.
 
-- [ ] CRUD for resources (type, capacity, timezone, description) —
-      TenantAdmin only. FR-3.1, FR-3.5.
+- [x] CRUD for resources (type, capacity, timezone, description) —
+      TenantAdmin only. FR-3.1, FR-3.5. **Done 2026-08-31** (Phase 2):
+      `GET /resources` (paginated, `sort`, `includeArchived`) and
+      `GET /resources/{id}` on `TenantMember`; `POST /resources`,
+      `PUT /resources/{id}` (full representation) and
+      `POST /resources/{id}/archive` on `TenantAdmin`. Reads are deliberately
+      **not** admin-only — a member has to browse resources in order to book
+      one; the AC says non-admins cannot *create or edit*.
+      Archive is `POST .../archive`, not `DELETE`: §4.5 deletes nothing and
+      there is no `Unarchive`, so a `DELETE` that quietly meant "archive,
+      irreversibly" would mislead. It is idempotent (a terminal state already
+      reached is not a rule violation, and a retry has to be safe) — the one
+      place `ResourceArchived` is deliberately not thrown; editing an archived
+      resource still is.
+      `RequiresApproval = true` is refused on **create** as well as edit
+      (`ApproversRequired`), so the state FR-3.3 rules out is never a resting
+      state. Consequence, accepted by the owner: until Phase 3 adds approver
+      assignment, only a resource that already has an approver can carry the
+      flag.
 - [ ] Manage availability windows per resource. FR-3.2.
 - [ ] Manage blackout periods; ensure they override availability. FR-3.4.
 - [ ] Mark resources `RequiresApproval` and assign approvers. FR-3.3.
 - [ ] Build an availability query: given a resource and date range, return
       bookable slots.
-- [ ] Design clean DTOs, error contracts, and pagination.
+- [ ] Design clean DTOs, error contracts, and pagination — pagination and the
+      DTO conventions landed with Phase 1 (offset paging with a total count,
+      `PagedResult<T>`, the `sort` whitelist, and the DTO rules WP-2 had only
+      implicitly: [`0015`](docs/decisions/0015-api-contract-and-pagination.md)).
+      The error contract landed too: `AppException` + `ErrorKind` mapped to
+      status codes once, and the `ReasonCodes` catalogue behind §6's list
+      ([`0016`](docs/decisions/0016-error-contract-and-reason-codes.md)).
+      Phase 2 added the resource DTOs against those conventions
+      (`ResourceSummaryResponse`, `ResourceDetailResponse`,
+      `UpdateResourceResponse` + `TimeZoneChangeNotice`, request records nested
+      in the controller). Left unchecked: the availability-window, blackout and
+      slot DTOs, which land with Phases 3–5.
 
 Acceptance criteria (source doc):
-- [ ] An admin can publish a resource with availability and blackout rules.
+- [ ] An admin can publish a resource with availability and blackout rules —
+      the *resource* half is done and swept end to end
+      (`ResourceAcceptanceTests`: an admin creates, a member of the same tenant
+      immediately sees it in the list and reads its detail). Availability and
+      blackout rules are Phases 3 and 4, so the criterion as written is not met
+      yet.
 - [ ] The availability query correctly excludes blackout periods and existing
       bookings.
-- [ ] Non-admins cannot create or edit resources.
-- [ ] API returns clear, structured errors.
+- [x] Non-admins cannot create or edit resources — **met 2026-08-31**. Every
+      write route is asserted forbidden to a Member *and* to an Approver
+      (`Approver` sits between Member and TenantAdmin, so "non-admin" has to
+      mean every non-admin), parameterized over the routes so a write endpoint
+      added later without `[Authorize]` is a visible omission from the list.
+      A SysAdmin is refused too — `TenantMember` requires the `orgId` claim
+      that decision `0012` omits for them.
+- [x] API returns clear, structured errors — **met for everything with a
+      thrower, 2026-08-31**. One table asserts each reason code this phase can
+      raise against the status its `ErrorKind` promises
+      (`ResourceNotFound` 404, `InvalidTimeZone` 400, `ApproversRequired` 422,
+      `ResourceArchived` 422, `ValidationFailed` 400 with per-field errors),
+      plus that every error body is a `ProblemDetails` carrying the correlation
+      id, and that the exception message never reaches the client. The codes
+      without throwers yet (`OverlappingAvailabilityWindow`,
+      `ApproverNotEligible`, `BlackoutPeriod`, and WP-4's six) join that table
+      as their phases land.
 
 Planned phasing — detail and reasoning in `docs/wp3-plan.md`, which was
 approved by the repo owner on 2026-08-28 before any code was written:
 
 1. **API contract foundations** — tenant-scope the child tables (D1),
-   pagination, error contracts, WP-3 reason codes.
-2. **Resource CRUD** — FR-3.1/FR-3.5.
+   pagination + DTO conventions, error contracts, WP-3 reason codes.
+   **Done 2026-08-31**, in six reviewable steps. Delivered: the D1
+   child-table scoping, in three
+   steps — domain (`OrgId` + `ITenantOwned` on both entities,
+   `Resource.AddAvailabilityWindow` now the only creator of an
+   `AvailabilityWindow`), persistence (query filters, composite same-org FKs,
+   the `AddChildTableTenantScoping` migration applied to the dev database and
+   its `Down` verified by an actual revert/re-apply, RLS predicates for both
+   tables), and documentation (this list, §4.2, decision `0014`, the schema
+   doc); and pagination + the DTO conventions (`PagedResult<T>`, `IPagedQuery`,
+   `PagingDefaults`, `SortOption`, `PagedQueryRules`, `ToPagedResultAsync`,
+   decision `0015`) — unit-tested but with no consumer until Phase 2's
+   `GET /resources`; and the error contract (`AppException` + `ErrorKind`,
+   mapped to status codes once in `GlobalExceptionHandler`, decision `0016`),
+   which fills in the extension point WP-2 left there; and the reason-code
+   catalogue (`ReasonCodes` + §6's list, kinds recorded per code, decision
+   `0016`'s catalogue section). 277 unit + 70 integration tests pass.
+   Nothing in the phase is consumed by an endpoint yet — Phase 2 is the first
+   caller of all of it, which is the accepted cost of building the contract
+   before the endpoints.
+2. **Resource CRUD** — FR-3.1/FR-3.5. **Done 2026-08-31**, in the four steps
+   `docs/wp3-plan.md` planned (domain mutators — reads — writes — archive + AC
+   sweep), reads deliberately before writes so Phase 1's contract got a real
+   consumer early. 366 unit + 142 integration tests pass, and every endpoint
+   was additionally exercised by hand against a running instance.
+   Beyond the endpoints themselves, the phase produced:
+   - `CK_Resources_DurationLimits` (migration
+     `AddResourceDurationLimitsCheck`, applied and its `Down` verified by an
+     actual revert/re-apply) — the tier-1 floor under
+     `Resource.ValidateDurationLimits`. The schema had a `CHECK` for capacity
+     but none for the duration pair; the owner chose to add it for consistency.
+   - Decision [`0017`](docs/decisions/0017-test-fixture-booking-inserts.md),
+     promoted from D4 when step 3 needed booking rows for
+     `CapacityBelowExistingBookings`.
+   - The two §4.3 time conventions (`IClock` truncated to seconds; `Utc` Kind
+     restored on read), both found by a test and a smoke check rather than
+     reasoned about up front.
+   - `ICurrentUser` (the `sub` claim) and `ITimeZoneCatalog` (IANA-only, see
+     §4.3) as new Application ports.
+   Manual Postman verification of the live endpoints can start now; the plan
+   doc records the seeded accounts and the three behaviours that look like bugs
+   and are not.
 3. **Availability windows + approvers** — FR-3.2/FR-3.3.
 4. **Blackout periods** — FR-3.4 plus decision `0001`'s cancellation cascade.
 5. **The availability query** — consumes all of the above; final AC sweep.
 
 **Four decisions were settled up front** (`docs/wp3-plan.md`), to be written
-up as numbered records 0014+ as each implementing phase lands:
+up as numbered records 0014+ as each implementing phase lands (D1 and D4 are
+done — see `0014` and `0017`; D2 and D3 land with Phase 5):
 - **D1** — `AvailabilityWindows` and `BlackoutPeriods` get their own `OrgId`,
-  `ITenantOwned`, query filters and RLS coverage. They are currently outside
-  **all three** §4.2 mechanisms, which makes a cross-tenant read the *natural*
-  way to write a child-entity handler. Follows decision `0006`'s precedent.
-  **§4.2's mechanism list must be updated when this migration lands** — it
-  presently names only `Users`, `Resources`, `Bookings`.
+  `ITenantOwned`, query filters and RLS coverage. They were outside **all
+  three** §4.2 mechanisms, which made a cross-tenant read the *natural* way to
+  write a child-entity handler. Follows decision `0006`'s precedent.
+  **Landed 2026-08-31, promoted to [`0014`](docs/decisions/0014-child-table-tenant-scoping.md)**;
+  §4.2's mechanism list and `docs/bookspace-schema-v2.sql` are updated to match.
 - **D2** — a "bookable slot" is a free/busy interval carrying
   `remainingCapacity`, not a fixed grid; forced by decision `0005`'s
   concurrent-units capacity model.
@@ -696,6 +882,8 @@ up as numbered records 0014+ as each implementing phase lands:
   or `SaveChanges`), a narrow documented carve-out from §4.1 so the
   "excludes existing bookings" AC is testable before `dbo.CreateBooking`
   exists in WP-4.
+  **Landed 2026-08-31, promoted to [`0017`](docs/decisions/0017-test-fixture-booking-inserts.md)**
+  — first used by Phase 2 step 3 for `CapacityBelowExistingBookings`.
 
 Notes:
 - Delivery style: each phase is built in **small, reviewable chunks** with
