@@ -10,6 +10,18 @@ namespace BookSpace.Application.Features.Resources.ReplaceAvailabilityWindows;
 public sealed class ReplaceAvailabilityWindowsCommandRequestValidator
     : AbstractValidator<ReplaceAvailabilityWindowsCommandRequest>
 {
+    // A weekly schedule is naturally small — seven days, a handful of windows
+    // each. The cap is not a guess at a real limit but a bound on an otherwise
+    // unbounded write: nothing else stops one authenticated admin sending ten
+    // thousand windows in a single INSERT. Rejected rather than truncated, like
+    // an oversized pageSize (docs/decisions/0015), because silently storing a
+    // different schedule than the one submitted is the worse failure.
+    //
+    // Deliberately generous. 100 is roughly seven times the largest schedule
+    // anyone would hand-write, so it should never be reached by legitimate use;
+    // if it is, that is a signal worth reading rather than a limit worth raising.
+    public const int MaxWindowsPerRequest = 100;
+
     public ReplaceAvailabilityWindowsCommandRequestValidator()
     {
         RuleFor(c => c.ResourceId)
@@ -24,6 +36,11 @@ public sealed class ReplaceAvailabilityWindowsCommandRequestValidator
         RuleFor(c => c.Windows)
             .NotNull()
             .WithMessage("Windows is required; send an empty array to clear the schedule.");
+
+        RuleFor(c => c.Windows)
+            .Must(windows => windows.Count <= MaxWindowsPerRequest)
+            .When(c => c.Windows is not null)
+            .WithMessage($"A resource cannot have more than {MaxWindowsPerRequest} availability windows.");
 
         RuleForEach(c => c.Windows).ChildRules(window =>
         {

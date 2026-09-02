@@ -180,6 +180,29 @@ public class Resource : IAuditable, ITenantOwned
             Touch(actorUserId, nowUtc);
     }
 
+    // FR-3.3, replace-the-set semantics, matching ReplaceAvailabilityWindows and
+    // the PUT that drives it: the argument is the resource's entire approver list
+    // afterwards.
+    //
+    // Set semantics, so a repeated id collapses — but the Application validator
+    // rejects duplicates before they reach here, on the same principle as an
+    // oversized pageSize: quietly accepting a payload and storing something else
+    // is the behaviour being avoided.
+    //
+    // An empty set is refused by the Application layer when the resource requires
+    // approval (ReasonCodes.ApproversRequired), not here — the entity can hold
+    // that state transiently while a handler is mid-edit, and a domain throw
+    // reaches the client as a 500 with no reason code. Whether each id is even
+    // eligible is likewise not knowable here: it is a query over Users.
+    public void ReplaceApprovers(IEnumerable<Guid> userIds, Guid actorUserId, DateTime nowUtc)
+    {
+        var replacement = userIds.Distinct().Select(id => new ApproverAssignment(id)).ToList();
+
+        _approverAssignments.Clear();
+        _approverAssignments.AddRange(replacement);
+        Touch(actorUserId, nowUtc);
+    }
+
     // WP-3 decision D1: this is the only creator of AvailabilityWindow — its
     // constructor is internal to the Domain assembly — so a window can never
     // carry an OrgId that disagrees with its resource's. Returns the created

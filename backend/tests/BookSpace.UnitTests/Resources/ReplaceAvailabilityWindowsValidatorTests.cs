@@ -122,4 +122,41 @@ public class ReplaceAvailabilityWindowsValidatorTests
         Assert.False(result.IsValid);
         Assert.Contains(result.Errors, e => e.PropertyName == "Windows[2].ClosesAt");
     }
+
+    // A ceiling on an otherwise unbounded write, not a guess at a real schedule
+    // size. Rejected rather than truncated, like an oversized pageSize.
+    [Fact]
+    public void Rejects_MoreWindowsThanTheCap()
+    {
+        var windows = Enumerable
+            .Range(0, ReplaceAvailabilityWindowsCommandRequestValidator.MaxWindowsPerRequest + 1)
+            .Select(_ => Item(DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0)))
+            .ToArray();
+
+        var result = Validator.Validate(Request(windows));
+
+        Assert.False(result.IsValid);
+        Assert.Contains(
+            result.Errors,
+            e => e.PropertyName == nameof(ReplaceAvailabilityWindowsCommandRequest.Windows)
+                 && e.ErrorMessage.Contains("more than", StringComparison.Ordinal));
+    }
+
+    // The cap has to be generous enough that a real weekly schedule never meets
+    // it — a full seven days with morning and afternoon blocks is fourteen.
+    [Fact]
+    public void Accepts_AFullWeeklySchedule()
+    {
+        var windows = Enum.GetValues<DayOfWeek>()
+            .SelectMany(day => new[]
+            {
+                Item(day, new TimeOnly(9, 0), new TimeOnly(12, 0)),
+                Item(day, new TimeOnly(13, 0), new TimeOnly(17, 0)),
+            })
+            .ToArray();
+
+        var result = Validator.Validate(Request(windows));
+
+        Assert.True(result.IsValid);
+    }
 }

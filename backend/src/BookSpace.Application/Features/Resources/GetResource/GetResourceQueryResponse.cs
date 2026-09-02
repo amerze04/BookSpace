@@ -17,10 +17,15 @@ namespace BookSpace.Application.Features.Resources.GetResource;
 // full representation, meaning an admin renaming a room while omitting the
 // windows array would silently wipe the schedule.
 //
-// One thing a reader might still expect and will not find: the assigned approver
-// list (FR-3.3), which lands with the approver endpoint later in Phase 3.
-// RequiresApproval can therefore read true here with no visible approvers; that
-// gap closes then, and adding the field is additive.
+// Approvers is on the read detail and not on the PUT payload either, for the
+// same reason as the windows: assignment has its own endpoint
+// (PUT /resources/{id}/approvers), and a resource edit that omitted the array
+// would otherwise clear the list — which FR-3.3 forbids outright whenever
+// RequiresApproval is set.
+//
+// Visible to any TenantMember, not just an admin: a member deciding whether to
+// book a room that needs approval should be able to see who will be deciding.
+// Names only, no email addresses — see ApproverDetail.
 public sealed record GetResourceQueryResponse(
     Guid Id,
     string Name,
@@ -34,4 +39,5 @@ public sealed record GetResourceQueryResponse(
     bool IsArchived,
     DateTime CreatedAtUtc,
     DateTime UpdatedAtUtc,
-    IReadOnlyList<AvailabilityWindowDetail> AvailabilityWindows);
+    IReadOnlyList<AvailabilityWindowDetail> AvailabilityWindows,
+    IReadOnlyList<ApproverDetail> Approvers);

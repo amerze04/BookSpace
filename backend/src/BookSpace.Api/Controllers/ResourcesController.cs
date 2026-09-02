@@ -4,6 +4,7 @@ using BookSpace.Application.Features.Resources.ArchiveResource;
 using BookSpace.Application.Features.Resources.CreateResource;
 using BookSpace.Application.Features.Resources.GetResource;
 using BookSpace.Application.Features.Resources.ListResources;
+using BookSpace.Application.Features.Resources.ReplaceApprovers;
 using BookSpace.Application.Features.Resources.ReplaceAvailabilityWindows;
 using BookSpace.Application.Features.Resources.UpdateResource;
 using BookSpace.Application.Messaging;
@@ -230,6 +231,42 @@ public sealed class ResourcesController : ControllerBase
     {
         var result = await _sender.Send(
             new ReplaceAvailabilityWindowsCommandRequest(id, request.Windows),
+            cancellationToken);
+
+        return Ok(result);
+    }
+
+    // FR-3.3. The whole approver list in one payload; see
+    // ReplaceApproversCommandRequest for why replace-the-set rather than per-row
+    // POST/DELETE — chiefly that swapping approvers one at a time has to pass
+    // through the empty list, which ApproversRequired refuses.
+    //
+    // Its own endpoint rather than a field on PUT /resources/{id}, same reasoning
+    // as the schedule: that payload is a full representation, so an admin
+    // renaming a room while omitting the array would clear the approver list —
+    // and on a resource that requires approval that state is forbidden outright.
+    public sealed record ReplaceApproversRequest(IReadOnlyList<Guid> ApproverUserIds);
+
+    // 422 covers two different refusals here, both RuleViolation: emptying the
+    // list on a resource that requires approval (ApproversRequired), and an id
+    // that cannot approve for this tenant (ApproverNotEligible). The second is
+    // deliberately vague about which of its three causes applied — see the
+    // exception.
+    [HttpPut("{id:guid}/approvers")]
+    [Authorize(Policy = AuthorizationPolicies.TenantAdmin)]
+    [ProducesResponseType<ReplaceApproversCommandResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
+    public async Task<IActionResult> ReplaceApprovers(
+        Guid id,
+        ReplaceApproversRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(
+            new ReplaceApproversCommandRequest(id, request.ApproverUserIds),
             cancellationToken);
 
         return Ok(result);

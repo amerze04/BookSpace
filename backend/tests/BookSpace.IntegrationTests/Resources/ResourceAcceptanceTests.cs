@@ -203,6 +203,7 @@ public class ResourceAcceptanceTests
         { "PUT", "/resources/{id}" },
         { "POST", "/resources/{id}/archive" },
         { "PUT", "/resources/{id}/availability-windows" },
+        { "PUT", "/resources/{id}/approvers" },
     };
 
     [Theory]
@@ -264,6 +265,7 @@ public class ResourceAcceptanceTests
     [InlineData("PUT", "/resources/{id}")]
     [InlineData("POST", "/resources/{id}/archive")]
     [InlineData("PUT", "/resources/{id}/availability-windows")]
+    [InlineData("PUT", "/resources/{id}/approvers")]
     public async Task EveryRouteTakingAnId_TreatsAnotherTenantsRealIdAsNotFound(
         string method,
         string routeTemplate)
@@ -309,16 +311,16 @@ public class ResourceAcceptanceTests
     // as the wrong status fails here rather than in whichever endpoint test
     // happens to cover it.
     //
-    // Not listed, because no thrower exists yet: ApproverNotEligible (the rest
-    // of Phase 3), BlackoutPeriod (Phase 4), and the six booking codes (WP-4).
-    // ReasonCodesTests already proves those exist and are unique; this proves the
-    // ones with throwers behave.
+    // Not listed, because no thrower exists yet: BlackoutPeriod (Phase 4) and the
+    // six booking codes (WP-4). ReasonCodesTests already proves those exist and
+    // are unique; this proves the ones with throwers behave.
     [Theory]
     [InlineData("ResourceNotFound", HttpStatusCode.NotFound)]
     [InlineData("InvalidTimeZone", HttpStatusCode.BadRequest)]
     [InlineData("ApproversRequired", HttpStatusCode.UnprocessableEntity)]
     [InlineData("ResourceArchived", HttpStatusCode.UnprocessableEntity)]
     [InlineData("OverlappingAvailabilityWindow", HttpStatusCode.Conflict)]
+    [InlineData("ApproverNotEligible", HttpStatusCode.UnprocessableEntity)]
     [InlineData("ValidationFailed", HttpStatusCode.BadRequest)]
     public async Task EveryReasonCodeThisPhaseThrows_ArrivesWithTheStatusItsKindPromises(
         string reasonCode,
@@ -385,6 +387,10 @@ public class ResourceAcceptanceTests
             // nothing about the policy.
             "PUT" when route.EndsWith("/availability-windows", StringComparison.Ordinal) =>
                 await client.PutAsJsonAsync(route, new { windows = new[] { new { weekday = "Monday", opensAt = "09:00:00", closesAt = "17:00:00" } } }),
+            // Likewise its own shape. An empty list is a valid payload and is
+            // enough to prove the policy refuses the call before any handler runs.
+            "PUT" when route.EndsWith("/approvers", StringComparison.Ordinal) =>
+                await client.PutAsJsonAsync(route, new { approverUserIds = Array.Empty<Guid>() }),
             "PUT" => await client.PutAsJsonAsync(route, ValidPayload(name: "Should Not Be Renamed")),
             _ => throw new ArgumentOutOfRangeException(nameof(method), method, "Unhandled method."),
         };
@@ -448,6 +454,16 @@ public class ResourceAcceptanceTests
                                 new { weekday = "Monday", opensAt = "12:00:00", closesAt = "17:00:00" },
                             },
                         }),
+                    created.Id);
+            }
+
+            case "ApproverNotEligible":
+            {
+                var created = await PostAndReadAsync(client, ValidPayload(name: "Ineligible For The Sweep"));
+                return (
+                    await client.PutAsJsonAsync(
+                        $"/resources/{created.Id}/approvers",
+                        new { approverUserIds = new[] { Guid.NewGuid() } }),
                     created.Id);
             }
 

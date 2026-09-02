@@ -370,4 +370,74 @@ public class ResourceTests
 
         Assert.True(resource.IsArchived);
     }
+
+    // ---- ReplaceApprovers (WP-3 Phase 3 step 2, FR-3.3) ----
+
+    [Fact]
+    public void ReplaceApprovers_ReplacesTheWholeList()
+    {
+        var resource = CreateValid();
+        var original = Guid.NewGuid();
+        resource.AddApprover(original, ActorId, NowUtc);
+
+        var replacement = Guid.NewGuid();
+        resource.ReplaceApprovers(new[] { replacement }, ActorId, NowUtc.AddMinutes(1));
+
+        // Replace, not merge: the original is gone because it was not resent.
+        Assert.Equal(new[] { replacement }, resource.ApproverUserIds);
+    }
+
+    [Fact]
+    public void ReplaceApprovers_WithAnEmptySet_ClearsTheList()
+    {
+        var resource = CreateValid();
+        resource.AddApprover(Guid.NewGuid(), ActorId, NowUtc);
+
+        resource.ReplaceApprovers(Array.Empty<Guid>(), ActorId, NowUtc.AddMinutes(1));
+
+        Assert.Empty(resource.ApproverUserIds);
+    }
+
+    // Set semantics. The Application validator rejects duplicates before they get
+    // here, so this is the belt to that braces — the entity still cannot end up
+    // holding the same approver twice, which the (ResourceId, UserId) primary key
+    // would refuse anyway.
+    [Fact]
+    public void ReplaceApprovers_CollapsesDuplicates()
+    {
+        var resource = CreateValid();
+        var userId = Guid.NewGuid();
+
+        resource.ReplaceApprovers(new[] { userId, userId }, ActorId, NowUtc);
+
+        Assert.Equal(new[] { userId }, resource.ApproverUserIds);
+    }
+
+    [Fact]
+    public void ReplaceApprovers_TouchesTheAuditColumns()
+    {
+        var resource = CreateValid();
+        var editor = Guid.NewGuid();
+        var later = NowUtc.AddHours(2);
+
+        resource.ReplaceApprovers(new[] { Guid.NewGuid() }, editor, later);
+
+        Assert.Equal(editor, resource.UpdatedByUserId);
+        Assert.Equal(later, resource.UpdatedAtUtc);
+    }
+
+    // The entity is allowed to hold this state: RequiresApproval with no
+    // approvers is refused by the Application layer, which is the only place that
+    // can attach a reason code to the refusal.
+    [Fact]
+    public void ReplaceApprovers_DoesNotEnforceTheRequiresApprovalInvariant()
+    {
+        var resource = CreateValid();
+        resource.SetRequiresApproval(true, ActorId, NowUtc);
+
+        resource.ReplaceApprovers(Array.Empty<Guid>(), ActorId, NowUtc.AddMinutes(1));
+
+        Assert.True(resource.RequiresApproval);
+        Assert.Empty(resource.ApproverUserIds);
+    }
 }

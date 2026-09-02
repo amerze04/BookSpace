@@ -459,6 +459,39 @@ public class AvailabilityWindowEndpointTests
         }
     }
 
+
+    // Sub-second times are refused, not rounded (the columns are time(0)).
+    // Asserted over HTTP as well as in the validator tests for one specific
+    // reason: it has to be the *validator* that refuses it, with a reason code
+    // and a named field, rather than System.Text.Json rejecting the payload at
+    // the model binder — those produce different bodies, and only one of them is
+    // the documented contract.
+    [Fact]
+    public async Task Replace_SubSecondTimes_Returns400FromTheValidator()
+    {
+        var client = await AuthenticatedClientAsync(AcmeAdmin);
+        var resource = await CreateResourceAsync(client, "Windows Sub Second");
+
+        try
+        {
+            var response = await client.PutAsJsonAsync(
+                $"/resources/{resource.Id}/availability-windows",
+                new { windows = new[] { Window("Monday", "09:00:00.5", "17:00:00.25") } });
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+            var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Equal("ValidationFailed", body.GetProperty("reasonCode").GetString());
+
+            var errors = body.GetProperty("errors");
+            Assert.True(errors.TryGetProperty("Windows[0].OpensAt", out _));
+            Assert.True(errors.TryGetProperty("Windows[0].ClosesAt", out _));
+        }
+        finally
+        {
+            await DeleteResourceAsync(resource.Id);
+        }
+    }
     // ---- Helpers ----
 
     private async Task<CreateResourceCommandResponse> CreateResourceAsync(HttpClient client, string name)
