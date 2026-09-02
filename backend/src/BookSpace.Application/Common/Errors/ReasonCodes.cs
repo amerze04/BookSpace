@@ -55,14 +55,34 @@ public static class ReasonCodes
 
     // ---- Blackout periods (WP-3, FR-3.4) ----
 
-    // ErrorKind.RuleViolation. A requested interval a blackout covers.
-    // Decision 0001 gives a blackout absolute priority.
-    public const string BlackoutPeriod = "BlackoutPeriod";
+    // ErrorKind.RuleViolation. A blackout whose interval is entirely in the
+    // past, which blocks nothing and could only reach backwards into bookings
+    // that already happened. Owner's call, 2026-09-02 — see
+    // BlackoutPeriodElapsedException for why the rule is about EndsAtUtc and
+    // deliberately not about StartsAtUtc.
+    public const string BlackoutPeriodElapsed = "BlackoutPeriodElapsed";
+
+    // ErrorKind.NotFound. No such blackout on the resource in the path — also
+    // the answer for another tenant's real blackout id, and for one that exists
+    // in this tenant but belongs to a different resource. See
+    // BlackoutPeriodNotFoundException for why all three collapse to one code,
+    // and why it is separate from ResourceNotFound despite both being 404s.
+    public const string BlackoutPeriodNotFound = "BlackoutPeriodNotFound";
 
     // ---- Bookings (declared by CLAUDE.md §6; first thrown in WP-4) ----
     // Listed here so the catalogue is the one place to look, and so WP-4 adds
     // throwers rather than inventing strings. No thrower exists yet: booking
     // writes go through dbo.CreateBooking, which is WP-4 work (§4.1).
+
+    // ErrorKind.RuleViolation. A requested interval a blackout covers.
+    // Decision 0001 gives a blackout absolute priority.
+    //
+    // A *booking* rejection (FR-4.5), despite the blackout in the name, which is
+    // why WP-3 Phase 4 does not throw it: creating a blackout is refused by
+    // BlackoutPeriodElapsed, and Phase 5's availability query excludes blackout
+    // time rather than raising anything. The thrower arrives with
+    // dbo.CreateBooking in WP-4.
+    public const string BlackoutPeriod = "BlackoutPeriod";
 
     // ErrorKind.Conflict. The slot is taken — the stored procedure's overlap
     // check refused it (FR-4.2, AC-1).

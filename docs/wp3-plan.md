@@ -461,6 +461,82 @@ considerably.
   cascade is exercised against rows inserted by the D4 raw-SQL fixture rather
   than through a real booking flow.
 
+#### Outcome — done 2026-09-02
+
+Built in two steps. The split is worth recording because the obvious one was
+rejected: "all CRUD, then the cascade" gives two evenly-sized chunks, but it
+leaves a reviewable state in which an admin can create a blackout over live
+bookings and nothing happens to them — a silent contradiction of decision
+`0001` sitting in the tree. So the cascade was front-loaded instead:
+
+1. **Create + read + the cascade.** `POST` and `GET`, `IBlackoutPeriodRepository`,
+   `BlackoutCascade`, `Booking.CancelForBlackout`, `BlackoutPeriodElapsed`.
+2. **Edit + delete.** `PUT` and `DELETE`, `BlackoutPeriod.Revise`,
+   `BlackoutPeriodNotFound`, decision `0019`, and this write-up.
+
+Step 1 is the heavier of the two, and step 2 is light. That is the accepted cost
+of every chunk boundary being self-consistent.
+
+Five questions were put to the owner before any code was written, and all five
+are recorded in [`0019`](decisions/0019-blackout-period-lifecycle.md): full CRUD
+rather than create-only; overlapping blackouts allowed; the cascade limited to
+`Pending`/`Confirmed`; the §4.1 reading; and hard delete. The owner also asked
+for an opinion on two of them, which is where the second and third rules in
+`0019` came from.
+
+**The finding that shaped the phase**, and the one worth carrying forward:
+nothing in this codebase writes `BookingStatus.Completed`. There is no
+`Complete()` method and no job in CLAUDE.md §7 that sets it, so a meeting that
+actually happened and was checked into stays `Confirmed` indefinitely. That
+turns "cancel every `Pending` or `Confirmed` booking the blackout overlaps" —
+the obvious reading of `0001` — into a rule that rewrites history. Phase 4
+defends against it with `Booking.CanBeCancelledForBlackout`, which requires both
+a live status *and* `EndsAtUtc > now`.
+
+It is a roadmap gap rather than a Phase 4 bug, and the fix agreed with the owner
+belongs to WP-4: fold the missing transition into the existing no-show release
+job, splitting past `Confirmed` bookings on `CheckedInAtUtc` (null → `NoShow`,
+which it already does; non-null → `Completed`), rather than adding a fourth job.
+Note the two predicates differ — `IsNoShow` measures grace from `StartsAtUtc`,
+whereas "completed" is about `EndsAtUtc` having passed — so it is one job with
+two conditions, not one condition with a branch.
+
+**Four smaller things the plan did not anticipate:**
+
+- **This feature is the first in the API to take an instant on the wire**, so it
+  is the first that had to decide what a timestamp with no zone means. The
+  answer is that it is refused (400): `System.Text.Json` maps a bare
+  local-looking timestamp to `DateTimeKind.Unspecified`, which a handler can only
+  interpret by guessing a zone, and the likeliest guess is the *server's* —
+  precisely the silent app/database disagreement §4.3 exists to prevent. An
+  explicit offset is accepted and normalized to UTC. WP-4's booking endpoints
+  inherit the same question and should reuse `BlackoutPeriodFieldRules`' answer.
+- **`Notifications` got its first writer**, which confirms §7's design end to
+  end: the cascade inserts rows for a dispatch job that does not exist yet, and
+  `UQ_Notifications_Once` is what makes the eventual send idempotent (AC-6).
+- **`BlackoutPeriod.Reschedule` was widened into `Revise` rather than kept.** It
+  took the interval only and had never acquired a production caller, and a `PUT`
+  is a full representation, so it could not express the payload. Leaving it
+  beside a new mutator would have created a second instance of exactly the trap
+  the Phase 5 notes already record against `Resource.AddAvailabilityWindow`: dead
+  code with a live-looking name.
+- **The `datetime2(0)` rounding trap bit a test.** The raw-SQL booking fixture
+  used an untruncated `DateTime.UtcNow` while blackout bounds were truncated to
+  whole seconds; since the column *rounds*, the adjacency test intermittently saw
+  a one-second overlap. The fixture now resolves offsets to whole-second instants
+  once and derives the end from the start. Same family as the two §4.3
+  conventions Phase 2 discovered, and the third time this project has been caught
+  by a `(0)`-precision column.
+
+**Verification:** 529 unit + 226 integration tests pass (up from 445 + 182 at the
+end of Phase 3), the blackout suite re-run three times to confirm the
+timing-sensitive tests are stable. No migration was needed — Phase 1's D1 work
+had already built the entity, its query filter, its RLS predicate, the composite
+same-org FK and `IX_BlackoutPeriods_Resource_Start`. **Manual Postman
+verification is still outstanding**, and matters here more than usual: the
+cascade is the sort of behaviour that reads differently from a client than from a
+test log.
+
 ### Phase 5 — The availability query
 
 Last, because it consumes every phase above: availability windows, blackouts,

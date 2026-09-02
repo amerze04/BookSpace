@@ -200,7 +200,14 @@ Bookings (declared by FR-4.5, first thrown in WP-4): `SlotUnavailable`,
 
 Resources and availability (WP-3): `ResourceNotFound`, `InvalidTimeZone`,
 `CapacityBelowExistingBookings`, `OverlappingAvailabilityWindow`,
-`ApproversRequired`, `ApproverNotEligible`.
+`ApproversRequired`, `ApproverNotEligible`, `BlackoutPeriodElapsed`,
+`BlackoutPeriodNotFound`.
+
+Note that `BlackoutPeriod` above is a **booking** rejection despite its name —
+the interval a client asked for is covered by a blackout — so WP-3's blackout
+endpoints do not throw it. Creating a blackout is refused by
+`BlackoutPeriodElapsed`, and the availability query excludes blackout time
+rather than raising anything.
 
 A code travels with the `ErrorKind` recorded beside it in `ReasonCodes`, so
 the same failure never arrives as a 404 from one handler and a 422 from
@@ -402,11 +409,28 @@ index; when a new decision doc is added, add its one-liner here too.
    through the empty list, and an empty list on a resource requiring approval is
    refused. **Settled by the repo owner 2026-09-01**, implemented in WP-3 Phase 3
    step 2.
+19. [`0019`](docs/decisions/0019-blackout-period-lifecycle.md) — blackout periods
+   get **full CRUD** (FR-3.4 only asked for "define"); **overlapping blackouts are
+   allowed**, deliberately unlike availability windows, because the union of two
+   blackouts is still blacked out and nothing contradicts; `DELETE` is a **real
+   hard delete**, the first in this system (§4.5 is about users and resources, and
+   a blackout carries no history — the cancellation reason is a *text snapshot* on
+   the booking, not a foreign key), it **un-cancels nothing**, and it is
+   deliberately **not idempotent** (a second `DELETE` is 404, because 204 could not
+   be returned without also accepting a cross-tenant id); the edit's cascade runs
+   **forwards only**. A blackout **entirely** in the past is refused
+   (`BlackoutPeriodElapsed`, 422); one that merely *starts* in the past is not —
+   "the room flooded this morning" is the ordinary case. The cascade cancels
+   `Pending`/`Confirmed` **and only bookings that have not yet ended**, which is
+   necessary rather than tidy: **nothing in this system writes
+   `BookingStatus.Completed`**, so an attended meeting is still `Confirmed`, and
+   status alone would let a blackout rewrite history. **Settled by the repo owner
+   2026-09-02**, implemented in WP-3 Phase 4.
 
 **Decided but not yet written up as numbered records** — two WP-3 decisions
 (D2, D3) were settled by the repo owner on 2026-08-28 before that package
 started, and live in `docs/wp3-plan.md` until the phase implementing them
-lands (Phase 5) and promotes them to the next free numbers (`0019`+, since Phase 3's approver eligibility took `0018`):
+lands (Phase 5) and promotes them to the next free numbers (`0020`+, since Phase 3's approver eligibility took `0018` and Phase 4's lifecycle took `0019`):
 interval-plus-`remainingCapacity` slot semantics, and DST handling for
 availability *ranges*. Treat them as settled, not open. D1 was promoted to
 `0014` when WP-3 Phase 1 landed, and D4 to `0017` when Phase 2 did.
@@ -806,7 +830,44 @@ Plan and settled decisions: `docs/wp3-plan.md`.
       weekday are rejected, not unioned, and **adjacent windows are not
       overlapping** (`ClosesAt` is exclusive, so 09:00–12:00 and 12:00–17:00
       coexist) — the owner's call, 2026-09-01.
-- [ ] Manage blackout periods; ensure they override availability. FR-3.4.
+- [x] Manage blackout periods; ensure they override availability. FR-3.4.
+      **Done 2026-09-02** (Phase 4, two steps: create + read + the cascade, then
+      edit + delete). Decision
+      [`0019`](docs/decisions/0019-blackout-period-lifecycle.md).
+      `POST /resources/{id}/blackout-periods`,
+      `PUT /resources/{id}/blackout-periods/{blackoutId}` (full representation) and
+      `DELETE .../{blackoutId}` on `TenantAdmin`;
+      `GET /resources/{id}/blackout-periods` on `TenantMember` — paginated
+      with an optional `from`/`to` **overlap** filter, and its own endpoint
+      rather than a collection on `GET /resources/{id}` because blackouts
+      accumulate for the life of a resource while the weekly schedule and the
+      approver list are bounded sets.
+      Plain create rather than Phase 3's replace-the-set: blackouts are
+      individual events with their own audit columns, and decision 0001's
+      cascade makes resending one anything but free. **Overlapping blackouts on
+      one resource are allowed** (owner's call, 2026-09-02) — deliberately
+      unlike availability windows, because the union of two blackouts is still
+      blacked out, whereas two overlapping windows contradict each other.
+      Creating a blackout **cancels every booking it overlaps and enqueues a
+      `Notifications` row per cancellation, in the same `SaveChanges`** —
+      `Booking.CancelForBlackout` plus `BlackoutCascade`. The response lists the
+      cancellations (`cancelledBookings`, with `recurrenceRuleId` where the
+      booking was a series occurrence), because an admin who just cancelled
+      other people's meetings should be told in the reply (PRD AC-2).
+      First thrower for the new `BlackoutPeriodElapsed` (422): a blackout whose
+      interval is **entirely** in the past is refused, since it blocks nothing.
+      The test is on `EndsAtUtc`, deliberately not `StartsAtUtc` — a blackout
+      that began this morning and runs to Friday is the ordinary case.
+      **The cascade cancels only bookings that have not yet ended**, not merely
+      live-status ones, because nothing writes `BookingStatus.Completed` (see the
+      Notes below) and status alone would let a blackout cancel attended meetings.
+      `PUT` re-runs the cascade over the **new** interval — decision 0001 names
+      widening, but moving matters as much — and runs **forwards only**: narrowing
+      restores nothing, because a cancellation is irreversible.
+      `DELETE` is a **real hard delete**, the first in this codebase, returning 204
+      and un-cancelling nothing; a second call is 404 `BlackoutPeriodNotFound`
+      (the second new code, 404), deliberately not 204. An archived resource
+      refuses all three writes.
 - [x] Mark resources `RequiresApproval` and assign approvers. FR-3.3.
       **Done 2026-09-02** (Phase 3 step 2): `PUT /resources/{id}/approvers` on
       `TenantAdmin`, replace-the-set like the schedule — but here it follows from
@@ -854,12 +915,12 @@ Plan and settled decisions: `docs/wp3-plan.md`.
       `0015` gives `IssuedTokens`.
 
 Acceptance criteria (source doc):
-- [ ] An admin can publish a resource with availability and blackout rules —
-      **availability yes, blackout not yet.** As of Phase 3 an admin creates a
-      resource, gives it a weekly schedule and assigns approvers, and a member of
-      the same tenant immediately sees all three (`ResourceAcceptanceTests`,
-      `AvailabilityWindowEndpointTests`, `ApproverEndpointTests`). The blackout
-      half is Phase 4, so the criterion **as written** is still not met.
+- [x] An admin can publish a resource with availability and blackout rules —
+      **met 2026-09-02**, when Phase 4 supplied the blackout half. An admin
+      creates a resource, gives it a weekly schedule, assigns approvers and blacks
+      out spans on it, and a member of the same tenant immediately sees all four
+      (`ResourceAcceptanceTests`, `AvailabilityWindowEndpointTests`,
+      `ApproverEndpointTests`, `BlackoutPeriodEndpointTests`).
 - [ ] The availability query correctly excludes blackout periods and existing
       bookings.
 - [x] Non-admins cannot create or edit resources — **met 2026-08-31**. Every
@@ -880,8 +941,16 @@ Acceptance criteria (source doc):
       Phase 3 added the last two: `OverlappingAvailabilityWindow` is the first
       `Conflict` kind on the table, and `ApproverNotEligible` is additionally
       asserted to be byte-identical for a cross-tenant approver and a
-      nonexistent one (decision `0018`). Only `BlackoutPeriod` (Phase 4) and
-      WP-4's six are still without throwers.
+      nonexistent one (decision `0018`).
+      Phase 4 added `BlackoutPeriodElapsed` (422) and `BlackoutPeriodNotFound`
+      (404) to the same table, the latter asserted byte-identical for a
+      nonexistent blackout, another tenant's real one, and one belonging to a
+      different resource (AC-4).
+      **Correction, 2026-09-02:** this line previously said `BlackoutPeriod`
+      was Phase 4's remaining thrower. It is not — it is a *booking* rejection
+      (FR-4.5), as §6 already listed it, so it joins WP-4's group and WP-4 now
+      owns seven codes with no thrower rather than six. **Every reason code this
+      work package can raise now has a thrower and a row on the table.**
 
 Planned phasing — detail and reasoning in `docs/wp3-plan.md`, which was
 approved by the repo owner on 2026-08-28 before any code was written:
@@ -983,6 +1052,31 @@ approved by the repo owner on 2026-08-28 before any code was written:
      stands for the *list*, where the row count is unbounded; it never applied to
      one resource by id.
 4. **Blackout periods** — FR-3.4 plus decision `0001`'s cancellation cascade.
+   **Done 2026-09-02**, in the two steps agreed with the owner (create + read +
+   the cascade, then edit + delete), split that way deliberately so no chunk
+   boundary left a state where a blackout could be created without cancelling
+   what it covers. Delivered `POST`/`GET`/`PUT`/`DELETE` on
+   `/resources/{id}/blackout-periods`; `Booking.CancelForBlackout` and
+   `CanBeCancelledForBlackout`; `BlackoutPeriod.Revise` (which **replaced** WP-1's
+   caller-less `Reschedule` rather than sitting beside it); `BlackoutCascade` and
+   `BlackoutPeriodRules`; `BlackoutPeriodElapsedException` (422) and
+   `BlackoutPeriodNotFoundException` (404); and `IBlackoutPeriodRepository`, one
+   port over three tables so the cascade shares a unit of work. Decision
+   [`0019`](docs/decisions/0019-blackout-period-lifecycle.md).
+   **No migration** — Phase 1's D1 work had already built the entity, its query
+   filter, its RLS predicate, the composite same-org FK and the index.
+   529 unit + 226 integration tests pass. Two things it produced that the plan
+   did not anticipate:
+   - **`Notifications` got its first writer**, and with it the confirmation that
+     §7's design works as written: the cascade inserts rows the not-yet-built
+     dispatch job will pick up, and `UQ_Notifications_Once` is what makes the
+     eventual send idempotent (AC-6).
+   - **The `datetime2(0)` rounding trap bit a test, not production.** The raw-SQL
+     booking fixture used an untruncated `DateTime.UtcNow`, which the column
+     *rounds*, while blackout bounds were truncated — enough to turn the
+     adjacency test into an intermittent one-second overlap. The fixture now
+     resolves offsets to whole-second instants once and derives the end from the
+     start. Same family as the two §4.3 conventions Phase 2 found.
 5. **The availability query** — consumes all of the above; final AC sweep.
    Carries one item inherited from Phase 3 (settled 2026-09-02): an availability
    window **cannot cross midnight**, because `CK_AvailabilityWindows_Window`
