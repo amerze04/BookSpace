@@ -52,26 +52,76 @@ internal sealed class ResourceRepository : IResourceRepository
             .ToPagedResultAsync(query, cancellationToken);
     }
 
-    // FirstOrDefaultAsync, never DbSet.Find(): Find can return a tracked
-    // entity without querying at all, which would skip the query filter
-    // (CLAUDE.md §4.2).
-    public Task<GetResourceQueryResponse?> FindDetailAsync(Guid resourceId, CancellationToken cancellationToken) =>
-        _context.Resources
-            .Where(r => r.Id == resourceId)
-            .Select(r => new GetResourceQueryResponse(
-                r.Id,
-                r.Name,
-                r.Description,
-                r.ResourceType,
-                r.Capacity,
-                r.TimeZoneId,
-                r.RequiresApproval,
-                r.MinDurationMinutes,
-                r.MaxDurationMinutes,
-                r.IsArchived,
-                r.CreatedAtUtc,
-                r.UpdatedAtUtc))
-            .FirstOrDefaultAsync(cancellationToken);
+    // The one read here that loads the entity instead of projecting, and the
+    // reason is the approver list (FR-3.3). Approvers are an EF *owned*
+    // collection over a private field (`_approverAssignments`), exposed only
+    // through Resource.ApproverUserIds, which is a computed property with no SQL
+    // translation. Projecting it would mean an EF.Property expression over a
+    // backing-field name — a string the compiler does not check, in the middle of
+    // the one query a reader most needs to understand.
+    //
+    // Loading the aggregate instead costs a single row plus its two child
+    // collections, which is exactly what this endpoint returns anyway. The
+    // argument on IResourceRepository for projecting — "select every column of
+    // every row to build a summary of seven" — is about the *list*, where the row
+    // count is unbounded. It does not apply to one resource by id.
+    //
+    // AsNoTracking because nothing here mutates: the write path has its own
+    // loader in FindForUpdateAsync.
+    //
+    // FirstOrDefaultAsync, never DbSet.Find(): Find can return a tracked entity
+    // without querying at all, which would skip the query filter (CLAUDE.md §4.2).
+    public async Task<GetResourceQueryResponse?> FindDetailAsync(
+        Guid resourceId,
+        CancellationToken cancellationToken)
+    {
+        var resource = await _context.Resources
+            .AsNoTracking()
+            .Include(r => r.AvailabilityWindows)
+            .FirstOrDefaultAsync(r => r.Id == resourceId, cancellationToken);
+
+        if (resource is null)
+        {
+            return null;
+        }
+
+        // Second query, for the approvers' names. Tenant-filtered like everything
+        // else in this file, so an approver who has since left the tenant drops
+        // out of the list rather than appearing as a row with no name.
+        var approverUserIds = resource.ApproverUserIds;
+        var approvers = approverUserIds.Count == 0
+            ? new List<ApproverDetail>()
+            : await _context.Users
+                .AsNoTracking()
+                .Where(u => approverUserIds.Contains(u.Id))
+                .OrderBy(u => u.FullName)
+                .ThenBy(u => u.Id)
+                .Select(u => new ApproverDetail(u.Id, u.FullName))
+                .ToListAsync(cancellationToken);
+
+        return new GetResourceQueryResponse(
+            resource.Id,
+            resource.Name,
+            resource.Description,
+            resource.ResourceType,
+            resource.Capacity,
+            resource.TimeZoneId,
+            resource.RequiresApproval,
+            resource.MinDurationMinutes,
+            resource.MaxDurationMinutes,
+            resource.IsArchived,
+            resource.CreatedAtUtc,
+            resource.UpdatedAtUtc,
+            // Ordered here rather than in SQL, because the windows arrived with
+            // the aggregate. Same order the PUT response uses, so the two
+            // endpoints agree on what "the schedule" looks like.
+            resource.AvailabilityWindows
+                .OrderBy(w => w.Weekday)
+                .ThenBy(w => w.OpensAt)
+                .Select(w => new AvailabilityWindowDetail(w.Id, w.Weekday, w.OpensAt, w.ClosesAt))
+                .ToList(),
+            approvers);
+    }
 
     // ---- Writes (FR-3.1 / FR-3.5) ----
 
@@ -90,6 +140,12 @@ internal sealed class ResourceRepository : IResourceRepository
             .FirstOrDefaultAsync(r => r.Id == resourceId, cancellationToken);
 
     public void Add(Resource resource) => _context.Resources.Add(resource);
+
+    // AddRange, not "let EF work it out from the navigation": see
+    // IResourceRepository.AddAvailabilityWindows for why a window discovered
+    // through the navigation is marked Modified and saves as a zero-row UPDATE.
+    public void AddAvailabilityWindows(IEnumerable<AvailabilityWindow> windows) =>
+        _context.AddRange(windows);
 
     // Decision 0005's capacity model, evaluated at a point in time rather than
     // over a range: concurrency only ever *rises* at a booking's start instant,

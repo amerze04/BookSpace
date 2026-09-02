@@ -9,6 +9,7 @@ using BookSpace.Application.Features.Resources.GetResource;
 using BookSpace.Application.Features.Resources.ListResources;
 using BookSpace.Infrastructure.Persistence;
 using BookSpace.IntegrationTests.Authentication;
+using BookSpace.IntegrationTests.Support;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -80,7 +81,7 @@ public class ResourceAcceptanceTests
             Assert.Equal(created.CreatedAtUtc, archived.CreatedAtUtc);
 
             // Still readable by id, and now hidden from the default list.
-            var fetched = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}");
+            var fetched = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}", TestJson.Options);
             Assert.True(fetched!.IsArchived);
 
             var defaultList = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
@@ -182,7 +183,7 @@ public class ResourceAcceptanceTests
             Assert.Equal("Published Room", summary.Name);
             Assert.Equal(12, summary.Capacity);
 
-            var detail = await memberClient.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}");
+            var detail = await memberClient.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}", TestJson.Options);
             ResourceResponseAssertions.AssertSameResource(created, detail!);
         }
         finally
@@ -201,6 +202,8 @@ public class ResourceAcceptanceTests
         { "POST", "/resources" },
         { "PUT", "/resources/{id}" },
         { "POST", "/resources/{id}/archive" },
+        { "PUT", "/resources/{id}/availability-windows" },
+        { "PUT", "/resources/{id}/approvers" },
     };
 
     [Theory]
@@ -219,7 +222,7 @@ public class ResourceAcceptanceTests
             Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
 
             // And the resource is untouched.
-            var unchanged = await adminClient.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}");
+            var unchanged = await adminClient.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{created.Id}", TestJson.Options);
             ResourceResponseAssertions.AssertSameResource(created, unchanged!);
         }
         finally
@@ -261,6 +264,8 @@ public class ResourceAcceptanceTests
     [InlineData("GET", "/resources/{id}")]
     [InlineData("PUT", "/resources/{id}")]
     [InlineData("POST", "/resources/{id}/archive")]
+    [InlineData("PUT", "/resources/{id}/availability-windows")]
+    [InlineData("PUT", "/resources/{id}/approvers")]
     public async Task EveryRouteTakingAnId_TreatsAnotherTenantsRealIdAsNotFound(
         string method,
         string routeTemplate)
@@ -278,7 +283,7 @@ public class ResourceAcceptanceTests
         // Nothing happened on the other side of the boundary.
         var globexClient = await AuthenticatedClientAsync(GlobexAdmin);
         var untouched = await globexClient.GetFromJsonAsync<GetResourceQueryResponse>(
-            $"/resources/{globexResourceId}");
+            $"/resources/{globexResourceId}", TestJson.Options);
         Assert.False(untouched!.IsArchived);
     }
 
@@ -306,15 +311,16 @@ public class ResourceAcceptanceTests
     // as the wrong status fails here rather than in whichever endpoint test
     // happens to cover it.
     //
-    // Not listed, because no thrower exists yet: OverlappingAvailabilityWindow
-    // and ApproverNotEligible (Phase 3), BlackoutPeriod (Phase 4), and the six
-    // booking codes (WP-4). ReasonCodesTests already proves those exist and are
-    // unique; this proves the ones with throwers behave.
+    // Not listed, because no thrower exists yet: BlackoutPeriod (Phase 4) and the
+    // six booking codes (WP-4). ReasonCodesTests already proves those exist and
+    // are unique; this proves the ones with throwers behave.
     [Theory]
     [InlineData("ResourceNotFound", HttpStatusCode.NotFound)]
     [InlineData("InvalidTimeZone", HttpStatusCode.BadRequest)]
     [InlineData("ApproversRequired", HttpStatusCode.UnprocessableEntity)]
     [InlineData("ResourceArchived", HttpStatusCode.UnprocessableEntity)]
+    [InlineData("OverlappingAvailabilityWindow", HttpStatusCode.Conflict)]
+    [InlineData("ApproverNotEligible", HttpStatusCode.UnprocessableEntity)]
     [InlineData("ValidationFailed", HttpStatusCode.BadRequest)]
     public async Task EveryReasonCodeThisPhaseThrows_ArrivesWithTheStatusItsKindPromises(
         string reasonCode,
@@ -376,6 +382,15 @@ public class ResourceAcceptanceTests
             "POST" when route.EndsWith("/archive", StringComparison.Ordinal) =>
                 await client.PostAsync(route, content: null),
             "POST" => await client.PostAsJsonAsync(route, ValidPayload(name: "Should Not Be Created")),
+            // The schedule endpoint takes its own payload shape; sending a
+            // resource body would be a 400 from the validator and would prove
+            // nothing about the policy.
+            "PUT" when route.EndsWith("/availability-windows", StringComparison.Ordinal) =>
+                await client.PutAsJsonAsync(route, new { windows = new[] { new { weekday = "Monday", opensAt = "09:00:00", closesAt = "17:00:00" } } }),
+            // Likewise its own shape. An empty list is a valid payload and is
+            // enough to prove the policy refuses the call before any handler runs.
+            "PUT" when route.EndsWith("/approvers", StringComparison.Ordinal) =>
+                await client.PutAsJsonAsync(route, new { approverUserIds = Array.Empty<Guid>() }),
             "PUT" => await client.PutAsJsonAsync(route, ValidPayload(name: "Should Not Be Renamed")),
             _ => throw new ArgumentOutOfRangeException(nameof(method), method, "Unhandled method."),
         };
@@ -422,6 +437,33 @@ public class ResourceAcceptanceTests
                 await client.PostAsync($"/resources/{created.Id}/archive", content: null);
                 return (
                     await client.PutAsJsonAsync($"/resources/{created.Id}", ValidPayload(name: "Renamed")),
+                    created.Id);
+            }
+
+            case "OverlappingAvailabilityWindow":
+            {
+                var created = await PostAndReadAsync(client, ValidPayload(name: "Overlapping For The Sweep"));
+                return (
+                    await client.PutAsJsonAsync(
+                        $"/resources/{created.Id}/availability-windows",
+                        new
+                        {
+                            windows = new[]
+                            {
+                                new { weekday = "Monday", opensAt = "09:00:00", closesAt = "13:00:00" },
+                                new { weekday = "Monday", opensAt = "12:00:00", closesAt = "17:00:00" },
+                            },
+                        }),
+                    created.Id);
+            }
+
+            case "ApproverNotEligible":
+            {
+                var created = await PostAndReadAsync(client, ValidPayload(name: "Ineligible For The Sweep"));
+                return (
+                    await client.PutAsJsonAsync(
+                        $"/resources/{created.Id}/approvers",
+                        new { approverUserIds = new[] { Guid.NewGuid() } }),
                     created.Id);
             }
 

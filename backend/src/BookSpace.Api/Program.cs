@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json.Serialization;
 using BookSpace.Api.Authorization;
 using BookSpace.Api.ExceptionHandling;
 using BookSpace.Api.Middleware;
@@ -77,7 +78,28 @@ try
 
     builder.Services.AddAuthorization(options => options.AddBookSpacePolicies());
 
-    builder.Services.AddControllers();
+    // Enums on the wire as their names, not their ordinals (WP-3 Phase 3).
+    //
+    // Forced by DayOfWeek, the first enum this API ever serializes: an
+    // availability window sent as {"weekday": 1} is unreadable, and 0 = Sunday
+    // is the classic off-by-one a client discovers in production. "Monday" is
+    // self-describing and cannot be misread.
+    //
+    // Applied globally rather than to this one property, because the codebase
+    // already made this choice everywhere else: CLAUDE.md §5 stores enums with
+    // HasConversion<string>() and a CHECK constraint, never as int, so the wire
+    // now agrees with the database and with the PRD's own status names. WP-4's
+    // BookingStatus arriving as "Confirmed" rather than 1 is the payoff.
+    //
+    // Safe to make global *now* specifically because nothing else serializes an
+    // enum yet — every existing response is primitives and strings — so this
+    // breaks no contract. It would have been a breaking change a phase later.
+    builder.Services.ConfigureHttpJsonOptions(options =>
+        options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+    builder.Services
+        .AddControllers()
+        .AddJsonOptions(options =>
+            options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
     // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
     builder.Services.AddOpenApi();
 

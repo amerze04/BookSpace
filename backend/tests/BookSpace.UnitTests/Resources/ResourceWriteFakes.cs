@@ -34,6 +34,14 @@ internal sealed class FakeResourceRepository : IResourceRepository
 
     public void Add(Resource resource) => Added = resource;
 
+    // Records what the handler stated as inserts. The real repository has to say
+    // this explicitly (see IResourceRepository.AddAvailabilityWindows); the fake
+    // only has to prove the handler said it.
+    public List<AvailabilityWindow> AddedAvailabilityWindows { get; } = new();
+
+    public void AddAvailabilityWindows(IEnumerable<AvailabilityWindow> windows) =>
+        AddedAvailabilityWindows.AddRange(windows);
+
     public Task<int> PeakConcurrentBookedQuantityAsync(
         Guid resourceId,
         DateTime asOfUtc,
@@ -80,4 +88,42 @@ internal sealed class FixedCurrentUser : ICurrentUser
     public FixedCurrentUser(Guid? userId) => UserId = userId;
 
     public Guid? UserId { get; }
+}
+
+// Hand-written, like the rest of this file. Eligibility is stated as a fixed set
+// of ids, so a test says exactly who may approve without needing a database,
+// roles, or a tenant — the real implementation's three conditions are covered by
+// the integration suite, which is where they can actually be exercised.
+internal sealed class FakeUserRepository : IUserRepository
+{
+    private readonly HashSet<Guid> _eligible;
+    private readonly Dictionary<Guid, string> _names;
+
+    public FakeUserRepository(params Guid[] eligibleUserIds)
+    {
+        _eligible = new HashSet<Guid>(eligibleUserIds);
+        _names = eligibleUserIds.ToDictionary(id => id, id => $"Approver {id:N}"[..14]);
+    }
+
+    // True once eligibility has actually been consulted — the handler is supposed
+    // to skip the query entirely for an empty list.
+    public bool EligibilityWasQueried { get; private set; }
+
+    public Task<IReadOnlyCollection<Guid>> FindEligibleApproverIdsAsync(
+        IReadOnlyCollection<Guid> candidateUserIds,
+        CancellationToken cancellationToken)
+    {
+        EligibilityWasQueried = true;
+        return Task.FromResult<IReadOnlyCollection<Guid>>(
+            candidateUserIds.Where(_eligible.Contains).ToList());
+    }
+
+    public Task<IReadOnlyList<ApproverSummary>> FindApproverSummariesAsync(
+        IReadOnlyCollection<Guid> userIds,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<ApproverSummary>>(
+            userIds.Where(_names.ContainsKey)
+                .Select(id => new ApproverSummary(id, _names[id]))
+                .OrderBy(a => a.FullName, StringComparer.Ordinal)
+                .ToList());
 }

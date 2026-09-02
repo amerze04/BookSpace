@@ -47,6 +47,25 @@ public interface IResourceRepository
 
     void Add(Resource resource);
 
+    // The windows a ReplaceAvailabilityWindows produced, stated as new rows.
+    //
+    // Necessary, and the reason is a genuine EF Core trap: an entity discovered
+    // through a collection navigation is marked **Modified** rather than Added
+    // when its key is already set — the same "is the key set?" heuristic
+    // DbContext.Update uses on a graph. A freshly minted AvailabilityWindow
+    // carries a Guid the caller chose (Resource mints no ids, CLAUDE.md's
+    // house style), so EF issues an UPDATE against a row that does not exist,
+    // affects zero rows, and throws DbUpdateConcurrencyException — a 409 for
+    // what is really an insert.
+    //
+    // Resource.AddAvailabilityWindow has the same exposure and does not show it
+    // today only because its one caller (SeedData) adds windows to a resource
+    // that is itself Added, so the children cascade to Added with it.
+    //
+    // Removals need no equivalent: clearing the collection leaves EF with
+    // orphans it correctly marks Deleted, since it can see them leave.
+    void AddAvailabilityWindows(IEnumerable<AvailabilityWindow> windows);
+
     // The largest number of units any single instant still in the future has
     // already committed on this resource — the number a capacity decrease must
     // not fall below (ReasonCodes.CapacityBelowExistingBookings).

@@ -391,11 +391,22 @@ index; when a new decision doc is added, add its one-liner here too.
    **Gotcha recorded there**: the fixture connection needs an explicit RLS
    bypass, or the `INSERT`'s own `SELECT` (and the cleanup `DELETE`) silently
    affects zero rows. **Promoted from WP-3's D4** when Phase 2 step 3 landed.
+18. [`0018`](docs/decisions/0018-approver-eligibility.md) — a resource approver
+   must be **in the caller's own tenant, active, and hold `Approver` or
+   `TenantAdmin`** — the same set `AuthorizationPolicies.Approver` admits, so
+   "may be assigned" and "may approve" cannot disagree. All three failures
+   return one `ApproverNotEligible`, saying nothing about which applied, because
+   naming the tenant case would confirm a cross-tenant id exists (AC-4).
+   Approvers are managed by replace-the-set `PUT`, which follows from the
+   invariant rather than from symmetry: per-row endpoints would have to pass
+   through the empty list, and an empty list on a resource requiring approval is
+   refused. **Settled by the repo owner 2026-09-01**, implemented in WP-3 Phase 3
+   step 2.
 
 **Decided but not yet written up as numbered records** — two WP-3 decisions
 (D2, D3) were settled by the repo owner on 2026-08-28 before that package
 started, and live in `docs/wp3-plan.md` until the phase implementing them
-lands (Phase 5) and promotes them to the next free numbers (`0018`+):
+lands (Phase 5) and promotes them to the next free numbers (`0019`+, since Phase 3's approver eligibility took `0018`):
 interval-plus-`remainingCapacity` slot semantics, and DST handling for
 availability *ranges*. Treat them as settled, not open. D1 was promoted to
 `0014` when WP-3 Phase 1 landed, and D4 to `0017` when Phase 2 did.
@@ -778,9 +789,40 @@ Plan and settled decisions: `docs/wp3-plan.md`.
       state. Consequence, accepted by the owner: until Phase 3 adds approver
       assignment, only a resource that already has an approver can carry the
       flag.
-- [ ] Manage availability windows per resource. FR-3.2.
+- [x] Manage availability windows per resource. FR-3.2. **Done 2026-09-01**
+      (Phase 3 step 1): `PUT /resources/{id}/availability-windows` on
+      `TenantAdmin`, replace-the-set rather than per-row POST/DELETE — the domain
+      asked for that shape first, since `AvailabilityWindow` carries no audit
+      columns precisely because entries are "bulk-replaced as a weekly set". It
+      is therefore idempotent, and an empty array is a legal schedule meaning
+      "opens at no time", distinguished from a *missing* array (400) so a
+      schedule can only be cleared by asking to clear it.
+      Deliberately **not** a field on `PUT /resources/{id}`: that payload is a
+      full representation, so an admin renaming a room while omitting the array
+      would silently wipe the schedule. The read side does carry it —
+      `GET /resources/{id}` now returns `availabilityWindows`, ordered by weekday
+      then opening time, projected in the same SQL query.
+      First thrower for `OverlappingAvailabilityWindow` (409): overlaps on one
+      weekday are rejected, not unioned, and **adjacent windows are not
+      overlapping** (`ClosesAt` is exclusive, so 09:00–12:00 and 12:00–17:00
+      coexist) — the owner's call, 2026-09-01.
 - [ ] Manage blackout periods; ensure they override availability. FR-3.4.
-- [ ] Mark resources `RequiresApproval` and assign approvers. FR-3.3.
+- [x] Mark resources `RequiresApproval` and assign approvers. FR-3.3.
+      **Done 2026-09-02** (Phase 3 step 2): `PUT /resources/{id}/approvers` on
+      `TenantAdmin`, replace-the-set like the schedule — but here it follows from
+      the invariant rather than from symmetry, since swapping approvers per-row
+      would have to pass through the empty list, which is refused. Eligibility
+      is own-tenant + `IsActive` + (`Approver` or `TenantAdmin`), all three
+      failures collapsing to one `ApproverNotEligible` (422) that says nothing
+      about which applied: [`0018`](docs/decisions/0018-approver-eligibility.md).
+      `GET /resources/{id}` now returns `approvers` (id and full name, no email),
+      visible to any `TenantMember` — a member deciding whether to book an
+      approval-gated room should see who will be deciding.
+      **This closes the gap Phase 2 accepted**: until now only a resource that
+      already had an approver could carry the flag, so an admin can finally
+      publish an approval-gated resource — assign approvers, then set the flag.
+      The invariant is now enforced from both sides; emptying the list on a
+      resource that requires approval is `ApproversRequired` (422).
 - [ ] Build an availability query: given a resource and date range, return
       bookable slots.
 - [ ] Design clean DTOs, error contracts, and pagination — pagination and the
@@ -798,16 +840,26 @@ Plan and settled decisions: `docs/wp3-plan.md`.
       `ListResourcesQueryResponse`, `GetResourceQueryResponse`,
       `CreateResourceCommandResponse`, `UpdateResourceCommandResponse` +
       `TimeZoneChangeNotice` and `ArchiveResourceCommandResponse`, with the HTTP
-      request records still nested in the controller. Left unchecked: the availability-window, blackout and
-      slot DTOs, which land with Phases 3–5.
+      request records still nested in the controller. Left unchecked: the blackout
+      and slot DTOs, which land with Phases 4–5. Phase 3 added its own against the
+      same conventions — `ReplaceAvailabilityWindows*` with a
+      `ReplacedAvailabilityWindow` item and `ReplaceApprovers*` with an
+      `AssignedApprover` item, each paired with a *separate*
+      `AvailabilityWindowDetail` / `ApproverDetail` on the read detail. Four pairs
+      of identical records, and the clearest case yet for the per-endpoint rule:
+      the read detail is the one a **member** sees, so it is the one that has to
+      stay conservative, while a write echo is free to grow admin-only fields.
+      One genuinely shared type appeared, `ApproverSummary` — a *port* output from
+      `IUserRepository`, not an endpoint contract, on the same footing decision
+      `0015` gives `IssuedTokens`.
 
 Acceptance criteria (source doc):
 - [ ] An admin can publish a resource with availability and blackout rules —
-      the *resource* half is done and swept end to end
-      (`ResourceAcceptanceTests`: an admin creates, a member of the same tenant
-      immediately sees it in the list and reads its detail). Availability and
-      blackout rules are Phases 3 and 4, so the criterion as written is not met
-      yet.
+      **availability yes, blackout not yet.** As of Phase 3 an admin creates a
+      resource, gives it a weekly schedule and assigns approvers, and a member of
+      the same tenant immediately sees all three (`ResourceAcceptanceTests`,
+      `AvailabilityWindowEndpointTests`, `ApproverEndpointTests`). The blackout
+      half is Phase 4, so the criterion **as written** is still not met.
 - [ ] The availability query correctly excludes blackout periods and existing
       bookings.
 - [x] Non-admins cannot create or edit resources — **met 2026-08-31**. Every
@@ -821,12 +873,15 @@ Acceptance criteria (source doc):
       thrower, 2026-08-31**. One table asserts each reason code this phase can
       raise against the status its `ErrorKind` promises
       (`ResourceNotFound` 404, `InvalidTimeZone` 400, `ApproversRequired` 422,
-      `ResourceArchived` 422, `ValidationFailed` 400 with per-field errors),
+      `ResourceArchived` 422, `OverlappingAvailabilityWindow` 409,
+      `ApproverNotEligible` 422, `ValidationFailed` 400 with per-field errors),
       plus that every error body is a `ProblemDetails` carrying the correlation
-      id, and that the exception message never reaches the client. The codes
-      without throwers yet (`OverlappingAvailabilityWindow`,
-      `ApproverNotEligible`, `BlackoutPeriod`, and WP-4's six) join that table
-      as their phases land.
+      id, and that the exception message never reaches the client.
+      Phase 3 added the last two: `OverlappingAvailabilityWindow` is the first
+      `Conflict` kind on the table, and `ApproverNotEligible` is additionally
+      asserted to be byte-identical for a cross-tenant approver and a
+      nonexistent one (decision `0018`). Only `BlackoutPeriod` (Phase 4) and
+      WP-4's six are still without throwers.
 
 Planned phasing — detail and reasoning in `docs/wp3-plan.md`, which was
 approved by the repo owner on 2026-08-28 before any code was written:
@@ -874,9 +929,85 @@ approved by the repo owner on 2026-08-28 before any code was written:
    Manual Postman verification of the live endpoints can start now; the plan
    doc records the seeded accounts and the three behaviours that look like bugs
    and are not.
-3. **Availability windows + approvers** — FR-3.2/FR-3.3.
+3. **Availability windows + approvers** — FR-3.2/FR-3.3. **Done 2026-09-02**, in
+   the two steps agreed with the owner on 2026-09-01 (windows, then approvers).
+   Delivered `PUT /resources/{id}/availability-windows` and
+   `PUT /resources/{id}/approvers`, both replace-the-set and both on
+   `TenantAdmin`; `Resource.ReplaceAvailabilityWindows` / `ReplaceApprovers`;
+   `AvailabilityWindowRules` and `ResourceWriteRules.EnsureEveryApproverIsEligible`;
+   `OverlappingAvailabilityWindowException` (409) and
+   `ApproverNotEligibleException` (422); `IUserRepository` as the tenant-filtered
+   counterpart to `IAuthenticationUserRepository`; and both collections on
+   `GET /resources/{id}`. Decision
+   [`0018`](docs/decisions/0018-approver-eligibility.md).
+   445 unit + 182 integration tests pass.
+   **Manually verified end to end by the owner in Postman on 2026-09-02**, after
+   the automated suite: both new endpoints, the two new reason codes, the
+   RequiresApproval invariant from both sides, the AC-4 cross-tenant checks, the
+   non-admin 403s, and the archive interactions all behave as documented. The
+   walkthrough used is in `docs/postman/README.md`; the committed collection
+   (`docs/postman/BookSpace.postman_collection.json`) automates the same path but
+   has **not itself been run** — the manual pass is the real verification.
+   Four things it produced that the plan did not anticipate:
+   - **Enums now serialize as their names app-wide** (`JsonStringEnumConverter`
+     in `Program.cs`). Forced by `DayOfWeek`, the first enum this API ever put on
+     the wire — `{"weekday": 1}` is unreadable and 0 = Sunday is a classic
+     off-by-one. Global rather than per-property because CLAUDE.md §5 already
+     stores enums as strings, and safe to make global *now* only because nothing
+     else serialized an enum yet; WP-4's `BookingStatus` arriving as
+     `"Confirmed"` is the payoff. The integration suite gained
+     `Support/TestJson.cs` because a client has to opt in to read them.
+   - **`IResourceRepository.AddAvailabilityWindows`** — an EF Core trap found by
+     a failing test, not reasoned about up front. A new entity discovered through
+     a collection navigation is marked **Modified**, not Added, when its key is
+     already set (the same heuristic `DbContext.Update` uses on a graph), so EF
+     issued an UPDATE against a row that did not exist and the endpoint returned
+     409 `ConcurrencyConflict` for what was plainly an insert.
+     `Resource.AddAvailabilityWindow` has the same exposure and hides it only
+     because its one caller (`SeedData`) adds windows to a resource that is
+     itself Added. Removals need no equivalent — EF sees orphans leave and marks
+     them Deleted correctly. **Approvers are unaffected**: they are an EF *owned*
+     collection, which EF diffs as part of its owner rather than tracking as
+     independent entities.
+   - **Sub-second times are rejected, not truncated.** `OpensAt`/`ClosesAt` are
+     `time(0)`, so a fractional value would be *rounded* on write and the
+     response would disagree with the row a client reads back — the same trap
+     §4.3 records for `IClock` and `datetime2(0)`. Rejected rather than clamped,
+     matching how an oversized `pageSize` is rejected (decision `0015`).
+   - **`GET /resources/{id}` stopped being a pure projection.** Approvers are an
+     owned collection over a private field, reachable only through the computed
+     `Resource.ApproverUserIds`, which has no SQL translation; projecting it
+     would have meant an `EF.Property` expression over a backing-field name. The
+     detail read now loads the aggregate and issues a second query for the
+     approvers' names. `IResourceRepository`'s argument for projecting still
+     stands for the *list*, where the row count is unbounded; it never applied to
+     one resource by id.
 4. **Blackout periods** — FR-3.4 plus decision `0001`'s cancellation cascade.
 5. **The availability query** — consumes all of the above; final AC sweep.
+   Carries one item inherited from Phase 3 (settled 2026-09-02): an availability
+   window **cannot cross midnight**, because `CK_AvailabilityWindows_Window`
+   requires `ClosesAt > OpensAt`, so 22:00–02:00 is two windows on consecutive
+   weekdays that this phase has to rejoin into one continuous UTC interval. The
+   column is `time(0)`, so the latest expressible `ClosesAt` is `23:59:59` and the
+   rejoined pair has a one-second hole at the boundary — invisible at booking
+   granularity, but it needs a documented convention (treat `23:59:59` as
+   end-of-day when joining) rather than an off-by-one-second surprise.
+   Also carries a **deliberate cleanup, deferred here on purpose** (owner's call,
+   2026-09-02): `Resource.AddAvailabilityWindow`, `RemoveAvailabilityWindow`,
+   `AddApprover` and `RemoveApprover` have had no production callers since Phase 3
+   — the API goes exclusively through the two `Replace…` methods, and only
+   `SeedData` and tests still call them. That would be ordinary dead code except
+   that `AddAvailabilityWindow` **carries a live trap**: a window added through it
+   to an already-tracked resource is marked `Modified`, not `Added`, and saves as
+   a zero-row UPDATE that surfaces as a 409 `ConcurrencyConflict` for what is
+   plainly an insert (see `IResourceRepository.AddAvailabilityWindows`). It looks
+   fine today only because `SeedData` calls it on a resource that is itself
+   `Added`, so the children cascade. **Phase 5 must decide**: once it is confirmed
+   that nothing needs per-row access, either delete the two window methods and
+   have `SeedData` use `ReplaceAvailabilityWindows`, or route them through the
+   same explicit-insert path. Leaving a known trap in the codebase for a method
+   nobody calls is not acceptable as a resting state — it was left only because
+   Phase 5 is the phase that can confirm the callers.
 
 **Four decisions were settled up front** (`docs/wp3-plan.md`), to be written
 up as numbered records 0014+ as each implementing phase lands (D1 and D4 are

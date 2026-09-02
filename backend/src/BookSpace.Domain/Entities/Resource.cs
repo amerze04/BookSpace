@@ -180,6 +180,29 @@ public class Resource : IAuditable, ITenantOwned
             Touch(actorUserId, nowUtc);
     }
 
+    // FR-3.3, replace-the-set semantics, matching ReplaceAvailabilityWindows and
+    // the PUT that drives it: the argument is the resource's entire approver list
+    // afterwards.
+    //
+    // Set semantics, so a repeated id collapses — but the Application validator
+    // rejects duplicates before they reach here, on the same principle as an
+    // oversized pageSize: quietly accepting a payload and storing something else
+    // is the behaviour being avoided.
+    //
+    // An empty set is refused by the Application layer when the resource requires
+    // approval (ReasonCodes.ApproversRequired), not here — the entity can hold
+    // that state transiently while a handler is mid-edit, and a domain throw
+    // reaches the client as a 500 with no reason code. Whether each id is even
+    // eligible is likewise not knowable here: it is a query over Users.
+    public void ReplaceApprovers(IEnumerable<Guid> userIds, Guid actorUserId, DateTime nowUtc)
+    {
+        var replacement = userIds.Distinct().Select(id => new ApproverAssignment(id)).ToList();
+
+        _approverAssignments.Clear();
+        _approverAssignments.AddRange(replacement);
+        Touch(actorUserId, nowUtc);
+    }
+
     // WP-3 decision D1: this is the only creator of AvailabilityWindow — its
     // constructor is internal to the Domain assembly — so a window can never
     // carry an OrgId that disagrees with its resource's. Returns the created
@@ -202,6 +225,42 @@ public class Resource : IAuditable, ITenantOwned
     {
         if (_availabilityWindows.RemoveAll(w => w.Id == availabilityWindowId) > 0)
             Touch(actorUserId, nowUtc);
+    }
+
+    // FR-3.2, replace-the-set semantics: the argument is the resource's entire
+    // weekly schedule afterwards. An empty set is legal and means the resource
+    // currently opens at no time at all.
+    //
+    // Rebuilt rather than diffed, which is what AvailabilityWindow's deliberate
+    // lack of audit columns already assumes — entries are bulk-replaced as a
+    // weekly set, so there is no per-row history to preserve and no id worth
+    // keeping stable. Clearing the collection is what EF turns into DELETEs,
+    // via the cascade on FK_AvailabilityWindows_Resources_SameOrg.
+    //
+    // The replacement is fully constructed before anything is removed, so a
+    // window that fails CK_AvailabilityWindows_Window leaves the existing
+    // schedule untouched rather than half-replaced — the same ordering the write
+    // handlers use for their rule checks.
+    //
+    // Whether two windows on the same weekday overlap is NOT checked here. It
+    // has to reach the client as ReasonCodes.OverlappingAvailabilityWindow, and
+    // a domain throw arrives as a 500 carrying no code at all (see the note
+    // above the edit methods). AvailabilityWindowRules owns it, exactly as the
+    // Application layer owns ApproversRequired.
+    public IReadOnlyCollection<AvailabilityWindow> ReplaceAvailabilityWindows(
+        IEnumerable<AvailabilityWindowDefinition> windows,
+        Guid actorUserId,
+        DateTime nowUtc)
+    {
+        var replacement = windows
+            .Select(w => new AvailabilityWindow(w.Id, OrgId, Id, w.Weekday, w.OpensAt, w.ClosesAt))
+            .ToList();
+
+        _availabilityWindows.Clear();
+        _availabilityWindows.AddRange(replacement);
+        Touch(actorUserId, nowUtc);
+
+        return AvailabilityWindows;
     }
 
     public void Archive(Guid actorUserId, DateTime nowUtc)

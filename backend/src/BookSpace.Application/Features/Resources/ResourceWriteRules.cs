@@ -40,6 +40,27 @@ internal static class ResourceWriteRules
         }
     }
 
+    // FR-3.3. eligibleUserIds is what IUserRepository.FindEligibleApproverIdsAsync
+    // returned for the requested set; anything missing from it failed one of the
+    // three eligibility conditions, and which one is deliberately not reported —
+    // see ApproverNotEligibleException.
+    //
+    // A set difference rather than a per-id loop, so one round trip decides the
+    // whole payload and the message names every offending id at once. An admin
+    // fixing an approver list should not have to discover the ineligible members
+    // one request at a time.
+    public static void EnsureEveryApproverIsEligible(
+        IReadOnlyCollection<Guid> requestedUserIds,
+        IReadOnlyCollection<Guid> eligibleUserIds)
+    {
+        var ineligible = requestedUserIds.Except(eligibleUserIds).ToList();
+
+        if (ineligible.Count > 0)
+        {
+            throw new ApproverNotEligibleException(ineligible);
+        }
+    }
+
     // FR-3.5: archiving preserves the resource and its history. It stays
     // readable (see GetResourceQueryRequestHandler) but accepts no further edits —
     // otherwise "archived" would mean nothing beyond a flag.

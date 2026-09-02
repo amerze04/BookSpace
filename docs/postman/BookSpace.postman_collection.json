@@ -1,0 +1,1479 @@
+{
+  "info": {
+    "_postman_id": "b00c5pac-1111-4000-8000-000000000001",
+    "name": "BookSpace — WP-3 Resources & Availability",
+    "description": "Manual verification for WP-3 Phases 2 and 3 (FR-3.1, FR-3.2, FR-3.3, FR-3.5).\n\nRun the whole collection top to bottom with the Collection Runner: every request carries assertions, so a green run is a pass. Folders 00 and 01 set up state the later folders depend on, so do not run 02-05 on their own.\n\nSee docs/postman/README.md for the seeded accounts, what to look at by hand, and the three behaviours that look like bugs and are not.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{accessToken}}", "type": "string" }]
+  },
+  "variable": [
+    { "key": "accessToken", "value": "" },
+    { "key": "refreshToken", "value": "" },
+    { "key": "memberAccessToken", "value": "" },
+    { "key": "approverAccessToken", "value": "" },
+    { "key": "sysAdminAccessToken", "value": "" },
+    { "key": "globexAdminAccessToken", "value": "" },
+    { "key": "approverUserId", "value": "" },
+    { "key": "adminUserId", "value": "" },
+    { "key": "memberUserId", "value": "" },
+    { "key": "globexApproverUserId", "value": "" },
+    { "key": "resourceId", "value": "" },
+    { "key": "globexResourceId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "00 Setup — identities",
+      "description": "Logs in as each seeded account and stashes the token plus the user id.\n\nThe user id comes out of the JWT's `sub` claim, decoded in a test script, because **there is no endpoint that lists users** — see the README's 'Gaps this exercise found'. Without that trick there is no way to learn an approver's Guid from the API alone.\n\nThe Acme admin logs in LAST, so `accessToken` is the admin's when the later folders run.",
+      "item": [
+        {
+          "name": "Login — Acme approver (capture id)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const token = pm.response.json().accessToken;",
+                  "pm.collectionVariables.set('approverAccessToken', token);",
+                  "",
+                  "// The JWT payload carries `sub` (docs/decisions/0009). Base64url,",
+                  "// so the two URL-safe characters have to be swapped back first.",
+                  "const claims = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));",
+                  "pm.collectionVariables.set('approverUserId', claims.sub);",
+                  "",
+                  "pm.test('token carries orgId and the Approver role', () => {",
+                  "    pm.expect(claims.orgId).to.be.a('string');",
+                  "    pm.expect(JSON.stringify(claims.role)).to.include('Approver');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{acmeApprover}}\",\n  \"password\": \"{{seedPassword}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] }
+          }
+        },
+        {
+          "name": "Login — Acme member (capture id)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const token = pm.response.json().accessToken;",
+                  "pm.collectionVariables.set('memberAccessToken', token);",
+                  "const claims = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));",
+                  "pm.collectionVariables.set('memberUserId', claims.sub);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{acmeMember}}\",\n  \"password\": \"{{seedPassword}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] }
+          }
+        },
+        {
+          "name": "Login — Globex approver (capture id)",
+          "description": "A real, active, Approver-role user in the OTHER tenant. Folder 03 tries to assign them and must be refused — decision 0018.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const token = pm.response.json().accessToken;",
+                  "const claims = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));",
+                  "pm.collectionVariables.set('globexApproverUserId', claims.sub);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{globexApprover}}\",\n  \"password\": \"{{seedPassword}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] }
+          }
+        },
+        {
+          "name": "Login — Globex admin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('globexAdminAccessToken', pm.response.json().accessToken);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{globexAdmin}}\",\n  \"password\": \"{{seedPassword}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] }
+          }
+        },
+        {
+          "name": "Login — SysAdmin",
+          "description": "Used only to prove a SysAdmin is refused on tenant endpoints. Its token deliberately carries NO orgId claim (decision 0009).",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const token = pm.response.json().accessToken;",
+                  "pm.collectionVariables.set('sysAdminAccessToken', token);",
+                  "const claims = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));",
+                  "pm.test('a SysAdmin token has no orgId claim at all', () => {",
+                  "    pm.expect(claims).to.not.have.property('orgId');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{sysAdmin}}\",\n  \"password\": \"{{seedPassword}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] }
+          }
+        },
+        {
+          "name": "Login — Acme admin (the working identity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('accessToken', body.accessToken);",
+                  "pm.collectionVariables.set('refreshToken', body.refreshToken);",
+                  "const claims = JSON.parse(atob(body.accessToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));",
+                  "pm.collectionVariables.set('adminUserId', claims.sub);",
+                  "",
+                  "pm.test('access token lasts 15 minutes (decision 0009)', () => {",
+                  "    pm.expect(body.expiresIn).to.eql(900);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{acmeAdmin}}\",\n  \"password\": \"{{seedPassword}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "01 Resources (FR-3.1, FR-3.5)",
+      "description": "Phase 2. Creates the resource the rest of the collection works on.",
+      "item": [
+        {
+          "name": "Create resource",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('resourceId', body.id);",
+                  "",
+                  "pm.test('Location header points at the read endpoint', () => {",
+                  "    pm.expect(pm.response.headers.get('Location')).to.include('/resources/' + body.id);",
+                  "});",
+                  "pm.test('no approvers and no schedule yet', () => {",
+                  "    pm.expect(body.requiresApproval).to.eql(false);",
+                  "    pm.expect(body.isArchived).to.eql(false);",
+                  "});",
+                  "pm.test('timestamps are UTC-marked (CLAUDE.md 4.3)', () => {",
+                  "    pm.expect(body.createdAtUtc).to.match(/Z$/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Postman Test Room\",\n  \"description\": \"Created by the WP-3 Postman collection\",\n  \"resourceType\": \"Room\",\n  \"capacity\": 4,\n  \"timeZoneId\": \"America/New_York\",\n  \"requiresApproval\": false,\n  \"minDurationMinutes\": 30,\n  \"maxDurationMinutes\": 240\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/resources", "host": ["{{baseUrl}}"], "path": ["resources"] }
+          }
+        },
+        {
+          "name": "Get resource by id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('the two Phase 3 collections are present and empty', () => {",
+                  "    pm.expect(body.availabilityWindows).to.eql([]);",
+                  "    pm.expect(body.approvers).to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}"]
+            }
+          }
+        },
+        {
+          "name": "List resources (paged, sorted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('offset paging envelope with a total count (decision 0015)', () => {",
+                  "    pm.expect(body).to.have.property('items');",
+                  "    pm.expect(body).to.have.property('totalCount');",
+                  "    pm.expect(body.page).to.eql(1);",
+                  "});",
+                  "pm.test('only this tenant\\u2019s resources come back', () => {",
+                  "    pm.expect(body.items.every(r => r.name !== undefined)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/resources?page=1&pageSize=20&sort=name",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "pageSize", "value": "20" },
+                { "key": "sort", "value": "name" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List — pageSize over the max is REJECTED, not clamped",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('reasonCode ValidationFailed with per-field errors', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.reasonCode).to.eql('ValidationFailed');",
+                  "    pm.expect(body).to.have.property('errors');",
+                  "    pm.expect(body).to.have.property('correlationId');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/resources?pageSize=500",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources"],
+              "query": [{ "key": "pageSize", "value": "500" }]
+            }
+          }
+        },
+        {
+          "name": "Create — a Windows timezone id is refused (400 InvalidTimeZone)",
+          "description": "'Eastern Standard Time' resolves on Windows, which is exactly why the catalogue also requires TryConvertIanaIdToWindowsId to succeed — CLAUDE.md 4.3.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('reasonCode InvalidTimeZone', () => {",
+                  "    pm.expect(pm.response.json().reasonCode).to.eql('InvalidTimeZone');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Windows Zone Room\",\n  \"resourceType\": \"Room\",\n  \"capacity\": 1,\n  \"timeZoneId\": \"Eastern Standard Time\",\n  \"requiresApproval\": false\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/resources", "host": ["{{baseUrl}}"], "path": ["resources"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 Availability windows (FR-3.2)",
+      "description": "Phase 3 step 1. Replace-the-set semantics on PUT /resources/{id}/availability-windows.",
+      "item": [
+        {
+          "name": "Replace schedule — three windows, sent out of order",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('three windows come back with server-minted ids', () => {",
+                  "    pm.expect(body.availabilityWindows).to.have.lengthOf(3);",
+                  "    body.availabilityWindows.forEach(w => pm.expect(w.id).to.be.a('string'));",
+                  "});",
+                  "pm.test('ordered by weekday then opening time, whatever order was sent', () => {",
+                  "    const shape = body.availabilityWindows.map(w => w.weekday + ' ' + w.opensAt);",
+                  "    pm.expect(shape).to.eql(['Monday 09:00:00', 'Monday 13:00:00', 'Wednesday 09:00:00']);",
+                  "});",
+                  "pm.test('weekday is a NAME, not an ordinal', () => {",
+                  "    pm.expect(body.availabilityWindows[0].weekday).to.eql('Monday');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"windows\": [\n    { \"weekday\": \"Wednesday\", \"opensAt\": \"09:00:00\", \"closesAt\": \"17:00:00\" },\n    { \"weekday\": \"Monday\",    \"opensAt\": \"13:00:00\", \"closesAt\": \"17:00:00\" },\n    { \"weekday\": \"Monday\",    \"opensAt\": \"09:00:00\", \"closesAt\": \"12:00:00\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/availability-windows",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "availability-windows"]
+            }
+          }
+        },
+        {
+          "name": "Read detail — the schedule is on the resource",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('the same three windows, same order', () => {",
+                  "    const w = pm.response.json().availabilityWindows;",
+                  "    pm.expect(w).to.have.lengthOf(3);",
+                  "    pm.expect(w[0].weekday).to.eql('Monday');",
+                  "    pm.expect(w[2].weekday).to.eql('Wednesday');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}"]
+            }
+          }
+        },
+        {
+          "name": "Replace — adjacent windows are ACCEPTED",
+          "description": "ClosesAt is exclusive, so 09:00-12:00 and 12:00-17:00 are two legal windows. Owner's call, 2026-09-01.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 — touching endpoints do not overlap', () => pm.response.to.have.status(200));",
+                  "pm.test('two windows survived', () => {",
+                  "    pm.expect(pm.response.json().availabilityWindows).to.have.lengthOf(2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"windows\": [\n    { \"weekday\": \"Tuesday\", \"opensAt\": \"09:00:00\", \"closesAt\": \"12:00:00\" },\n    { \"weekday\": \"Tuesday\", \"opensAt\": \"12:00:00\", \"closesAt\": \"17:00:00\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/availability-windows",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "availability-windows"]
+            }
+          }
+        },
+        {
+          "name": "Replace — overlapping windows are REFUSED (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('reasonCode OverlappingAvailabilityWindow', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.reasonCode).to.eql('OverlappingAvailabilityWindow');",
+                  "    pm.expect(body).to.have.property('correlationId');",
+                  "});",
+                  "pm.test('the exception message never reaches the client', () => {",
+                  "    pm.expect(pm.response.text()).to.not.include('overlaps another window');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"windows\": [\n    { \"weekday\": \"Monday\", \"opensAt\": \"09:00:00\", \"closesAt\": \"13:00:00\" },\n    { \"weekday\": \"Monday\", \"opensAt\": \"12:00:00\", \"closesAt\": \"17:00:00\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/availability-windows",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "availability-windows"]
+            }
+          }
+        },
+        {
+          "name": "Read detail — the refused replace changed nothing",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('still the two Tuesday windows from before the 409', () => {",
+                  "    const w = pm.response.json().availabilityWindows;",
+                  "    pm.expect(w).to.have.lengthOf(2);",
+                  "    pm.expect(w.every(x => x.weekday === 'Tuesday')).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}"]
+            }
+          }
+        },
+        {
+          "name": "Replace — a window that closes before it opens (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('the error names the offending window by index', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.reasonCode).to.eql('ValidationFailed');",
+                  "    pm.expect(Object.keys(body.errors)).to.include('Windows[0].ClosesAt');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"windows\": [\n    { \"weekday\": \"Monday\", \"opensAt\": \"17:00:00\", \"closesAt\": \"09:00:00\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/availability-windows",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "availability-windows"]
+            }
+          }
+        },
+        {
+          "name": "Replace — sub-second times are REJECTED, not rounded",
+          "description": "The columns are time(0). A value that would be rounded on write is refused instead, so the response can never disagree with the stored row — the trap CLAUDE.md 4.3 records for IClock and datetime2(0).",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('both fields are named', () => {",
+                  "    const keys = Object.keys(pm.response.json().errors);",
+                  "    pm.expect(keys).to.include('Windows[0].OpensAt');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"windows\": [\n    { \"weekday\": \"Monday\", \"opensAt\": \"09:00:00.5\", \"closesAt\": \"17:00:00.25\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/availability-windows",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "availability-windows"]
+            }
+          }
+        },
+        {
+          "name": "Replace — an empty array clears the schedule (legal)",
+          "description": "Distinguished from a MISSING array, which is a 400: a schedule can only be cleared by asking to clear it.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('the schedule is empty', () => {",
+                  "    pm.expect(pm.response.json().availabilityWindows).to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"windows\": []\n}" },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/availability-windows",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "availability-windows"]
+            }
+          }
+        },
+        {
+          "name": "Replace — a MISSING array is a 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('Windows is named as the missing field', () => {",
+                  "    pm.expect(Object.keys(pm.response.json().errors)).to.include('Windows');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/availability-windows",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "availability-windows"]
+            }
+          }
+        },
+        {
+          "name": "Restore a real weekly schedule (for the walkthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('five weekdays', () => {",
+                  "    pm.expect(pm.response.json().availabilityWindows).to.have.lengthOf(5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"windows\": [\n    { \"weekday\": \"Monday\",    \"opensAt\": \"09:00:00\", \"closesAt\": \"17:00:00\" },\n    { \"weekday\": \"Tuesday\",   \"opensAt\": \"09:00:00\", \"closesAt\": \"17:00:00\" },\n    { \"weekday\": \"Wednesday\", \"opensAt\": \"09:00:00\", \"closesAt\": \"17:00:00\" },\n    { \"weekday\": \"Thursday\",  \"opensAt\": \"09:00:00\", \"closesAt\": \"17:00:00\" },\n    { \"weekday\": \"Friday\",    \"opensAt\": \"09:00:00\", \"closesAt\": \"13:00:00\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/availability-windows",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "availability-windows"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 Approvers (FR-3.3)",
+      "description": "Phase 3 step 2. Eligibility = own tenant + IsActive + (Approver or TenantAdmin) — decision 0018.",
+      "item": [
+        {
+          "name": "Assign the Acme approver",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('one approver, resolved to a name', () => {",
+                  "    pm.expect(body.approvers).to.have.lengthOf(1);",
+                  "    pm.expect(body.approvers[0].userId).to.eql(pm.collectionVariables.get('approverUserId'));",
+                  "    pm.expect(body.approvers[0].fullName).to.eql('Resource Approver');",
+                  "});",
+                  "pm.test('no email address on the wire', () => {",
+                  "    pm.expect(body.approvers[0]).to.not.have.property('email');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approverUserIds\": [\"{{approverUserId}}\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/approvers",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "approvers"]
+            }
+          }
+        },
+        {
+          "name": "Assign a TenantAdmin — also eligible",
+          "description": "AuthorizationPolicies.Approver admits TenantAdmin, so the set that may be assigned matches the set that may approve. Decision 0018.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('two approvers now', () => {",
+                  "    pm.expect(pm.response.json().approvers).to.have.lengthOf(2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approverUserIds\": [\"{{approverUserId}}\", \"{{adminUserId}}\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/approvers",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "approvers"]
+            }
+          }
+        },
+        {
+          "name": "Assign a Member — REFUSED (422 ApproverNotEligible)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422', () => pm.response.to.have.status(422));",
+                  "pm.test('reasonCode ApproverNotEligible', () => {",
+                  "    pm.expect(pm.response.json().reasonCode).to.eql('ApproverNotEligible');",
+                  "});",
+                  "pm.collectionVariables.set('memberRefusalBody', pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approverUserIds\": [\"{{memberUserId}}\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/approvers",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "approvers"]
+            }
+          }
+        },
+        {
+          "name": "Assign ANOTHER TENANT's real approver — REFUSED (422)",
+          "description": "The Globex approver is a real, active, Approver-role user. AC-4: the refusal must not confirm the id exists.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422', () => pm.response.to.have.status(422));",
+                  "pm.test('reasonCode ApproverNotEligible', () => {",
+                  "    pm.expect(pm.response.json().reasonCode).to.eql('ApproverNotEligible');",
+                  "});",
+                  "",
+                  "const body = pm.response.json();",
+                  "delete body.traceId; delete body.correlationId;",
+                  "pm.collectionVariables.set('crossTenantRefusal', JSON.stringify(body));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approverUserIds\": [\"{{globexApproverUserId}}\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/approvers",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "approvers"]
+            }
+          }
+        },
+        {
+          "name": "Assign a user id that exists NOWHERE — identical refusal",
+          "description": "This is the assertion that matters: a cross-tenant id and a nonexistent one must produce the same body, or the response confirms the id exists somewhere.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422', () => pm.response.to.have.status(422));",
+                  "const body = pm.response.json();",
+                  "delete body.traceId; delete body.correlationId;",
+                  "pm.test('byte-identical to the cross-tenant refusal (AC-4)', () => {",
+                  "    pm.expect(JSON.stringify(body)).to.eql(pm.collectionVariables.get('crossTenantRefusal'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approverUserIds\": [\"00000000-0000-0000-0000-0000000000ff\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/approvers",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "approvers"]
+            }
+          }
+        },
+        {
+          "name": "Duplicate ids are REJECTED (400), not collapsed",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('reasonCode ValidationFailed', () => {",
+                  "    pm.expect(pm.response.json().reasonCode).to.eql('ValidationFailed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approverUserIds\": [\"{{approverUserId}}\", \"{{approverUserId}}\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/approvers",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "approvers"]
+            }
+          }
+        },
+        {
+          "name": "Now flag the resource RequiresApproval",
+          "description": "Only possible because an approver is assigned — Phase 2 refuses the flag on a resource with none. This is the FR-3.3 gap Phase 3 closed.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('requiresApproval is set', () => {",
+                  "    pm.expect(pm.response.json().requiresApproval).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Postman Test Room\",\n  \"description\": \"Created by the WP-3 Postman collection\",\n  \"resourceType\": \"Room\",\n  \"capacity\": 4,\n  \"timeZoneId\": \"America/New_York\",\n  \"requiresApproval\": true,\n  \"minDurationMinutes\": 30,\n  \"maxDurationMinutes\": 240\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}"]
+            }
+          }
+        },
+        {
+          "name": "Emptying the list is now REFUSED (422 ApproversRequired)",
+          "description": "The invariant enforced from the approver side. Without this the state FR-3.3 rules out returns through the side door.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422', () => pm.response.to.have.status(422));",
+                  "pm.test('reasonCode ApproversRequired', () => {",
+                  "    pm.expect(pm.response.json().reasonCode).to.eql('ApproversRequired');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"approverUserIds\": []\n}" },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/approvers",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "approvers"]
+            }
+          }
+        },
+        {
+          "name": "But SWAPPING approvers is fine — one request, no invalid state",
+          "description": "This is why approvers use replace-the-set rather than per-row POST/DELETE: the per-row route would have to pass through the empty list refused above.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('the admin replaced the approver in one call', () => {",
+                  "    pm.expect(body.approvers).to.have.lengthOf(1);",
+                  "    pm.expect(body.approvers[0].userId).to.eql(pm.collectionVariables.get('adminUserId'));",
+                  "    pm.expect(body.requiresApproval).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approverUserIds\": [\"{{adminUserId}}\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/approvers",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "approvers"]
+            }
+          }
+        },
+        {
+          "name": "A MEMBER can see who approves this room",
+          "description": "The read detail is on the TenantMember policy, not admin-only: someone deciding whether to book an approval-gated room should see who will be deciding.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('a member sees the schedule and the approvers', () => {",
+                  "    pm.expect(body.requiresApproval).to.eql(true);",
+                  "    pm.expect(body.approvers).to.have.lengthOf(1);",
+                  "    pm.expect(body.availabilityWindows).to.have.lengthOf(5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{memberAccessToken}}", "type": "string" }]
+            },
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 Acceptance criteria",
+      "description": "The two cross-cutting WP-3 criteria a client can demonstrate better than a test log: non-admins cannot write, and a cross-tenant id is a 404.",
+      "item": [
+        {
+          "name": "Member cannot create a resource (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden', () => pm.response.to.have.status(403));",
+                  "pm.test('403 carries no reason code — this is RBAC, not a rule', () => {",
+                  "    pm.expect(pm.response.text()).to.not.include('reasonCode');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{memberAccessToken}}", "type": "string" }]
+            },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Should Not Exist\",\n  \"resourceType\": \"Room\",\n  \"capacity\": 1,\n  \"timeZoneId\": \"America/New_York\",\n  \"requiresApproval\": false\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/resources", "host": ["{{baseUrl}}"], "path": ["resources"] }
+          }
+        },
+        {
+          "name": "Member cannot set a schedule (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('403 Forbidden', () => pm.response.to.have.status(403));"]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{memberAccessToken}}", "type": "string" }]
+            },
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"windows\": []\n}" },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/availability-windows",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "availability-windows"]
+            }
+          }
+        },
+        {
+          "name": "An APPROVER is a non-admin too — cannot assign approvers (403)",
+          "description": "Approver sits between Member and TenantAdmin, so 'non-admin' has to mean every non-admin. Being an approver is not the same as choosing them.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('403 Forbidden', () => pm.response.to.have.status(403));"]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{approverAccessToken}}", "type": "string" }]
+            },
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"approverUserIds\": []\n}" },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/approvers",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "approvers"]
+            }
+          }
+        },
+        {
+          "name": "A SysAdmin is refused too (403)",
+          "description": "Not a bug. TenantMember requires the orgId claim, which decision 0009 deliberately omits for a SysAdmin — PRD 2: the Platform Operator must never see tenant booking content in routine operation.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('403 Forbidden', () => pm.response.to.have.status(403));"]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{sysAdminAccessToken}}", "type": "string" }]
+            },
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/resources", "host": ["{{baseUrl}}"], "path": ["resources"] }
+          }
+        },
+        {
+          "name": "Globex admin lists their own resources (capture one id)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const items = pm.response.json().items;",
+                  "pm.expect(items.length).to.be.above(0);",
+                  "pm.collectionVariables.set('globexResourceId', items[0].id);",
+                  "pm.test('Acme\\u2019s Postman room is NOT in Globex\\u2019s list', () => {",
+                  "    const ids = items.map(r => r.id);",
+                  "    pm.expect(ids).to.not.include(pm.collectionVariables.get('resourceId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{globexAdminAccessToken}}", "type": "string" }]
+            },
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/resources?pageSize=100",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources"],
+              "query": [{ "key": "pageSize", "value": "100" }]
+            }
+          }
+        },
+        {
+          "name": "AC-4 — Acme reading a REAL Globex resource id gets 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('reasonCode ResourceNotFound', () => {",
+                  "    pm.expect(pm.response.json().reasonCode).to.eql('ResourceNotFound');",
+                  "});",
+                  "pm.test('the id is not echoed back anywhere', () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(pm.collectionVariables.get('globexResourceId'));",
+                  "});",
+                  "const body = pm.response.json();",
+                  "delete body.traceId; delete body.correlationId;",
+                  "pm.collectionVariables.set('crossTenant404', JSON.stringify(body));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{globexResourceId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{globexResourceId}}"]
+            }
+          }
+        },
+        {
+          "name": "AC-4 — an id that exists nowhere gets an IDENTICAL 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "const body = pm.response.json();",
+                  "delete body.traceId; delete body.correlationId;",
+                  "pm.test('byte-identical to the cross-tenant 404', () => {",
+                  "    pm.expect(JSON.stringify(body)).to.eql(pm.collectionVariables.get('crossTenant404'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/resources/00000000-0000-0000-0000-0000000000ff",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "00000000-0000-0000-0000-0000000000ff"]
+            }
+          }
+        },
+        {
+          "name": "AC-4 — Acme cannot write a schedule onto a Globex room (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('reasonCode ResourceNotFound, not a 403 or a 422', () => {",
+                  "    pm.expect(pm.response.json().reasonCode).to.eql('ResourceNotFound');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"windows\": [\n    { \"weekday\": \"Monday\", \"opensAt\": \"00:00:01\", \"closesAt\": \"23:59:59\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{globexResourceId}}/availability-windows",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{globexResourceId}}", "availability-windows"]
+            }
+          }
+        },
+        {
+          "name": "Correlation id round-trips on an error",
+          "description": "Send X-Correlation-Id and the same value comes back in the body and the response header, and tags every Serilog line for the request. Makes the console readable while poking around.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('our correlation id came back', () => {",
+                  "    pm.expect(pm.response.json().correlationId).to.eql('postman-wp3-check');",
+                  "    pm.expect(pm.response.headers.get('X-Correlation-Id')).to.eql('postman-wp3-check');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Correlation-Id", "value": "postman-wp3-check" }],
+            "url": {
+              "raw": "{{baseUrl}}/resources/00000000-0000-0000-0000-0000000000ff",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "00000000-0000-0000-0000-0000000000ff"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "05 Archive and teardown (FR-3.5)",
+      "description": "Nothing is deleted (CLAUDE.md 4.5), so the collection archives its room rather than removing it. Re-running the collection creates another one — see the README for how to clean up.",
+      "item": [
+        {
+          "name": "Archive the resource",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 with the resource, not 204', () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(pm.response.json().isArchived).to.eql(true);",
+                  "});",
+                  "pm.collectionVariables.set('archivedAt', pm.response.json().updatedAtUtc);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/archive",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "archive"]
+            }
+          }
+        },
+        {
+          "name": "Archive again — idempotent, and does not move updatedAtUtc",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('a no-op must not move \\u201clast changed\\u201d', () => {",
+                  "    pm.expect(pm.response.json().updatedAtUtc).to.eql(pm.collectionVariables.get('archivedAt'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/archive",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "archive"]
+            }
+          }
+        },
+        {
+          "name": "An archived resource refuses a new schedule (422)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422', () => pm.response.to.have.status(422));",
+                  "pm.test('reasonCode ResourceArchived', () => {",
+                  "    pm.expect(pm.response.json().reasonCode).to.eql('ResourceArchived');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"windows\": []\n}" },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/availability-windows",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "availability-windows"]
+            }
+          }
+        },
+        {
+          "name": "An archived resource refuses new approvers (422)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422', () => pm.response.to.have.status(422));",
+                  "pm.test('reasonCode ResourceArchived', () => {",
+                  "    pm.expect(pm.response.json().reasonCode).to.eql('ResourceArchived');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approverUserIds\": [\"{{approverUserId}}\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}/approvers",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}", "approvers"]
+            }
+          }
+        },
+        {
+          "name": "It is still readable, with its schedule and approvers intact",
+          "description": "FR-3.5: archiving preserves the resource and its history. It just leaves circulation.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('nothing was blanked', () => {",
+                  "    pm.expect(body.isArchived).to.eql(true);",
+                  "    pm.expect(body.availabilityWindows).to.have.lengthOf(5);",
+                  "    pm.expect(body.approvers).to.have.lengthOf(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/resources/{{resourceId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources", "{{resourceId}}"]
+            }
+          }
+        },
+        {
+          "name": "And it is gone from the default list",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('hidden by default, visible with includeArchived', () => {",
+                  "    const ids = pm.response.json().items.map(r => r.id);",
+                  "    pm.expect(ids).to.not.include(pm.collectionVariables.get('resourceId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/resources?pageSize=100",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources"],
+              "query": [{ "key": "pageSize", "value": "100" }]
+            }
+          }
+        },
+        {
+          "name": "…unless you ask for it (includeArchived=true)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('there it is', () => {",
+                  "    const ids = pm.response.json().items.map(r => r.id);",
+                  "    pm.expect(ids).to.include(pm.collectionVariables.get('resourceId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/resources?pageSize=100&includeArchived=true",
+              "host": ["{{baseUrl}}"],
+              "path": ["resources"],
+              "query": [
+                { "key": "pageSize", "value": "100" },
+                { "key": "includeArchived", "value": "true" }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

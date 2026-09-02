@@ -8,6 +8,7 @@ using BookSpace.Application.Features.Resources.ListResources;
 using BookSpace.Domain.Entities;
 using BookSpace.Infrastructure.Persistence;
 using BookSpace.IntegrationTests.Authentication;
+using BookSpace.IntegrationTests.Support;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -190,7 +191,7 @@ public class ResourceReadEndpointTests
         var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>("/resources");
         var printer = page!.Items.Single(r => r.Name == "3D Printer");
 
-        var detail = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{printer.Id}");
+        var detail = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{printer.Id}", TestJson.Options);
 
         Assert.Equal(printer.Id, detail!.Id);
         Assert.Equal("3D Printer", detail.Name);
@@ -356,7 +357,7 @@ public class ResourceReadEndpointTests
         {
             var client = await AuthenticatedClientAsync(AcmeMember);
 
-            var detail = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{archivedId}");
+            var detail = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{archivedId}", TestJson.Options);
 
             Assert.Equal(archivedId, detail!.Id);
             Assert.True(detail.IsArchived);
