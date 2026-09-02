@@ -1065,8 +1065,17 @@ approved by the repo owner on 2026-08-28 before any code was written:
    [`0019`](docs/decisions/0019-blackout-period-lifecycle.md).
    **No migration** — Phase 1's D1 work had already built the entity, its query
    filter, its RLS predicate, the composite same-org FK and the index.
-   529 unit + 226 integration tests pass. Two things it produced that the plan
-   did not anticipate:
+   529 unit + 226 integration tests pass.
+   **Manually verified end to end by the owner in Postman on 2026-09-02**, after
+   the automated suite: all four endpoints, both new reason codes, the two
+   distinct 404s, the elapsed-vs-starts-in-the-past contrast, the range filter's
+   overlap semantics, the archived-resource refusals on all three writes, the
+   non-idempotent second `DELETE`, and the non-admin 403s. The walkthrough is
+   §`06` of `docs/postman/README.md`; the committed collection does not yet carry
+   these requests. **The cascade is the one thing a client cannot reach** —
+   `cancelledBookings` is always empty from Postman, because no booking write path
+   exists until WP-4, so it is covered by the integration suite alone.
+   Two things the phase produced that the plan did not anticipate:
    - **`Notifications` got its first writer**, and with it the confirmation that
      §7's design works as written: the cascade inserts rows the not-yet-built
      dispatch job will pick up, and `UQ_Notifications_Once` is what makes the

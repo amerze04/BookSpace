@@ -532,10 +532,24 @@ two conditions, not one condition with a branch.
 end of Phase 3), the blackout suite re-run three times to confirm the
 timing-sensitive tests are stable. No migration was needed — Phase 1's D1 work
 had already built the entity, its query filter, its RLS predicate, the composite
-same-org FK and `IX_BlackoutPeriods_Resource_Start`. **Manual Postman
-verification is still outstanding**, and matters here more than usual: the
-cascade is the sort of behaviour that reads differently from a client than from a
-test log.
+same-org FK and `IX_BlackoutPeriods_Resource_Start`.
+
+**Manually verified end to end by the owner in Postman on 2026-09-02**, after the
+automated suite: all four endpoints, both new reason codes, the two distinct
+404s, the elapsed-vs-starts-in-the-past contrast, the range filter's overlap
+semantics, the archived-resource refusals on all three writes, the non-idempotent
+second `DELETE`, and the non-admin 403s all behave as documented. The walkthrough
+is recorded as §`06` of `docs/postman/README.md`; the committed collection does
+**not** yet contain these requests, so that section is the record rather than a
+runner pass.
+
+**One thing the manual pass could not reach, by construction: the cascade.**
+Every `cancelledBookings` array comes back empty from a client, because there is
+no booking write path until WP-4 (§4.1). So the behaviour that makes this phase
+more than CRUD is covered only by `BlackoutPeriodEndpointTests`, which inserts
+booking rows by raw SQL under decision `0017` and asserts against `dbo.Bookings`
+and `dbo.Notifications` directly. Worth re-verifying from a client once WP-4
+gives bookings a real write path.
 
 ### Phase 5 — The availability query
 
