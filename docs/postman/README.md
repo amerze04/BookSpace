@@ -2,21 +2,24 @@
 
 Two files, both committed:
 
-- `BookSpace.postman_collection.json` — 38 requests in five folders, every one
-  carrying assertions.
+- `BookSpace.postman_collection.json` — 38 requests in five folders (`00`–`05`),
+  every one carrying assertions. **Covers Phases 1–3 only** — it has no blackout
+  folder; Phase 4 was verified by the hand walkthrough in §`06` below.
 - `BookSpace.postman_environment.json` — base URL and the seeded accounts. No
   secrets: the only password in it is `SeedData.SeedPassword`, which exists in
   development only.
 
-The automated suite (445 unit + 182 integration) stays the source of truth. This
+The automated suite (529 unit + 226 integration) stays the source of truth. This
 is for the things a client shows better than a test log: response shapes, error
 bodies, and demonstrating the acceptance criteria to someone watching.
 
-**Status (2026-09-02):** the *walkthrough below* was executed by hand against a
-running instance and everything behaved as documented. The **collection JSON has
-not itself been run** — it was written from the code, not from a green runner
-pass. Treat a first Collection Runner run as debugging the collection, not as
-testing the API; if a request fails there, suspect the script before the endpoint.
+**Status (2026-09-02):** both walkthroughs below — Phases 1–3 (§`00`–`05`) and
+Phase 4's blackout periods (§`06`) — were executed by hand against a running
+instance by the repo owner, and everything behaved as documented. The
+**collection JSON has not itself been run**, and does not yet include Phase 4 —
+it was written from the code, not from a green runner pass. Treat a first
+Collection Runner run as debugging the collection, not as testing the API; if a
+request fails there, suspect the script before the endpoint.
 
 ---
 
@@ -104,6 +107,91 @@ comes back with `includeArchived=true`.
 
 ---
 
+## 06 Blackout periods (FR-3.4) — hand walkthrough, not in the collection
+
+Verified by the repo owner on 2026-09-02, immediately after WP-3 Phase 4 landed.
+**No requests for this exist in the committed collection yet**, so this section is
+the record of what was run, in order, and is what to repeat.
+
+Two setup notes that are easy to get wrong:
+
+- **Never run the archived-resource checks against a resource you still need.**
+  Archiving is irreversible (§4.5, no `Unarchive`), so those steps use a
+  throwaway resource created for the purpose.
+- **Every timestamp needs a trailing `Z` and whole seconds.** Both rules are
+  deliberate and both are tested below — a bare local-looking timestamp is a 400,
+  and so is a fractional second.
+
+The walkthrough, with what each step demonstrates:
+
+1. **Create** → **201**, `Location` pointing at the list, and
+   `cancelledBookings: []` — empty rather than absent, so a client can tell the
+   cascade ran and found nothing.
+2. **List** → **200**, the paged envelope from decision `0015`. Note the seeded
+   "Public holiday" blackout on 2026-12-25 already sits on Acme's open resource.
+3. **Create a second, overlapping blackout** → **201**. Deliberately unlike
+   availability windows, which reject overlap with a 409: the union of two
+   blackouts is still blacked out, so there is nothing to disambiguate (decision
+   `0019`).
+4. **`?from=…&to=…`** → returns a blackout that *started before* the window and
+   runs into it, and drops one that ended before it. Overlap, not containment.
+5. **`?sort=-startsAtUtc`** reverses the order; **`?sort=reason`** is a **400**,
+   since it is not on the whitelist.
+6. **The list as a member** → **200**. On `TenantMember`, not `TenantAdmin`: a
+   member choosing when to book needs to see when the room is blocked.
+7. **A timestamp with no zone** → **400** naming `StartsAtUtc`. The §4.3 guard —
+   the only available interpretation would be the *server's* timezone.
+8. **Fractional seconds** → **400**. `datetime2(0)` rounds, so the response would
+   disagree with the row.
+9. **An inverted interval** → **400** on `EndsAtUtc`.
+10. **A blackout entirely in the past** → **422 `BlackoutPeriodElapsed`**.
+11. **A blackout that merely *starts* in the past** → **201**. The contrast that
+    matters: "the room flooded this morning and is unusable until Friday" is the
+    ordinary operational case, and a `StartsAtUtc >= now` rule would also lose to
+    clock skew.
+12. **A resource id that exists nowhere** → **404 `ResourceNotFound`**.
+13. **`PUT`** → **200**, `updatedAtUtc` moved and `createdAtUtc` did not, and the
+    list length is unchanged — an edit, not a second row.
+14. **`PUT` omitting `reason`** → **200** with `reason: null`. A full
+    representation, so an omitted field means *cleared*, not *unchanged*
+    (decision `0015`).
+15. **The two 404s, side by side** — an unknown blackout id gives
+    **`BlackoutPeriodNotFound`**, while a *real* blackout id reached through a
+    Globex resource gives **`ResourceNotFound`**, because the resource is checked
+    first and is already invisible. Distinct codes because they say different
+    things about the same URL: which half of the path is wrong.
+16. **`PUT` moving a blackout entirely into the past** → **422**, and the list
+    shows it **unchanged** — every rule runs before any mutation.
+17. **On a throwaway archived resource**: `POST`, `PUT` and `DELETE` all →
+    **422 `ResourceArchived`**. Including the delete, which is decision `0019`'s
+    deliberate call: "an archived resource accepts no writes" is a rule an admin
+    can hold in their head, and the alternative makes deletion its one exception.
+18. **`DELETE`** → **204** with an empty body, and the row is *gone* from the
+    list rather than flagged. The first real hard delete in this system.
+19. **`DELETE` the same id again** → **404 `BlackoutPeriodNotFound`**,
+    deliberately not 204: it cannot distinguish "already deleted" from "another
+    tenant's id", so it accepts neither.
+20. **`POST`/`PUT`/`DELETE` as `member1@acme.test`, `approver@acme.test` and
+    `sysadmin@bookspace.local`** → **403** every time, with **no `reasonCode`** —
+    the authorization policy refused it before any handler ran.
+
+### What this walkthrough cannot show
+
+**The cascade itself.** Every `cancelledBookings` array comes back empty, because
+there is no way to create a booking yet — `dbo.CreateBooking` is WP-4 (§4.1). So
+the one behaviour that makes this phase interesting is the one Postman cannot
+reach.
+
+Decision `0001`'s cascade is covered by `BlackoutPeriodEndpointTests`, which
+inserts booking rows with raw SQL under decision `0017`'s carve-out and then
+asserts against `dbo.Bookings` and `dbo.Notifications` directly. Seeing it by
+hand needs the same raw insert against the dev database, with an explicit RLS
+bypass or the statement's own `SELECT` silently matches zero rows. Worth
+revisiting from Postman once WP-4 gives bookings a real write path — at that
+point this section and the collection should both grow a cascade folder.
+
+---
+
 ## Two checks worth doing by eye
 
 The runner proves these, but they are more convincing watched:
@@ -142,6 +230,20 @@ readable.
    than diffed — `AvailabilityWindow` has no audit columns precisely because
    entries are bulk-replaced. Do not cache a window id. Approver rows are keyed by
    `(ResourceId, UserId)` and *do* stay stable, so the two endpoints differ here.
+   **Blackout ids are stable too** — a blackout is an individual event with its
+   own audit columns, edited in place by `PUT`, so it behaves like neither of the
+   replace-the-set endpoints.
+
+4. **`cancelledBookings` is always empty.** Not a broken cascade — there is no
+   booking write path until WP-4, so there is nothing for a blackout to cancel.
+   See the end of §`06`.
+
+5. **A second `DELETE` of the same blackout is a 404, not a 204.** DELETE is
+   idempotent in the sense that the end state matches, and 204 would be
+   defensible — but this endpoint cannot tell "already deleted" from "another
+   tenant's id" (AC-4), so it refuses both. Contrast
+   `POST /resources/{id}/archive`, which *is* idempotent, because there the row
+   is still present to inspect.
 
 ---
 

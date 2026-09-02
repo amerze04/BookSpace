@@ -66,13 +66,30 @@ public class BlackoutPeriod : IAuditable, ITenantOwned
     public bool Overlaps(DateTime startsAtUtc, DateTime endsAtUtc) =>
         startsAtUtc < EndsAtUtc && StartsAtUtc < endsAtUtc;
 
-    public void Reschedule(DateTime startsAtUtc, DateTime endsAtUtc, Guid actorUserId, DateTime nowUtc)
+    // Replaces every mutable field in one call, because PUT is a full
+    // representation (docs/decisions/0015): an omitted Reason means cleared, not
+    // unchanged, so the interval and the reason have to move together or the two
+    // could disagree about which state the audit stamp describes.
+    //
+    // **Replaces the WP-1 `Reschedule(...)`**, which took the interval only and
+    // never acquired a production caller. Widening it rather than adding a second
+    // mutator beside it is deliberate: a `Reschedule` that cannot express the
+    // endpoint's payload would be dead code with a live-looking name, which is
+    // the trap CLAUDE.md §12 already records against
+    // Resource.AddAvailabilityWindow. One mutator, one audit stamp.
+    public void Revise(
+        DateTime startsAtUtc,
+        DateTime endsAtUtc,
+        string? reason,
+        Guid actorUserId,
+        DateTime nowUtc)
     {
-        if (endsAtUtc <= startsAtUtc)
+        if (endsAtUtc <= startsAtUtc) // CK_BlackoutPeriods_Interval
             throw new ArgumentException("EndsAtUtc must be after StartsAtUtc.", nameof(endsAtUtc));
 
         StartsAtUtc = startsAtUtc;
         EndsAtUtc = endsAtUtc;
+        Reason = reason;
         UpdatedAtUtc = nowUtc;
         UpdatedByUserId = actorUserId;
     }

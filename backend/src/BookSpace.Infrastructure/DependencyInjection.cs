@@ -49,6 +49,7 @@ public static class DependencyInjection
         services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
         services.AddScoped<IResourceRepository, ResourceRepository>();
         services.AddScoped<IUserRepository, UserRepository>();
+        services.AddScoped<IBlackoutPeriodRepository, BlackoutPeriodRepository>();
 
         return services;
     }

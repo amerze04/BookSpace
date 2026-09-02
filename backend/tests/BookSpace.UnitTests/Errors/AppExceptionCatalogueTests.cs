@@ -38,6 +38,10 @@ public class AppExceptionCatalogueTests
             (ReasonCodes.OverlappingAvailabilityWindow, ErrorKind.Conflict),
         [typeof(ApproverNotEligibleException)] =
             (ReasonCodes.ApproverNotEligible, ErrorKind.RuleViolation),
+        [typeof(BlackoutPeriodElapsedException)] =
+            (ReasonCodes.BlackoutPeriodElapsed, ErrorKind.RuleViolation),
+        [typeof(BlackoutPeriodNotFoundException)] =
+            (ReasonCodes.BlackoutPeriodNotFound, ErrorKind.NotFound),
     };
 
     // AuthenticationException is excluded deliberately, and it is the one

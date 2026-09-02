@@ -93,6 +93,54 @@ public class Booking : IAuditable, ITenantOwned
         UpdatedByUserId = actorUserId;
     }
 
+    // Decision #1 (docs/decisions/0001-blackout-vs-recurring-series.md): a
+    // blackout has absolute priority, so every occurrence it overlaps is
+    // cancelled. Its own method rather than a call to Cancel(null, ...) because
+    // 0001 asks for "a reason/actor variant distinct from a user-initiated
+    // cancel", and the distinction is worth having in the type: this transition
+    // has no cancelling *user*, and the guard below is stricter.
+    //
+    // CancelledByUserId stays null on purpose. A person did cause this — the
+    // admin who created the blackout — but 0001 records that actor on
+    // BlackoutPeriods.CreatedByUserId instead, so writing them here would claim
+    // the booking's owner was overruled by someone acting on that booking.
+    // UpdatedByUserId stays null for the same reason decision #4 leaves it null
+    // on a no-show: the transition was driven by a rule, not by an edit.
+    public void CancelForBlackout(string? reason, DateTime nowUtc)
+    {
+        if (!CanBeCancelledForBlackout(nowUtc))
+            throw new InvalidOperationException(
+                $"Booking {Id} in status {Status} ending {EndsAtUtc:o} cannot be cancelled by a blackout.");
+
+        Status = BookingStatus.Cancelled;
+        CancelledByUserId = null;
+        CancelledAtUtc = nowUtc;
+        CancellationReason = reason;
+        UpdatedAtUtc = nowUtc;
+        UpdatedByUserId = null;
+    }
+
+    // Which occurrences a blackout may cancel, stated once here so the domain
+    // owns the rule and the repository's SQL filter is only an optimization that
+    // mirrors it (see IBlackoutPeriodRepository.FindBookingsToCancelAsync).
+    //
+    // Two conditions, and the second is the one worth explaining. Pending and
+    // Confirmed are the only statuses holding a claim on the resource — the rest
+    // are terminal, and Cancel() already refuses them. But `Confirmed` alone is
+    // not enough, because **nothing in this system currently writes
+    // BookingStatus.Completed**: there is no Complete() method and no job in
+    // CLAUDE.md §7 that sets it, so a meeting that actually happened and was
+    // checked into stays Confirmed indefinitely. Without the EndsAtUtc test, a
+    // blackout covering last month would cancel attended meetings and stamp
+    // CancelledAtUtc on history — which FR-3.5's premise (history is preserved
+    // as it was) rules out.
+    //
+    // A booking already in progress *is* cancellable: the room is unusable from
+    // now on, so the meeting in it has to stop.
+    public bool CanBeCancelledForBlackout(DateTime nowUtc) =>
+        Status is BookingStatus.Pending or BookingStatus.Confirmed
+        && EndsAtUtc > nowUtc;
+
     public void CheckIn(DateTime nowUtc)
     {
         if (Status != BookingStatus.Confirmed)

@@ -48,8 +48,11 @@ public class BlackoutPeriodTests
         Assert.Equal(expected, result);
     }
 
+    // Revise replaces the WP-1 Reschedule, which took the interval only and never
+    // acquired a production caller. PUT is a full representation
+    // (docs/decisions/0015), so the reason has to move with the interval.
     [Fact]
-    public void Reschedule_UpdatesIntervalAndAuditFields()
+    public void Revise_UpdatesIntervalReasonAndAuditFields()
     {
         var blackout = CreateValid();
         var newStart = Starts.AddDays(1);
@@ -57,19 +60,47 @@ public class BlackoutPeriodTests
         var actor = Guid.NewGuid();
         var later = NowUtc.AddDays(1);
 
-        blackout.Reschedule(newStart, newEnd, actor, later);
+        blackout.Revise(newStart, newEnd, "Deep clean", actor, later);
 
         Assert.Equal(newStart, blackout.StartsAtUtc);
         Assert.Equal(newEnd, blackout.EndsAtUtc);
+        Assert.Equal("Deep clean", blackout.Reason);
         Assert.Equal(actor, blackout.UpdatedByUserId);
         Assert.Equal(later, blackout.UpdatedAtUtc);
     }
 
+    // A full representation, so an omitted reason means cleared rather than
+    // unchanged — otherwise a reason could never be removed once set.
     [Fact]
-    public void Reschedule_Throws_WhenEndsAtUtcIsNotAfterStartsAtUtc()
+    public void Revise_ClearsTheReasonWhenNoneIsSupplied()
+    {
+        var blackout = CreateValid();
+        blackout.Revise(Starts, Ends, "Boiler service", ActorId, NowUtc);
+
+        blackout.Revise(Starts, Ends, null, ActorId, NowUtc);
+
+        Assert.Null(blackout.Reason);
+    }
+
+    // CreatedAtUtc/CreatedByUserId are history, not state.
+    [Fact]
+    public void Revise_LeavesTheCreationAuditAlone()
+    {
+        var blackout = CreateValid();
+        var createdAt = blackout.CreatedAtUtc;
+        var createdBy = blackout.CreatedByUserId;
+
+        blackout.Revise(Starts.AddDays(1), Ends.AddDays(1), null, Guid.NewGuid(), NowUtc.AddDays(1));
+
+        Assert.Equal(createdAt, blackout.CreatedAtUtc);
+        Assert.Equal(createdBy, blackout.CreatedByUserId);
+    }
+
+    [Fact]
+    public void Revise_Throws_WhenEndsAtUtcIsNotAfterStartsAtUtc()
     {
         var blackout = CreateValid();
 
-        Assert.Throws<ArgumentException>(() => blackout.Reschedule(Starts, Starts, ActorId, NowUtc));
+        Assert.Throws<ArgumentException>(() => blackout.Revise(Starts, Starts, null, ActorId, NowUtc));
     }
 }

@@ -139,4 +139,96 @@ public class BookingTests
 
         Assert.Throws<InvalidOperationException>(() => booking.MarkNoShow(NowUtc));
     }
+
+    // ---- Decision 0001: the blackout cascade (WP-3 Phase 4) ----
+
+    [Theory]
+    [InlineData(BookingStatus.Pending)]
+    [InlineData(BookingStatus.Confirmed)]
+    public void CancelForBlackout_CancelsAClaimOnTheResource(BookingStatus status)
+    {
+        var booking = CreateValid(status);
+
+        booking.CancelForBlackout("Blackout: boiler service", NowUtc);
+
+        Assert.Equal(BookingStatus.Cancelled, booking.Status);
+        Assert.Equal("Blackout: boiler service", booking.CancellationReason);
+        Assert.Equal(NowUtc, booking.CancelledAtUtc);
+    }
+
+    // Decision 0001 records the acting admin on BlackoutPeriods.CreatedByUserId,
+    // not here: writing them onto the booking would claim a person acted on this
+    // booking, when what happened is that a rule did.
+    [Fact]
+    public void CancelForBlackout_LeavesNoActingUserOnTheBooking()
+    {
+        var booking = CreateValid();
+
+        booking.CancelForBlackout("Blackout", NowUtc);
+
+        Assert.Null(booking.CancelledByUserId);
+        Assert.Null(booking.UpdatedByUserId);
+    }
+
+    // The difference from Cancel(), which does record one.
+    [Fact]
+    public void Cancel_StillRecordsTheActingUser()
+    {
+        var booking = CreateValid();
+
+        booking.Cancel(ActorId, "Changed my mind", NowUtc);
+
+        Assert.Equal(ActorId, booking.CancelledByUserId);
+        Assert.Equal(ActorId, booking.UpdatedByUserId);
+    }
+
+    [Theory]
+    [InlineData(BookingStatus.Cancelled)]
+    [InlineData(BookingStatus.Rejected)]
+    [InlineData(BookingStatus.Completed)]
+    [InlineData(BookingStatus.NoShow)]
+    public void CancelForBlackout_RefusesATerminalStatus(BookingStatus status)
+    {
+        var booking = CreateValid(status);
+
+        Assert.Throws<InvalidOperationException>(() => booking.CancelForBlackout("Blackout", NowUtc));
+    }
+
+    // The guard that protects history, and the reason it cannot be left to the
+    // status alone: nothing in this system writes BookingStatus.Completed, so a
+    // meeting that happened and was checked into is still Confirmed. Without
+    // this, a blackout over last month would cancel it.
+    [Fact]
+    public void CancelForBlackout_RefusesABookingThatHasAlreadyFinished()
+    {
+        var booking = CreateValid();
+        var afterItEnded = Ends.AddMinutes(1);
+
+        Assert.False(booking.CanBeCancelledForBlackout(afterItEnded));
+        Assert.Throws<InvalidOperationException>(() => booking.CancelForBlackout("Blackout", afterItEnded));
+    }
+
+    // In progress is not finished: the room is unusable from now on, so the
+    // meeting currently in it has to stop.
+    [Fact]
+    public void CancelForBlackout_AllowsABookingAlreadyUnderWay()
+    {
+        var booking = CreateValid();
+        var midway = Starts.AddMinutes(30);
+
+        Assert.True(booking.CanBeCancelledForBlackout(midway));
+
+        booking.CancelForBlackout("Blackout", midway);
+
+        Assert.Equal(BookingStatus.Cancelled, booking.Status);
+    }
+
+    // The boundary: EndsAtUtc > nowUtc, so a booking ending exactly now is over.
+    [Fact]
+    public void CanBeCancelledForBlackout_IsFalseAtTheExactEndInstant()
+    {
+        var booking = CreateValid();
+
+        Assert.False(booking.CanBeCancelledForBlackout(Ends));
+    }
 }
