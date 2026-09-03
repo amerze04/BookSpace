@@ -1,6 +1,7 @@
 using BookSpace.Application.Common.Errors;
 using BookSpace.Application.Features.Resources.ReplaceApprovers;
 using BookSpace.Domain.Entities;
+using BookSpace.Domain.Enums;
 using BookSpace.UnitTests.Security;
 
 namespace BookSpace.UnitTests.Resources;
@@ -18,7 +19,7 @@ public class ReplaceApproversCommandRequestHandlerTests
     private static readonly DateTime NowUtc = new(2026, 9, 2, 12, 0, 0, DateTimeKind.Utc);
 
     private static Resource ExistingResource(bool requiresApproval = false) =>
-        new(Guid.NewGuid(), OrgId, "Conference Room A", "Room", 8, "America/New_York",
+        new(Guid.NewGuid(), OrgId, "Conference Room A", ResourceType.Room, 8, "America/New_York",
             requiresApproval, minDurationMinutes: 30, maxDurationMinutes: 240,
             description: "Main room", createdByUserId: ActorId, nowUtc: CreatedUtc);
 

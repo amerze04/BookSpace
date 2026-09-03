@@ -23,7 +23,7 @@ public class UpdateAndDeleteBlackoutPeriodHandlerTests
     private static readonly DateTime OriginalEnds = new(2026, 9, 3, 12, 0, 0, DateTimeKind.Utc);
 
     private static Resource ExistingResource() =>
-        new(Guid.NewGuid(), OrgId, "Conference Room A", "Room", 8, "America/New_York",
+        new(Guid.NewGuid(), OrgId, "Conference Room A", ResourceType.Room, 8, "America/New_York",
             requiresApproval: false, minDurationMinutes: 30, maxDurationMinutes: 240,
             description: "Main room", createdByUserId: ActorId, nowUtc: CreatedUtc);
 

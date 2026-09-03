@@ -3,8 +3,8 @@ using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.Resources;
 using BookSpace.Application.Features.Resources.GetResource;
 using BookSpace.Application.Features.Resources.ListResources;
-using BookSpace.Domain.Entities;
 using BookSpace.Domain.Enums;
+using BookSpace.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 
 namespace BookSpace.Infrastructure.Persistence.Repositories;
@@ -35,6 +35,16 @@ internal sealed class ResourceRepository : IResourceRepository
         if (!query.IncludeArchived)
         {
             resources = resources.Where(r => !r.IsArchived);
+        }
+
+        // Compared as an enum, not a string: the column stores names
+        // (CLAUDE.md §5) and EF's value converter translates the comparison, so
+        // no spelling ever enters the expression tree. A local rather than
+        // query.Type inside the lambda, matching the overlap predicates
+        // elsewhere in this project.
+        if (query.Type is { } type)
+        {
+            resources = resources.Where(r => r.ResourceType == type);
         }
 
         // The projection happens after ordering so ToPagedResultAsync still

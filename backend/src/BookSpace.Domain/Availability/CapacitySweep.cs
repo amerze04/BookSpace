@@ -21,16 +21,28 @@ namespace BookSpace.Domain.Availability;
 // SQL aggregate over rows this code would otherwise have to load.
 public static class CapacitySweep
 {
+    // requiredQuantity is how many units the caller wants to hold at once. It is
+    // what makes the answer a straight one: "how long can I book" has no single
+    // answer on a pooled resource, because the longest run where 1 unit is free
+    // is longer than the one where 4 are. Given the number, the runs are
+    // determined — see AvailabilityCalculator for the endpoint's default.
     public static IReadOnlyList<BookableInterval> Subtract(
         IReadOnlyList<UtcInterval> openIntervals,
         IEnumerable<BookedQuantity> bookings,
-        int capacity)
+        int capacity,
+        int requiredQuantity)
     {
         ArgumentNullException.ThrowIfNull(openIntervals);
         ArgumentNullException.ThrowIfNull(bookings);
 
         if (capacity <= 0) // CK_Resources_Capacity
             throw new ArgumentOutOfRangeException(nameof(capacity), "Capacity must be greater than zero.");
+
+        if (requiredQuantity <= 0) // CK_Bookings_Quantity
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(requiredQuantity), "The required quantity must be greater than zero.");
+        }
 
         // A sweep line. Each booking becomes two events — units claimed at its
         // start, released at its end — and walking them in order keeps a running
@@ -104,47 +116,64 @@ public static class CapacitySweep
                 segments.Add(new BookableSegment(segmentStart, open.EndUtc, capacity - unitsHeld));
             }
 
-            AppendBookable(segments, bookable);
+            AppendBookable(segments, requiredQuantity, bookable);
         }
 
         return bookable;
     }
 
-    // Two things at once, and the order is load-bearing.
+    // Turns the sweep's segments into the runs a booker can actually take, and
+    // the order of the two steps is load-bearing.
     //
-    // Adjacent segments with the *same* remaining capacity are rejoined first.
-    // The sweep cuts at every booking boundary, but a boundary where the figure
-    // does not change is an artefact of how the data is stored rather than
-    // anything a member should see: two back-to-back bookings of one unit each
-    // would otherwise split a free afternoon into two identical halves.
+    // **Drop what does not have room first.** A segment with fewer than
+    // requiredQuantity units left cannot hold this booking at all, so it is a
+    // wall — not a smaller opportunity.
     //
-    // Only then is what is not bookable dropped. Doing it the other way round
-    // would rejoin spans across a fully-booked gap and report time that is not
-    // free. Rejoining is deliberately confined to one open interval — segments
-    // either side of a closing time or a blackout are not adjacent, whatever
-    // their remaining capacity says.
-    private static void AppendBookable(List<BookableSegment> segments, List<BookableInterval> bookable)
+    // **Then rejoin what is left, wherever it touches.** Every remaining segment
+    // can hold the booking, so a boundary between two of them is not a boundary
+    // for *this* caller: it is where the figure changed, which the caller did not
+    // ask about. Rejoining is what makes the answer usable — otherwise a member
+    // wanting one unit is shown a free day chopped up at every booking someone
+    // else made, and has to work out for themselves that the pieces join.
+    //
+    // Doing it the other way round would rejoin across a wall and report time
+    // that cannot hold the booking. And rejoining stays confined to one open
+    // interval — segments either side of a closing time or a blackout are not
+    // adjacent, whatever their capacity says.
+    //
+    // The reported figure is the **minimum** across a rejoined run, which keeps
+    // BookableInterval's promise: the number holds at every instant inside the
+    // span, so any sub-span of it can be booked at that quantity. The cost is
+    // that a run hides the fact that part of it had *more* free than the rest; a
+    // caller who cares asks again with a higher requiredQuantity, which is what
+    // that parameter is for.
+    private static void AppendBookable(
+        List<BookableSegment> segments,
+        int requiredQuantity,
+        List<BookableInterval> bookable)
     {
         for (var i = 0; i < segments.Count; i++)
         {
-            var segment = segments[i];
-
-            while (i + 1 < segments.Count && segments[i + 1].RemainingCapacity == segment.RemainingCapacity)
+            // Not enough room — including zero, and including a negative, which
+            // dbo.CreateBooking's capacity check makes unreachable (CLAUDE.md
+            // §4.1) but which this code cannot verify, so it is treated as a wall
+            // rather than trusted.
+            if (segments[i].RemainingCapacity < requiredQuantity)
             {
+                continue;
+            }
+
+            var segment = segments[i];
+            var floor = segment.RemainingCapacity;
+
+            while (i + 1 < segments.Count && segments[i + 1].RemainingCapacity >= requiredQuantity)
+            {
+                floor = Math.Min(floor, segments[i + 1].RemainingCapacity);
                 segment = segment with { EndUtc = segments[i + 1].EndUtc };
                 i++;
             }
 
-            // Nothing left, or overbooked — the latter cannot happen through
-            // dbo.CreateBooking's capacity check (CLAUDE.md §4.1) but is treated
-            // as "not bookable" rather than trusted, since this code cannot
-            // verify how a row got there.
-            if (segment.RemainingCapacity > 0)
-            {
-                bookable.Add(new BookableInterval(
-                    new UtcInterval(segment.StartUtc, segment.EndUtc),
-                    segment.RemainingCapacity));
-            }
+            bookable.Add(new BookableInterval(new UtcInterval(segment.StartUtc, segment.EndUtc), floor));
         }
     }
 

@@ -1,4 +1,5 @@
 using BookSpace.Application.Messaging;
+using BookSpace.Domain.Enums;
 
 namespace BookSpace.Application.Features.Resources.UpdateResource;
 
@@ -13,7 +14,7 @@ public sealed record UpdateResourceCommandRequest(
     Guid ResourceId,
     string Name,
     string? Description,
-    string ResourceType,
+    ResourceType ResourceType,
     int Capacity,
     string TimeZoneId,
     bool RequiresApproval,

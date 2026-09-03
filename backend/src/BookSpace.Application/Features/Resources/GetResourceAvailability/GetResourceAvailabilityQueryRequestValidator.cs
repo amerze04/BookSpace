@@ -14,6 +14,17 @@ public sealed class GetResourceAvailabilityQueryRequestValidator
             .NotEmpty()
             .WithMessage("ResourceId is required.");
 
+        // CK_Bookings_Quantity: a booking holds at least one unit, so asking what
+        // is free for zero of them is meaningless rather than empty.
+        //
+        // Deliberately not capped here. The ceiling is the resource's Capacity,
+        // which a shape validator cannot see without loading the resource, and
+        // asking for more units than exist is answered with an empty list — a
+        // true answer, not a malformed request.
+        RuleFor(q => q.Quantity)
+            .GreaterThan(0)
+            .WithMessage("Quantity must be greater than zero.");
+
         // Both dates are required and the query type declares them non-nullable,
         // so an omitted query parameter binds to default(DateOnly) — 0001-01-01 —
         // rather than failing to bind. Checked explicitly, because the alternative

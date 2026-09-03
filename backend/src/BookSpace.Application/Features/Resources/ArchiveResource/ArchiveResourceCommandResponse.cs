@@ -1,3 +1,5 @@
+using BookSpace.Domain.Enums;
+
 namespace BookSpace.Application.Features.Resources.ArchiveResource;
 
 // The 200 body of POST /resources/{id}/archive. FR-3.5: archiving preserves the
@@ -12,7 +14,7 @@ public sealed record ArchiveResourceCommandResponse(
     Guid Id,
     string Name,
     string? Description,
-    string ResourceType,
+    ResourceType ResourceType,
     int Capacity,
     string TimeZoneId,
     bool RequiresApproval,

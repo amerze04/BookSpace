@@ -3,6 +3,7 @@ using BookSpace.Application.Common.Errors;
 using BookSpace.Application.Features.Resources.GetResourceAvailability;
 using BookSpace.Domain.Availability;
 using BookSpace.Domain.Entities;
+using BookSpace.Domain.Enums;
 
 namespace BookSpace.UnitTests.Resources;
 
@@ -24,7 +25,7 @@ public class GetResourceAvailabilityQueryRequestHandlerTests
     private static Resource Room(bool archived = false, int capacity = 4)
     {
         var resource = new Resource(
-            Guid.NewGuid(), OrgId, "Conference Room A", "Room", capacity,
+            Guid.NewGuid(), OrgId, "Conference Room A", ResourceType.Room, capacity,
             timeZoneId: TimeZoneId, requiresApproval: false,
             minDurationMinutes: null, maxDurationMinutes: null,
             description: null, createdByUserId: ActorId, nowUtc: NowUtc);
@@ -165,13 +166,13 @@ public class GetResourceAvailabilityQueryRequestHandlerTests
             new GetResourceAvailabilityQueryRequest(resource.Id, Monday, Monday),
             CancellationToken.None);
 
+        // The blackout splits the day; the booking only lowers the second half's
+        // floor, because the caller wants one unit and three remain throughout.
         Assert.Equal(
             new[]
             {
                 (Interval(9, 12).StartUtc, Interval(9, 12).EndUtc, 4),
-                (Interval(13, 14).StartUtc, Interval(13, 14).EndUtc, 4),
-                (Interval(14, 15).StartUtc, Interval(14, 15).EndUtc, 3),
-                (Interval(15, 17).StartUtc, Interval(15, 17).EndUtc, 4),
+                (Interval(13, 17).StartUtc, Interval(13, 17).EndUtc, 3),
             },
             response.Intervals.Select(i => (i.StartUtc, i.EndUtc, i.RemainingCapacity)));
     }

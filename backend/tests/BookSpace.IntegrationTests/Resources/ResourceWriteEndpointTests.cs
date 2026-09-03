@@ -5,6 +5,7 @@ using System.Text.Json;
 using BookSpace.Application.Features.Resources.CreateResource;
 using BookSpace.Application.Features.Resources.GetResource;
 using BookSpace.Application.Features.Resources.UpdateResource;
+using BookSpace.Domain.Enums;
 using BookSpace.Infrastructure.Persistence;
 using BookSpace.IntegrationTests.Authentication;
 using BookSpace.IntegrationTests.Support;
@@ -78,13 +79,13 @@ public class ResourceWriteEndpointTests
 
             Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
-            var created = await response.Content.ReadFromJsonAsync<CreateResourceCommandResponse>();
+            var created = await response.Content.ReadFromJsonAsync<CreateResourceCommandResponse>(TestJson.Options);
             createdId = created!.Id;
 
             Assert.NotEqual(Guid.Empty, created.Id);
             Assert.Equal("Created Room", created.Name);
             Assert.Equal("Created by a test", created.Description);
-            Assert.Equal("Room", created.ResourceType);
+            Assert.Equal(ResourceType.Room, created.ResourceType);
             Assert.Equal(4, created.Capacity);
             Assert.Equal("America/New_York", created.TimeZoneId);
             Assert.False(created.RequiresApproval);
@@ -203,9 +204,11 @@ public class ResourceWriteEndpointTests
 
     // ---- POST: shape validation (400, per-field) ----
 
+    // resourceType left this list on 2026-09-04, when it became an enum: a
+    // closed set has no "blank" case, and an unparseable value is refused
+    // earlier and differently — see the test below.
     [Theory]
     [InlineData("name")]
-    [InlineData("resourceType")]
     [InlineData("timeZoneId")]
     public async Task Create_WithABlankRequiredField_Returns400WithThatField(string field)
     {
@@ -213,7 +216,6 @@ public class ResourceWriteEndpointTests
         var payload = field switch
         {
             "name" => ValidPayload(name: "   "),
-            "resourceType" => ValidPayload(resourceType: "   "),
             _ => ValidPayload(timeZoneId: "   "),
         };
 
@@ -225,6 +227,73 @@ public class ResourceWriteEndpointTests
         Assert.Equal("ValidationFailed", body.GetProperty("reasonCode").GetString());
         var expectedProperty = char.ToUpperInvariant(field[0]) + field[1..];
         Assert.True(body.GetProperty("errors").TryGetProperty(expectedProperty, out _));
+    }
+
+    // The closed set, enforced at the edge. A type the enum does not define
+    // never reaches a validator: System.Text.Json refuses to deserialize it, so
+    // the 400 comes from model binding and carries **no** reasonCode — unlike
+    // every rule failure in this API. Worth pinning, because it is the one
+    // request shape whose 400 has a different provenance, and because it proves
+    // the free-text days are really over.
+    [Theory]
+    [InlineData("MeetingRoom")]
+    [InlineData("")]
+    public async Task Create_WithATypeTheEnumDoesNotDefine_Returns400(string resourceType)
+    {
+        var client = await AuthenticatedClientAsync(AcmeAdmin);
+
+        var response = await client.PostAsJsonAsync("/resources", ValidPayload(resourceType: resourceType));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    // Casing is *not* part of the contract: JsonStringEnumConverter reads
+    // case-insensitively, so "room" is accepted and stored as Room. Asserted
+    // rather than left implicit, because the timezone column deliberately goes
+    // the other way — ITimeZoneCatalog refuses "america/new_york" to keep the
+    // stored string canonical (CLAUDE.md §4.3). The difference is that a
+    // timezone id is stored as the client spelled it, while an enum is stored as
+    // the enum's own name whatever the client sent, so there is nothing for
+    // strictness to protect here.
+    [Fact]
+    public async Task Create_AcceptsATypeInAnyCasingAndStoresItCanonically()
+    {
+        var client = await AuthenticatedClientAsync(AcmeAdmin);
+        var created = await PostAndReadAsync(
+            client, ValidPayload(name: "Lowercase Typed Room", resourceType: "room"));
+
+        try
+        {
+            Assert.Equal(ResourceType.Room, created.ResourceType);
+        }
+        finally
+        {
+            await DeleteResourceAsync(created.Id);
+        }
+    }
+
+    [Theory]
+    [InlineData("Room")]
+    [InlineData("Equipment")]
+    [InlineData("Vehicle")]
+    [InlineData("LabSlot")]
+    [InlineData("Other")]
+    public async Task Create_AcceptsEveryTypeTheEnumDefines(string resourceType)
+    {
+        var client = await AuthenticatedClientAsync(AcmeAdmin);
+        var created = await PostAndReadAsync(
+            client, ValidPayload(name: $"Typed {resourceType}", resourceType: resourceType));
+
+        try
+        {
+            // Round-trips as its name, not its ordinal — JsonStringEnumConverter,
+            // added app-wide in Phase 3.
+            Assert.Equal(Enum.Parse<ResourceType>(resourceType), created.ResourceType);
+        }
+        finally
+        {
+            await DeleteResourceAsync(created.Id);
+        }
     }
 
     [Fact]
@@ -312,18 +381,18 @@ public class ResourceWriteEndpointTests
                 ValidPayload(
                     name: "After Rename",
                     description: null,
-                    resourceType: "MeetingRoom",
+                    resourceType: "LabSlot",
                     capacity: 10,
                     min: 15,
                     max: 60));
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-            var updated = await response.Content.ReadFromJsonAsync<UpdateResourceCommandResponse>();
+            var updated = await response.Content.ReadFromJsonAsync<UpdateResourceCommandResponse>(TestJson.Options);
             Assert.Equal("After Rename", updated!.Name);
             // Full representation: an omitted nullable field clears it.
             Assert.Null(updated.Description);
-            Assert.Equal("MeetingRoom", updated.ResourceType);
+            Assert.Equal(ResourceType.LabSlot, updated.ResourceType);
             Assert.Equal(10, updated.Capacity);
             Assert.Equal(15, updated.MinDurationMinutes);
             Assert.Equal(60, updated.MaxDurationMinutes);
@@ -384,7 +453,7 @@ public class ResourceWriteEndpointTests
         var globexClient = await AuthenticatedClientAsync(GlobexAdmin);
         var globexResource = (await globexClient.GetFromJsonAsync<
             Application.Common.Pagination.PagedResult<
-                Application.Features.Resources.ListResources.ListResourcesQueryResponse>>("/resources"))!
+                Application.Features.Resources.ListResources.ListResourcesQueryResponse>>("/resources", TestJson.Options))!
             .Items.First();
 
         var acmeClient = await AuthenticatedClientAsync(AcmeAdmin);
@@ -436,7 +505,7 @@ public class ResourceWriteEndpointTests
         var client = await AuthenticatedClientAsync(AcmeAdmin);
         var printer = (await client.GetFromJsonAsync<
             Application.Common.Pagination.PagedResult<
-                Application.Features.Resources.ListResources.ListResourcesQueryResponse>>("/resources"))!
+                Application.Features.Resources.ListResources.ListResourcesQueryResponse>>("/resources", TestJson.Options))!
             .Items.Single(r => r.Name == "3D Printer");
         var before = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{printer.Id}", TestJson.Options);
 
@@ -445,7 +514,7 @@ public class ResourceWriteEndpointTests
             ValidPayload(
                 name: before!.Name,
                 description: before.Description,
-                resourceType: before.ResourceType,
+                resourceType: before.ResourceType.ToString(),
                 capacity: before.Capacity,
                 timeZoneId: before.TimeZoneId,
                 requiresApproval: true,
@@ -454,7 +523,7 @@ public class ResourceWriteEndpointTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        var updated = await response.Content.ReadFromJsonAsync<UpdateResourceCommandResponse>();
+        var updated = await response.Content.ReadFromJsonAsync<UpdateResourceCommandResponse>(TestJson.Options);
         Assert.True(updated!.RequiresApproval);
         Assert.Equal(before.Name, updated.Name);
         Assert.Equal(before.Capacity, updated.Capacity);
@@ -476,7 +545,7 @@ public class ResourceWriteEndpointTests
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-            var updated = await response.Content.ReadFromJsonAsync<UpdateResourceCommandResponse>();
+            var updated = await response.Content.ReadFromJsonAsync<UpdateResourceCommandResponse>(TestJson.Options);
             Assert.Equal("Europe/Zagreb", updated!.TimeZoneId);
             Assert.NotNull(updated.TimeZoneChange);
             Assert.Equal("America/New_York", updated.TimeZoneChange!.PreviousTimeZoneId);
@@ -543,7 +612,7 @@ public class ResourceWriteEndpointTests
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-            var updated = await response.Content.ReadFromJsonAsync<UpdateResourceCommandResponse>();
+            var updated = await response.Content.ReadFromJsonAsync<UpdateResourceCommandResponse>(TestJson.Options);
             Assert.Equal(3, updated!.Capacity);
         }
         finally
@@ -600,7 +669,7 @@ public class ResourceWriteEndpointTests
     {
         var response = await client.PostAsJsonAsync("/resources", payload);
         response.EnsureSuccessStatusCode();
-        return (await response.Content.ReadFromJsonAsync<CreateResourceCommandResponse>())!;
+        return (await response.Content.ReadFromJsonAsync<CreateResourceCommandResponse>(TestJson.Options))!;
     }
 
     private static async Task AssertReasonCodeAsync(HttpResponseMessage response, string expected)

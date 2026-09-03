@@ -93,16 +93,24 @@ public static class SeedData
         memberTwo.AddRole(Role.Member, tenantAdmin.Id, now);
         context.Users.Add(memberTwo);
 
+        // Capacity 1, not 8, and the correction is the point rather than a
+        // tidy-up. Capacity counts *concurrent units*
+        // (docs/decisions/0005-capacity-semantics.md), so the original 8 said
+        // "eight simultaneous bookings of this one room" when it plainly meant
+        // eight seats — the exact reading 0005 exists to forbid, sitting in the
+        // dataset the whole project demos from. One room is one unit; how many
+        // people fit in it is not something this system models.
         var openResource = new Resource(
-            Guid.NewGuid(), org.Id, "Conference Room A", "Room",
-            capacity: 8, timeZoneId: org.TimeZoneId, requiresApproval: false,
+            Guid.NewGuid(), org.Id, "Conference Room A", ResourceType.Room,
+            capacity: 1, timeZoneId: org.TimeZoneId, requiresApproval: false,
             minDurationMinutes: 30, maxDurationMinutes: 240,
             description: "Main conference room", createdByUserId: tenantAdmin.Id, nowUtc: now);
         AddWeekdayWindows(openResource, tenantAdmin.Id, now);
         context.Resources.Add(openResource);
 
+        // Capacity 1 is right here and always was: one printer, one job at a time.
         var approvedResource = new Resource(
-            Guid.NewGuid(), org.Id, "3D Printer", "Equipment",
+            Guid.NewGuid(), org.Id, "3D Printer", ResourceType.Equipment,
             capacity: 1, timeZoneId: org.TimeZoneId, requiresApproval: true,
             minDurationMinutes: 60, maxDurationMinutes: 180,
             description: "Shared prototyping printer", createdByUserId: tenantAdmin.Id, nowUtc: now);

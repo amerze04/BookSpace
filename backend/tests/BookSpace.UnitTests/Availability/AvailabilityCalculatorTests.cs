@@ -1,5 +1,6 @@
 using BookSpace.Domain.Availability;
 using BookSpace.Domain.Entities;
+using BookSpace.Domain.Enums;
 using BookSpace.Infrastructure.Time;
 
 namespace BookSpace.UnitTests.Availability;
@@ -31,7 +32,7 @@ public class AvailabilityCalculatorTests
         params (DayOfWeek Weekday, TimeOnly OpensAt, TimeOnly ClosesAt)[] windows)
     {
         var resource = new Resource(
-            Guid.NewGuid(), OrgId, "Conference Room A", "Room", capacity,
+            Guid.NewGuid(), OrgId, "Conference Room A", ResourceType.Room, capacity,
             timeZoneId: "America/New_York", requiresApproval: false,
             minDurationMinutes: minDurationMinutes, maxDurationMinutes: null,
             description: null, createdByUserId: ActorId, nowUtc: NowUtc);
@@ -61,14 +62,16 @@ public class AvailabilityCalculatorTests
         IEnumerable<UtcInterval>? blackouts = null,
         IEnumerable<BookedQuantity>? bookings = null,
         DateOnly? from = null,
-        DateOnly? to = null) =>
+        DateOnly? to = null,
+        int quantity = AvailabilityCalculator.DefaultRequiredQuantity) =>
         AvailabilityCalculator.BookableIntervals(
             resource,
             from ?? Monday,
             to ?? Monday,
             NewYork,
             blackouts ?? Array.Empty<UtcInterval>(),
-            bookings ?? Array.Empty<BookedQuantity>());
+            bookings ?? Array.Empty<BookedQuantity>(),
+            quantity);
 
     // ---- The plain case ----------------------------------------------------
 
@@ -118,18 +121,33 @@ public class AvailabilityCalculatorTests
 
     // ---- Bookings (the AC's "excludes existing bookings") ------------------
 
+    // One unit of four taken for an hour lowers the floor for the day and does
+    // not break the span: a caller wanting one unit can still book right across
+    // it. Before 2026-09-04 this returned three intervals and left the client to
+    // work out that they join.
     [Fact]
-    public void ABookingReducesTheCapacityLeftForItsSpan()
+    public void ABookingLowersTheFloorWithoutBreakingTheSpan()
     {
         var bookable = Calculate(
             Room(windows: NineToFive(DayOfWeek.Monday)),
             bookings: new[] { new BookedQuantity(Utc(15, 16), 1) });
 
+        Assert.Equal(new BookableInterval(Utc(13, 21), 3), Assert.Single(bookable));
+    }
+
+    // The same day asked for every unit: now the booked hour is a wall.
+    [Fact]
+    public void ABookingIsAWallForACallerWhoNeedsEveryUnit()
+    {
+        var bookable = Calculate(
+            Room(windows: NineToFive(DayOfWeek.Monday)),
+            bookings: new[] { new BookedQuantity(Utc(15, 16), 1) },
+            quantity: 4);
+
         Assert.Equal(
             new[]
             {
                 new BookableInterval(Utc(13, 15), 4),
-                new BookableInterval(Utc(15, 16), 3),
                 new BookableInterval(Utc(16, 21), 4),
             },
             bookable);
@@ -206,24 +224,42 @@ public class AvailabilityCalculatorTests
         Assert.Equal(TimeSpan.FromMinutes(15), Assert.Single(bookable).Interval.Duration);
     }
 
-    // The consequence of applying the floor per interval, recorded because it
-    // reads as a bug and is the documented behaviour: a one-unit booking in the
-    // middle of an open day splits it into three, and the flanking spans can
-    // fall under the floor and vanish — even though a one-unit booking across
-    // the whole day would be accepted. Inherent in decision D2's response
-    // shape, which carries one capacity figure per interval.
+    // The regression test for the bug the quantity parameter fixed (2026-09-04).
+    //
+    // A one-unit booking mid-day used to split the answer into three
+    // constant-capacity fragments, and the four-hour floor — measured against
+    // those fragments — then deleted the two either side of it. The morning
+    // vanished from the response even though a one-unit booking across the whole
+    // day would have been accepted.
+    //
+    // Now the run is one 8-hour interval carrying the floor of 3, so the floor
+    // has nothing to delete. What made it correct was not the filter but the
+    // sweep: measure runs a caller can actually take, and the filter is honest
+    // for free.
     [Fact]
-    public void AShortBookingCanHideTimeThatIsStillBookableAtALowerQuantity()
+    public void AShortBookingNoLongerHidesTimeThatIsStillBookable()
     {
         var bookable = Calculate(
             Room(minDurationMinutes: 240, windows: NineToFive(DayOfWeek.Monday)),
             bookings: new[] { new BookedQuantity(Utc(16, 17), 1) });
 
-        // 13:00-16:00 (3h) and 17:00-21:00 (4h) flank a 16:00-17:00 span with 3
-        // units left. Only the last clears the four-hour floor.
-        var interval = Assert.Single(bookable);
-        Assert.Equal(Utc(17, 21), interval.Interval);
-        Assert.Equal(4, interval.RemainingCapacity);
+        Assert.Equal(new BookableInterval(Utc(13, 21), 3), Assert.Single(bookable));
+    }
+
+    // ...and the floor still does its job when a run really is too short. At four
+    // units the booked hour is a wall, leaving a three-hour morning and a
+    // four-hour evening: the morning genuinely cannot hold a four-hour booking,
+    // so dropping it is correct — which is the behaviour Q5 asked for.
+    [Fact]
+    public void TheFloorStillDropsARunThatIsGenuinelyTooShort()
+    {
+        var bookable = Calculate(
+            Room(minDurationMinutes: 240, windows: NineToFive(DayOfWeek.Monday)),
+            bookings: new[] { new BookedQuantity(Utc(16, 17), 1) },
+            quantity: 4);
+
+        // 13:00-16:00 is three hours and goes; 17:00-21:00 is four and stays.
+        Assert.Equal(new BookableInterval(Utc(17, 21), 4), Assert.Single(bookable));
     }
 
     // ---- Composition over a range ------------------------------------------
@@ -265,14 +301,14 @@ public class AvailabilityCalculatorTests
             bookings: [new BookedQuantity(Utc(13, 14), 1)]);
 
         // 09:00-17:00 local is one span after the adjacent windows merge; the
-        // blackout splits it; the booking takes a unit out of its first hour.
-        // The overnight pair rejoins into a single 22:00-02:00 local span,
-        // which is 02:00Z-06:00Z the next day.
+        // blackout splits it in two; the booking takes a unit out of the first
+        // half's opening hour, which lowers that half's floor to 1 without
+        // breaking it. The overnight pair rejoins into a single 22:00-02:00 local
+        // span, which is 02:00Z-06:00Z the next day.
         Assert.Equal(
             new[]
             {
-                new BookableInterval(Utc(13, 14), 1),
-                new BookableInterval(Utc(14, 15), 2),
+                new BookableInterval(Utc(13, 15), 1),
                 new BookableInterval(Utc(16, 21), 2),
                 new BookableInterval(
                     new UtcInterval(Instant(2, dayOffset: 1), Instant(6, dayOffset: 1)), 2),

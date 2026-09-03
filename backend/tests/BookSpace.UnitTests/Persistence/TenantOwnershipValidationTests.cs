@@ -1,5 +1,6 @@
 using BookSpace.Domain.Common;
 using BookSpace.Domain.Entities;
+using BookSpace.Domain.Enums;
 using BookSpace.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 
@@ -157,7 +158,7 @@ public class TenantOwnershipValidationTests
     }
 
     private static Resource NewResource(Guid orgId, Guid actorId) => new(
-        Guid.NewGuid(), orgId, "Conference Room A", "Room",
+        Guid.NewGuid(), orgId, "Conference Room A", ResourceType.Room,
         capacity: 4, timeZoneId: "UTC", requiresApproval: false,
         minDurationMinutes: null, maxDurationMinutes: null,
         description: null, createdByUserId: actorId, nowUtc: Now);

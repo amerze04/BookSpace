@@ -2,9 +2,17 @@ using BookSpace.Domain.Availability;
 
 namespace BookSpace.UnitTests.Availability;
 
-// The capacity sweep (WP-3 Phase 5 step 2): existing bookings consume *units*,
-// not time, so what comes back is intervals carrying what is left of Capacity
-// (decision D2 over docs/decisions/0005-capacity-semantics.md).
+// The capacity sweep: existing bookings consume *units*, not time, so what comes
+// back is intervals carrying what is left of Capacity (decision 0020 over
+// docs/decisions/0005-capacity-semantics.md).
+//
+// **Rewritten 2026-09-04**, when the sweep grew a requiredQuantity parameter.
+// Before that it returned the finest partition — cut wherever the remaining
+// figure changed — and the caller had to join the pieces. It now answers for a
+// stated quantity: a segment that cannot hold that many units is a wall, and
+// everything between two walls is one run carrying the floor of what is free
+// across it. That change is what made the minimum-duration filter honest; see
+// AvailabilityCalculator.
 //
 // All in plain UTC with no timezone anywhere — the sweep runs after the
 // conversion, and mixing the two in one test would hide which half failed.
@@ -17,6 +25,13 @@ public class CapacitySweepTests
 
     private static BookedQuantity Booked(int startHour, int endHour, int quantity) =>
         new(At(startHour, endHour), quantity);
+
+    private static IReadOnlyList<BookableInterval> Sweep(
+        UtcInterval[] open,
+        BookedQuantity[] bookings,
+        int capacity = 4,
+        int quantity = 1) =>
+        CapacitySweep.Subtract(open, bookings, capacity, quantity);
 
     private static void AssertBookable(
         (int StartHour, int EndHour, int RemainingCapacity)[] expected,
@@ -32,44 +47,67 @@ public class CapacitySweepTests
     [Fact]
     public void OpenTimeWithNoBookingsKeepsTheWholeCapacity()
     {
-        var bookable = CapacitySweep.Subtract(
-            new[] { At(9, 17) }, Array.Empty<BookedQuantity>(), capacity: 4);
-
-        AssertBookable([(9, 17, 4)], bookable);
+        AssertBookable([(9, 17, 4)], Sweep([At(9, 17)], []));
     }
 
     [Fact]
     public void NoOpenTimeIsNotMadeBookableByHavingCapacity()
     {
-        var bookable = CapacitySweep.Subtract(
-            Array.Empty<UtcInterval>(), Array.Empty<BookedQuantity>(), capacity: 4);
-
-        Assert.Empty(bookable);
+        Assert.Empty(Sweep([], []));
     }
 
     // ---- Partial consumption: the point of the capacity model ---------------
 
-    // A booking of one unit against a capacity of four does not close the slot.
-    // The time stays open with three units left, which a boolean free/busy model
-    // could not express.
+    // A booking of one unit against a capacity of four does not close the slot,
+    // and — since this caller wants only one unit — does not even break the span:
+    // the whole day is still bookable, with three units free at its tightest
+    // point. A boolean free/busy model could express neither half of that.
     [Fact]
-    public void ABookingConsumesUnitsRatherThanRemovingTime()
+    public void ABookingLeavesTheSpanIntactAndLowersTheFloor()
     {
-        var bookable = CapacitySweep.Subtract(
-            new[] { At(9, 17) }, new[] { Booked(12, 13, 1) }, capacity: 4);
+        AssertBookable([(9, 17, 3)], Sweep([At(9, 17)], [Booked(12, 13, 1)]));
+    }
 
-        AssertBookable([(9, 12, 4), (12, 13, 3), (13, 17, 4)], bookable);
+    // The same data, asked for four units: now the booked hour *is* a wall,
+    // because four units are not free across it. This pair is the whole reason
+    // the quantity parameter exists — one list of intervals cannot answer both.
+    [Fact]
+    public void TheSameBookingIsAWallForACallerWhoNeedsEveryUnit()
+    {
+        AssertBookable(
+            [(9, 12, 4), (13, 17, 4)],
+            Sweep([At(9, 17)], [Booked(12, 13, 1)], quantity: 4));
     }
 
     [Fact]
     public void ConcurrentBookingsSumAgainstCapacity()
     {
-        var bookable = CapacitySweep.Subtract(
-            new[] { At(9, 17) },
-            new[] { Booked(12, 15, 1), Booked(13, 14, 2) },
-            capacity: 4);
+        // 12:00-15:00 holds one unit and 13:00-14:00 holds two more, so the
+        // tightest hour has one free — and that is the floor for the whole day.
+        AssertBookable(
+            [(9, 17, 1)],
+            Sweep([At(9, 17)], [Booked(12, 15, 1), Booked(13, 14, 2)]));
+    }
 
-        AssertBookable([(9, 12, 4), (12, 13, 3), (13, 14, 1), (14, 15, 3), (15, 17, 4)], bookable);
+    // Raising the quantity walls off progressively more of the same day. Read
+    // downwards, this is the shape of what the resource can actually take.
+    [Theory]
+    [InlineData(1, "9-17:1")]
+    [InlineData(2, "9-13:3|14-17:3")]
+    [InlineData(3, "9-13:3|14-17:3")]
+    [InlineData(4, "9-12:4|15-17:4")]
+    [InlineData(5, "")]
+    public void TheAnswerNarrowsAsTheRequestedQuantityRises(int quantity, string expected)
+    {
+        var bookable = Sweep(
+            [At(9, 17)], [Booked(12, 15, 1), Booked(13, 14, 2)], quantity: quantity);
+
+        Assert.Equal(
+            expected,
+            string.Join(
+                "|",
+                bookable.Select(i =>
+                    $"{i.Interval.StartUtc.Hour}-{i.Interval.EndUtc.Hour}:{i.RemainingCapacity}")));
     }
 
     // ---- Full consumption: only now does time disappear --------------------
@@ -77,19 +115,15 @@ public class CapacitySweepTests
     [Fact]
     public void TimeDisappearsOnlyOnceTheUnitsRunOut()
     {
-        var bookable = CapacitySweep.Subtract(
-            new[] { At(9, 17) }, new[] { Booked(12, 13, 4) }, capacity: 4);
-
-        AssertBookable([(9, 12, 4), (13, 17, 4)], bookable);
+        AssertBookable(
+            [(9, 12, 4), (13, 17, 4)],
+            Sweep([At(9, 17)], [Booked(12, 13, 4)]));
     }
 
     [Fact]
     public void AFullyBookedDayIsNotBookableAtAll()
     {
-        var bookable = CapacitySweep.Subtract(
-            new[] { At(9, 17) }, new[] { Booked(9, 17, 4) }, capacity: 4);
-
-        Assert.Empty(bookable);
+        Assert.Empty(Sweep([At(9, 17)], [Booked(9, 17, 4)]));
     }
 
     // dbo.CreateBooking's range lock is what prevents this (CLAUDE.md §4.1), so
@@ -99,36 +133,30 @@ public class CapacitySweepTests
     [Fact]
     public void AnOverbookedSpanIsTreatedAsFullRatherThanTrusted()
     {
-        var bookable = CapacitySweep.Subtract(
-            new[] { At(9, 17) },
-            new[] { Booked(12, 13, 3), Booked(12, 13, 3) },
-            capacity: 4);
-
-        AssertBookable([(9, 12, 4), (13, 17, 4)], bookable);
+        AssertBookable(
+            [(9, 12, 4), (13, 17, 4)],
+            Sweep([At(9, 17)], [Booked(12, 13, 3), Booked(12, 13, 3)]));
     }
 
     // ---- Rejoining, and where it stops -------------------------------------
 
-    // Two back-to-back bookings of the same size are one boundary the client has
-    // no reason to see: the figure never changes across it.
+    // Two back-to-back bookings are two boundaries this caller has no reason to
+    // see: one unit is free across both, which is all they asked about.
     [Fact]
-    public void AdjacentSpansWithTheSameRemainingCapacityAreRejoined()
+    public void AdjacentSpansThatCanBothHoldTheBookingAreRejoined()
     {
-        var bookable = CapacitySweep.Subtract(
-            new[] { At(9, 17) },
-            new[] { Booked(12, 13, 1), Booked(13, 14, 1) },
-            capacity: 4);
-
-        AssertBookable([(9, 12, 4), (12, 14, 3), (14, 17, 4)], bookable);
+        AssertBookable(
+            [(9, 17, 3)],
+            Sweep([At(9, 17)], [Booked(12, 13, 1), Booked(13, 14, 1)]));
     }
 
-    // ...but never across a fully-booked gap, which is why the zero-capacity
-    // spans are dropped after rejoining rather than before.
+    // Never across a wall, which is why segments that cannot hold the booking are
+    // dropped *before* the rejoin rather than after — the other order would
+    // report one continuous span straight through a fully-booked hour.
     [Fact]
     public void SpansAreNotRejoinedAcrossAFullyBookedGap()
     {
-        var bookable = CapacitySweep.Subtract(
-            new[] { At(9, 17) }, new[] { Booked(12, 13, 4) }, capacity: 4);
+        var bookable = Sweep([At(9, 17)], [Booked(12, 13, 4)]);
 
         AssertBookable([(9, 12, 4), (13, 17, 4)], bookable);
         Assert.Equal(2, bookable.Count);
@@ -136,14 +164,24 @@ public class CapacitySweepTests
 
     // ...and never across a closing time or a blackout. Two open intervals with
     // identical remaining capacity stay two intervals, because the gap between
-    // them is not bookable.
+    // them is not bookable at any quantity.
     [Fact]
     public void SpansAreNotRejoinedAcrossAGapBetweenOpenIntervals()
     {
-        var bookable = CapacitySweep.Subtract(
-            new[] { At(9, 12), At(13, 17) }, Array.Empty<BookedQuantity>(), capacity: 4);
+        AssertBookable([(9, 12, 4), (13, 17, 4)], Sweep([At(9, 12), At(13, 17)], []));
+    }
 
-        AssertBookable([(9, 12, 4), (13, 17, 4)], bookable);
+    // The floor is the *minimum* across a rejoined run — not an average, and not
+    // the best part of it. That is what makes the number safe to book against for
+    // any sub-span of the interval.
+    [Fact]
+    public void TheReportedCapacityIsTheFloorAcrossTheWholeRun()
+    {
+        var interval = Assert.Single(Sweep(
+            [At(9, 17)], [Booked(10, 11, 1), Booked(12, 13, 3), Booked(14, 15, 2)]));
+
+        Assert.Equal(At(9, 17), interval.Interval);
+        Assert.Equal(1, interval.RemainingCapacity);
     }
 
     // ---- Bookings outside the open time ------------------------------------
@@ -151,10 +189,7 @@ public class CapacitySweepTests
     [Fact]
     public void ABookingOutsideEveryOpenIntervalChangesNothing()
     {
-        var bookable = CapacitySweep.Subtract(
-            new[] { At(9, 12) }, new[] { Booked(14, 15, 4) }, capacity: 4);
-
-        AssertBookable([(9, 12, 4)], bookable);
+        AssertBookable([(9, 12, 4)], Sweep([At(9, 12)], [Booked(14, 15, 4)]));
     }
 
     // A booking that began before the range still holds its units inside it —
@@ -162,19 +197,20 @@ public class CapacitySweepTests
     [Fact]
     public void ABookingStartingBeforeTheOpenTimeStillHoldsItsUnits()
     {
-        var bookable = CapacitySweep.Subtract(
-            new[] { At(9, 17) }, new[] { Booked(7, 11, 3) }, capacity: 4);
+        AssertBookable([(9, 17, 1)], Sweep([At(9, 17)], [Booked(7, 11, 3)]));
+    }
 
-        AssertBookable([(9, 11, 1), (11, 17, 4)], bookable);
+    // The same booking, asked for two units: the part it overlaps becomes a wall.
+    [Fact]
+    public void ABookingStartingBeforeTheOpenTimeCanWallOffItsStart()
+    {
+        AssertBookable([(11, 17, 4)], Sweep([At(9, 17)], [Booked(7, 11, 3)], quantity: 2));
     }
 
     [Fact]
     public void ABookingSpanningTheWholeOpenTimeIsHeldThroughout()
     {
-        var bookable = CapacitySweep.Subtract(
-            new[] { At(9, 17) }, new[] { Booked(7, 19, 1) }, capacity: 4);
-
-        AssertBookable([(9, 17, 3)], bookable);
+        AssertBookable([(9, 17, 3)], Sweep([At(9, 17)], [Booked(7, 19, 1)]));
     }
 
     // Intervals are half-open, so a booking ending exactly when the resource
@@ -183,12 +219,9 @@ public class CapacitySweepTests
     [Fact]
     public void ABookingTouchingTheOpenTimeAtEitherEndHoldsNothingInsideIt()
     {
-        var bookable = CapacitySweep.Subtract(
-            new[] { At(9, 17) },
-            new[] { Booked(7, 9, 4), Booked(17, 19, 4) },
-            capacity: 4);
-
-        AssertBookable([(9, 17, 4)], bookable);
+        AssertBookable(
+            [(9, 17, 4)],
+            Sweep([At(9, 17)], [Booked(7, 9, 4), Booked(17, 19, 4)]));
     }
 
     // ---- Several open intervals in one pass ---------------------------------
@@ -198,12 +231,11 @@ public class CapacitySweepTests
     [Fact]
     public void EachOpenIntervalIsMeasuredAgainstTheBookingsThatOverlapIt()
     {
-        var bookable = CapacitySweep.Subtract(
-            new[] { At(9, 12), At(14, 18) },
-            new[] { Booked(10, 11, 1), Booked(15, 20, 2) },
-            capacity: 4);
-
-        AssertBookable([(9, 10, 4), (10, 11, 3), (11, 12, 4), (14, 15, 4), (15, 18, 2)], bookable);
+        AssertBookable(
+            [(9, 12, 3), (14, 18, 2)],
+            Sweep(
+                [At(9, 12), At(14, 18)],
+                [Booked(10, 11, 1), Booked(15, 20, 2)]));
     }
 
     // ---- Guards -------------------------------------------------------------
@@ -211,8 +243,25 @@ public class CapacitySweepTests
     [Fact]
     public void ACapacityOfZeroOrLessIsRefused()
     {
-        Assert.Throws<ArgumentOutOfRangeException>(() => CapacitySweep.Subtract(
-            new[] { At(9, 17) }, Array.Empty<BookedQuantity>(), capacity: 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => Sweep([At(9, 17)], [], capacity: 0));
+    }
+
+    // CK_Bookings_Quantity: a booking holds at least one unit, so asking what is
+    // free for zero of them is meaningless rather than empty.
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void ARequiredQuantityOfZeroOrLessIsRefused(int quantity)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => Sweep([At(9, 17)], [], quantity: quantity));
+    }
+
+    // Asking for more units than the resource has is not an error — it is simply
+    // never satisfiable, which is a true answer rather than a malformed request.
+    [Fact]
+    public void ARequiredQuantityAboveCapacityYieldsNothing()
+    {
+        Assert.Empty(Sweep([At(9, 17)], [], capacity: 4, quantity: 5));
     }
 
     [Fact]

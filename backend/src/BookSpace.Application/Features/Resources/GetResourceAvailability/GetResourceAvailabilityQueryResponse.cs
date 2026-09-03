@@ -19,10 +19,15 @@ namespace BookSpace.Application.Features.Resources.GetResourceAvailability;
 // A slot picker does want them, but they are already on GET /resources/{id}, and
 // the work package asks this endpoint for bookable slots. Adding them would be
 // inventing response fields (CLAUDE.md §11).
+// Quantity is echoed for the same reason as the dates: it changes the answer.
+// The same range on the same resource yields different — and generally fewer,
+// shorter — intervals for a larger quantity, so a client holding a response
+// needs to know which question it answers.
 public sealed record GetResourceAvailabilityQueryResponse(
     Guid ResourceId,
     string TimeZoneId,
     DateOnly FromLocalDate,
     DateOnly ToLocalDate,
+    int Quantity,
     bool IsArchived,
     IReadOnlyCollection<BookableIntervalDetail> Intervals);

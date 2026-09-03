@@ -169,6 +169,19 @@ CREATE TABLE Resources (
         AND (MaxDurationMinutes IS NULL OR MaxDurationMinutes > 0)
         AND (MinDurationMinutes IS NULL OR MaxDurationMinutes IS NULL
              OR MaxDurationMinutes >= MinDurationMinutes)
+    ),
+    -- FR-3.1's type, a closed set since 2026-09-04 (migration
+    -- AddResourceTypeDomain). It was a free NVARCHAR(50) until then, which made
+    -- it the only user-facing categorical column here with no domain — "Room",
+    -- "room" and "Meeting Room" were three distinct types. Stored as the enum's
+    -- name, never as an int, per CLAUDE.md §5; the column type is unchanged.
+    --
+    -- It constrains nothing else, and Capacity in particular. Whether a resource
+    -- is exclusive or pooled is what Capacity already says (decision 0005), and
+    -- the two axes do not line up — a pool of identical huddle rooms is a
+    -- legitimately pooled Room. Owner's call, 2026-09-04.
+    CONSTRAINT CK_Resources_ResourceType CHECK (
+        ResourceType IN ('Room', 'Equipment', 'Vehicle', 'LabSlot', 'Other')
     )
 );
 

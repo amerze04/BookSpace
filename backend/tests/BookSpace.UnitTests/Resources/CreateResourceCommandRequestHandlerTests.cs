@@ -2,6 +2,7 @@ using BookSpace.Application.Common.Errors;
 using BookSpace.Application.Features.Resources.CreateResource;
 using BookSpace.UnitTests.Persistence;
 using BookSpace.UnitTests.Security;
+using BookSpace.Domain.Enums;
 
 namespace BookSpace.UnitTests.Resources;
 
@@ -18,7 +19,7 @@ public class CreateResourceCommandRequestHandlerTests
     private static CreateResourceCommandRequest ValidCommand(
         bool requiresApproval = false,
         string timeZoneId = KnownZone) =>
-        new("Conference Room B", "Second floor", "Room", 6, timeZoneId, requiresApproval, 30, 240);
+        new("Conference Room B", "Second floor", ResourceType.Room, 6, timeZoneId, requiresApproval, 30, 240);
 
     private static CreateResourceCommandRequestHandler Handler(
         FakeResourceRepository repository,
@@ -43,7 +44,7 @@ public class CreateResourceCommandRequestHandlerTests
         Assert.Equal(created.Id, response.Id);
         Assert.Equal("Conference Room B", response.Name);
         Assert.Equal("Second floor", response.Description);
-        Assert.Equal("Room", response.ResourceType);
+        Assert.Equal(ResourceType.Room, response.ResourceType);
         Assert.Equal(6, response.Capacity);
         Assert.Equal(KnownZone, response.TimeZoneId);
         Assert.Equal(30, response.MinDurationMinutes);

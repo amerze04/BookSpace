@@ -1,3 +1,5 @@
+using BookSpace.Domain.Enums;
+
 namespace BookSpace.Application.Features.Resources.UpdateResource;
 
 // The 200 body of PUT /resources/{id}: the updated resource's fields, plus the
@@ -21,7 +23,7 @@ public sealed record UpdateResourceCommandResponse(
     Guid Id,
     string Name,
     string? Description,
-    string ResourceType,
+    ResourceType ResourceType,
     int Capacity,
     string TimeZoneId,
     bool RequiresApproval,

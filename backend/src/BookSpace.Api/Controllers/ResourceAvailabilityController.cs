@@ -1,6 +1,7 @@
 using BookSpace.Api.Authorization;
 using BookSpace.Application.Features.Resources.GetResourceAvailability;
 using BookSpace.Application.Messaging;
+using BookSpace.Domain.Availability;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -38,7 +39,15 @@ public sealed class ResourceAvailabilityController : ControllerBase
     // ("from=yesterday") never reaches the validator — model binding rejects it
     // as a 400 first, the same way a malformed Guid in the route is rejected by
     // its own constraint.
-    public sealed record GetResourceAvailabilityRequest(DateOnly From, DateOnly To);
+    //
+    // `quantity` defaults to 1 and is repeated here rather than inherited from
+    // the query, so an omitted parameter binds to the documented default instead
+    // of 0 — which the validator would then refuse, turning an omission into an
+    // error.
+    public sealed record GetResourceAvailabilityRequest(
+        DateOnly From,
+        DateOnly To,
+        int Quantity = AvailabilityCalculator.DefaultRequiredQuantity);
 
     // 404 covers both "no such resource" and "another tenant's resource" — the
     // handler cannot tell them apart, and must not (AC-4). An *archived*
@@ -56,7 +65,7 @@ public sealed class ResourceAvailabilityController : ControllerBase
         CancellationToken cancellationToken)
     {
         var result = await _sender.Send(
-            new GetResourceAvailabilityQueryRequest(resourceId, request.From, request.To),
+            new GetResourceAvailabilityQueryRequest(resourceId, request.From, request.To, request.Quantity),
             cancellationToken);
 
         return Ok(result);

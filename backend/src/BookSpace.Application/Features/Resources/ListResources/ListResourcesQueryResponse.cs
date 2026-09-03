@@ -1,3 +1,5 @@
+using BookSpace.Domain.Enums;
+
 namespace BookSpace.Application.Features.Resources.ListResources;
 
 // One row of GET /resources. A summary, not the whole aggregate: description,
@@ -11,7 +13,7 @@ namespace BookSpace.Application.Features.Resources.ListResources;
 public sealed record ListResourcesQueryResponse(
     Guid Id,
     string Name,
-    string ResourceType,
+    ResourceType ResourceType,
     int Capacity,
     string TimeZoneId,
     bool RequiresApproval,

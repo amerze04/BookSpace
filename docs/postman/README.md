@@ -244,16 +244,51 @@ cannot show:
 | 16 | `?from=2026-03-08&to=2026-03-08` | One interval lasting **23 hours** — the clocks went forward. |
 | 17 | `?from=2026-11-01&to=2026-11-01` | One interval lasting **25 hours** — the clocks went back. Decision [`0021`](../decisions/0021-daylight-saving-for-availability-ranges.md). |
 
+And the `quantity` parameter, added 2026-09-04
+([`0020`](../decisions/0020-bookable-interval-semantics.md)'s amendment). Back on
+the first resource, which has capacity 4:
+
+| # | Request | What it should show |
+|---|---|---|
+| 18 | `?from=…&to=…&quantity=4` on an unbooked day | Identical to `quantity=1`, and `quantity: 4` echoed in the response. With nothing booked, every unit is free, so the answer cannot differ. |
+| 19 | `&quantity=5` | `intervals: []`. Asking for more units than the resource has is a true "nothing", **not** a 400 — the validator cannot see the capacity, and an empty list is the honest answer. |
+| 20 | `&quantity=0` | **400** `ValidationFailed`, `Quantity must be greater than zero.` A booking holds at least one unit (`CK_Bookings_Quantity`). |
+| 21 | Omit `quantity` entirely | `quantity: 1` in the response. The default, not zero. |
+
 ### What this walkthrough cannot show
 
-**`remainingCapacity` below the resource's full capacity.** Every interval above
-comes back with all units free, because consuming capacity needs a booking and
-there is no booking write path until WP-4 (§4.1, decision `0017`). The partial
-cases — one unit of four taken leaving three, concurrent bookings summing, and
-time disappearing only once the units run out — are covered by
-`AvailabilityEndpointTests`, which inserts bookings by raw SQL. Worth repeating
-from a client once WP-4 lands, together with the blackout cascade for the same
-reason.
+**`remainingCapacity` below the resource's full capacity — and therefore the
+whole point of `quantity`.** Every interval above comes back with all units
+free, because consuming capacity needs a booking and there is no booking write
+path until WP-4 (§4.1, decision `0017`). So steps 18–21 exercise the parameter's
+plumbing but not its purpose: on a resource with a partially-consumed capacity,
+`quantity=1` returns one long interval carrying the floor while `quantity=4`
+walls off the booked hours and returns several. That pair — the reason the
+parameter exists at all — is covered only by `AvailabilityEndpointTests`, which
+inserts bookings by raw SQL.
+
+Two further consequences of the same gap: **the seeded resources are all
+capacity 1** since the 2026-09-04 correction (see
+[`0005`](../decisions/0005-capacity-semantics.md)'s amendment), so nothing in the
+demo data is pooled at all; and the blackout cascade is still unreachable from a
+client. All three are worth repeating from Postman once WP-4 lands.
+
+---
+
+## 08 The resource type filter (2026-09-04)
+
+`ResourceType` became an enum with a `CHECK` and a filter on the same day. Four
+quick requests as `admin@acme.test`, no setup needed — the seeded tenant has one
+`Room` and one `Equipment`:
+
+| # | Request | What it should show |
+|---|---|---|
+| 1 | `GET /resources?type=Room` | One item, `Conference Room A`, `totalCount: 1`. The count comes from the filtered set, not the tenant. |
+| 2 | `GET /resources?type=room` | The same. Query-string enum binding is case-insensitive — separate machinery from the JSON body converter, which is *also* case-insensitive. |
+| 3 | `GET /resources?type=Vehicle` | `items: []`, `totalCount: 0`. A legal type nothing has. |
+| 4 | `GET /resources?type=Spaceship` | **400**, from model binding — no `reasonCode`, like any unparseable query value. |
+| 5 | `POST /resources` with `"resourceType": "MeetingRoom"` | **400**, and again with no `reasonCode`: `System.Text.Json` refuses the value before the validator ever runs. This is the one request shape in the API whose 400 has a different provenance from every rule failure, and it is worth seeing once. |
+| 6 | `POST /resources` with `"resourceType": "room"` | **201**, and the response says `"resourceType": "Room"`. Casing is not part of the contract: the enum is stored as its own name whatever the client sent, so there is nothing for strictness to protect — unlike `timeZoneId`, which is kept canonical deliberately (§4.3). |
 
 ---
 

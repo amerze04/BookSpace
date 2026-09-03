@@ -1,5 +1,5 @@
 using BookSpace.Domain.Common;
-
+using BookSpace.Domain.Enums;
 namespace BookSpace.Domain.Entities;
 
 // FR-3.1 type/capacity/timezone; FR-3.5 archive preserves history.
@@ -14,7 +14,7 @@ public class Resource : IAuditable, ITenantOwned
     public Guid OrgId { get; private set; }
     public string Name { get; private set; }
     public string? Description { get; private set; }
-    public string ResourceType { get; private set; }
+    public ResourceType ResourceType { get; private set; }
     public int Capacity { get; private set; }
     public string TimeZoneId { get; private set; }
     public bool RequiresApproval { get; private set; }
@@ -38,7 +38,6 @@ public class Resource : IAuditable, ITenantOwned
     private Resource()
     {
         Name = string.Empty;
-        ResourceType = string.Empty;
         TimeZoneId = string.Empty;
     }
 
@@ -46,7 +45,7 @@ public class Resource : IAuditable, ITenantOwned
         Guid id,
         Guid orgId,
         string name,
-        string resourceType,
+        ResourceType resourceType,
         int capacity,
         string timeZoneId,
         bool requiresApproval,
@@ -100,7 +99,7 @@ public class Resource : IAuditable, ITenantOwned
     public void UpdateDetails(
         string name,
         string? description,
-        string resourceType,
+        ResourceType resourceType,
         Guid actorUserId,
         DateTime nowUtc)
     {
@@ -155,6 +154,45 @@ public class Resource : IAuditable, ITenantOwned
         MinDurationMinutes = minDurationMinutes;
         MaxDurationMinutes = maxDurationMinutes;
         Touch(actorUserId, nowUtc);
+    }
+
+    // ---- The duration limits, as questions (2026-09-04) -------------------
+    //
+    // Two questions, not one, and keeping them apart is the point. Until now
+    // MinDurationMinutes was read in exactly one place — the availability query's
+    // filter — and MaxDurationMinutes was read *nowhere at all*: stored,
+    // constrained by CK_Resources_DurationLimits, echoed back in responses, and
+    // never enforced. WP-4 has to enforce both on a booking, at which point the
+    // minimum would have existed in two implementations.
+    //
+    // So both questions live here, on the aggregate that owns the numbers, and
+    // both callers ask rather than compare. Same reasoning that put the interval
+    // algebra in this project rather than in a handler.
+
+    // Read side: could *any* legal booking fit inside a span this long? Only the
+    // minimum bears on it — a span longer than MaxDurationMinutes is not a
+    // problem, because a booker takes a piece of it rather than the whole thing.
+    // That asymmetry is exactly why this is a separate method from the one below
+    // and not a reuse of it.
+    public bool CanFitABooking(TimeSpan span) =>
+        MinDurationMinutes is not { } minimum || span >= TimeSpan.FromMinutes(minimum);
+
+    // Write side: is a booking of exactly this length allowed? Both bounds apply.
+    // No caller yet — WP-4's booking creation is the first, and it exists now so
+    // that when it arrives there is nothing to reimplement.
+    public bool AllowsBookingDuration(TimeSpan duration)
+    {
+        if (duration <= TimeSpan.Zero)
+        {
+            return false;
+        }
+
+        if (MinDurationMinutes is { } minimum && duration < TimeSpan.FromMinutes(minimum))
+        {
+            return false;
+        }
+
+        return MaxDurationMinutes is not { } maximum || duration <= TimeSpan.FromMinutes(maximum);
     }
 
     // FR-3.3. Setting this true with an empty approver list is refused by the
@@ -265,10 +303,15 @@ public class Resource : IAuditable, ITenantOwned
             throw new ArgumentException("Name is required.", nameof(name));
     }
 
-    private static void ValidateResourceType(string resourceType)
+    // A closed set now, so "is it blank" is gone and the failure mode is
+    // different: C# lets any int be cast to an enum, so `(ResourceType)99` would
+    // otherwise be stored and then fail CK_Resources_ResourceType at the
+    // database, as a 500 rather than a message. The Application validator
+    // refuses an unknown value first (IsInEnum); this is the floor under it.
+    private static void ValidateResourceType(ResourceType resourceType)
     {
-        if (string.IsNullOrWhiteSpace(resourceType))
-            throw new ArgumentException("ResourceType is required.", nameof(resourceType));
+        if (!Enum.IsDefined(resourceType))
+            throw new ArgumentOutOfRangeException(nameof(resourceType), "ResourceType is not a known value.");
     }
 
     private static void ValidateTimeZoneId(string timeZoneId)

@@ -1,3 +1,5 @@
+using BookSpace.Domain.Enums;
+
 namespace BookSpace.Application.Features.Resources.CreateResource;
 
 // The 201 body of POST /resources.
@@ -15,7 +17,7 @@ public sealed record CreateResourceCommandResponse(
     Guid Id,
     string Name,
     string? Description,
-    string ResourceType,
+    ResourceType ResourceType,
     int Capacity,
     string TimeZoneId,
     bool RequiresApproval,

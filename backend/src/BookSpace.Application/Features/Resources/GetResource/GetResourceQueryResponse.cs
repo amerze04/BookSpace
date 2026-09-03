@@ -1,3 +1,5 @@
+using BookSpace.Domain.Enums;
+
 namespace BookSpace.Application.Features.Resources.GetResource;
 
 // GET /resources/{id}. The full editable representation of a resource, which is
@@ -30,7 +32,7 @@ public sealed record GetResourceQueryResponse(
     Guid Id,
     string Name,
     string? Description,
-    string ResourceType,
+    ResourceType ResourceType,
     int Capacity,
     string TimeZoneId,
     bool RequiresApproval,

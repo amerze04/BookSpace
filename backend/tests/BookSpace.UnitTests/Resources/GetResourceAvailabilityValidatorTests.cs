@@ -16,8 +16,9 @@ public class GetResourceAvailabilityValidatorTests
     private static GetResourceAvailabilityQueryRequest Query(
         DateOnly? from = null,
         DateOnly? to = null,
-        Guid? resourceId = null) =>
-        new(resourceId ?? Guid.NewGuid(), from ?? Monday, to ?? Monday.AddDays(6));
+        Guid? resourceId = null,
+        int quantity = 1) =>
+        new(resourceId ?? Guid.NewGuid(), from ?? Monday, to ?? Monday.AddDays(6), quantity);
 
     [Fact]
     public void AWeekIsValid()
@@ -103,5 +104,37 @@ public class GetResourceAvailabilityValidatorTests
         var result = _validator.Validate(Query(Monday, Monday.AddDays(-200)));
 
         Assert.DoesNotContain(result.Errors, e => e.ErrorMessage.Contains("90"));
+    }
+
+    // ---- Quantity (2026-09-04) ----
+
+    [Fact]
+    public void QuantityDefaultsToOne()
+    {
+        Assert.Equal(1, Query().Quantity);
+        Assert.True(_validator.Validate(Query()).IsValid);
+    }
+
+    // CK_Bookings_Quantity: a booking holds at least one unit, so asking what is
+    // free for zero of them is meaningless rather than empty.
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void AQuantityOfZeroOrLessIsRefused(int quantity)
+    {
+        var result = _validator.Validate(Query(quantity: quantity));
+
+        Assert.Contains(
+            result.Errors,
+            e => e.PropertyName == nameof(GetResourceAvailabilityQueryRequest.Quantity));
+    }
+
+    // Not capped here on purpose: the ceiling is the resource's Capacity, which a
+    // shape validator cannot see. Asking for more units than exist is answered
+    // with an empty list, which is true — see the handler tests.
+    [Fact]
+    public void ALargeQuantityIsNotARequestShapeError()
+    {
+        Assert.True(_validator.Validate(Query(quantity: 1_000)).IsValid);
     }
 }
