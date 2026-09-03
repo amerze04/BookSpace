@@ -266,6 +266,7 @@ public class ResourceAcceptanceTests
     [InlineData("POST", "/resources/{id}/archive")]
     [InlineData("PUT", "/resources/{id}/availability-windows")]
     [InlineData("PUT", "/resources/{id}/approvers")]
+    [InlineData("GET", "/resources/{id}/availability?from=2026-09-07&to=2026-09-07")]
     public async Task EveryRouteTakingAnId_TreatsAnotherTenantsRealIdAsNotFound(
         string method,
         string routeTemplate)

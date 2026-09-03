@@ -75,16 +75,50 @@ internal sealed class FakeResourceRepository : IResourceRepository
 internal sealed class FakeTimeZoneCatalog : ITimeZoneCatalog
 {
     private readonly HashSet<string> _known;
+    private readonly TimeSpan _offset;
 
-    public FakeTimeZoneCatalog(params string[] knownIds) =>
+    public FakeTimeZoneCatalog(params string[] knownIds)
+        : this(TimeSpan.Zero, knownIds)
+    {
+    }
+
+    public FakeTimeZoneCatalog(TimeSpan offset, params string[] knownIds)
+    {
+        _offset = offset;
         _known = new HashSet<string>(knownIds, StringComparer.Ordinal);
+    }
 
     public bool IsKnownIanaId(string timeZoneId) => _known.Contains(timeZoneId);
 
-    // Read side: the write handlers only validate an id, they never resolve one.
-    // Phase 5's availability handler is the first caller.
+    // Serves a fixed-offset zone, so a handler test states its own offset instead
+    // of depending on the machine's tzdata. The real conversion rules — the two
+    // DST cases — are covered by SystemResourceTimeZoneTests, which is the only
+    // place a real zone proves anything.
+    //
+    // Unknown ids throw TimeZoneNotFoundException, matching the real
+    // implementation: a stored id that no longer resolves is a 500, not a
+    // client error (see ITimeZoneCatalog).
     public IResourceTimeZone GetResourceTimeZone(string timeZoneId) =>
-        throw new NotSupportedException();
+        _known.Contains(timeZoneId)
+            ? new FixedOffsetResourceTimeZone(_offset)
+            : throw new TimeZoneNotFoundException($"Unknown time zone '{timeZoneId}'.");
+}
+
+// A zone with no transitions. Deliberately not in the Availability test folder's
+// copy: that one exercises the expansion, this one is arrangement for handler
+// tests, and sharing it would couple two unrelated files.
+internal sealed class FixedOffsetResourceTimeZone : IResourceTimeZone
+{
+    private readonly TimeSpan _offset;
+
+    public FixedOffsetResourceTimeZone(TimeSpan offset) => _offset = offset;
+
+    public DateTime ToUtcEarliest(DateTime resourceLocal) => ToUtc(resourceLocal);
+
+    public DateTime ToUtcLatest(DateTime resourceLocal) => ToUtc(resourceLocal);
+
+    private DateTime ToUtc(DateTime resourceLocal) =>
+        DateTime.SpecifyKind(resourceLocal - _offset, DateTimeKind.Utc);
 }
 
 // No FixedCurrentTenant here on purpose: Persistence/FixedCurrentTenant.cs

@@ -33,6 +33,28 @@ public static class AvailabilityWindowExpansion
     // instant, so IntervalAlgebra.Merge joins them with no special case.
     public static readonly TimeOnly ClosesAtEndOfDay = new(23, 59, 59);
 
+    // The instants a range of resource-local dates covers: from midnight opening
+    // the first date to midnight closing the last. Every interval ExpandToUtc can
+    // produce falls inside it, which is the point — a caller that has to fetch
+    // blackouts and bookings from a database needs the same bounds the expansion
+    // uses, and computing them twice is how the two would come to disagree.
+    //
+    // Earliest for the start and latest for the end, so a range that contains a
+    // clocks-back day is the 25 hours it really is (decision D3, and see
+    // IResourceTimeZone).
+    public static UtcInterval LocalDateRangeToUtc(
+        DateOnly fromLocalDate,
+        DateOnly toLocalDate,
+        IResourceTimeZone zone)
+    {
+        ArgumentNullException.ThrowIfNull(zone);
+        EnsureRangeIsNotInverted(fromLocalDate, toLocalDate);
+
+        return new UtcInterval(
+            zone.ToUtcEarliest(fromLocalDate.ToDateTime(TimeOnly.MinValue)),
+            zone.ToUtcLatest(toLocalDate.AddDays(1).ToDateTime(TimeOnly.MinValue)));
+    }
+
     public static IReadOnlyList<UtcInterval> ExpandToUtc(
         IEnumerable<AvailabilityWindow> windows,
         DateOnly fromLocalDate,
@@ -41,13 +63,7 @@ public static class AvailabilityWindowExpansion
     {
         ArgumentNullException.ThrowIfNull(windows);
         ArgumentNullException.ThrowIfNull(zone);
-
-        if (toLocalDate < fromLocalDate)
-        {
-            throw new ArgumentException(
-                "toLocalDate must not be earlier than fromLocalDate.",
-                nameof(toLocalDate));
-        }
+        EnsureRangeIsNotInverted(fromLocalDate, toLocalDate);
 
         // Grouped once rather than filtered per date: a 90-day range would
         // otherwise re-scan the whole schedule 90 times. The range cap itself is
@@ -90,5 +106,18 @@ public static class AvailabilityWindowExpansion
         }
 
         return IntervalAlgebra.Merge(expanded);
+    }
+
+    // A single date is a legal range; only an inverted one is not. How *long* a
+    // range may be is a request-shape rule and belongs to the endpoint's
+    // validator, which can report it as a field error.
+    private static void EnsureRangeIsNotInverted(DateOnly fromLocalDate, DateOnly toLocalDate)
+    {
+        if (toLocalDate < fromLocalDate)
+        {
+            throw new ArgumentException(
+                "toLocalDate must not be earlier than fromLocalDate.",
+                nameof(toLocalDate));
+        }
     }
 }

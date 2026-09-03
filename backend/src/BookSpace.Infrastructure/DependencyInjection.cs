@@ -50,6 +50,7 @@ public static class DependencyInjection
         services.AddScoped<IResourceRepository, ResourceRepository>();
         services.AddScoped<IUserRepository, UserRepository>();
         services.AddScoped<IBlackoutPeriodRepository, BlackoutPeriodRepository>();
+        services.AddScoped<IAvailabilityRepository, AvailabilityRepository>();
 
         return services;
     }

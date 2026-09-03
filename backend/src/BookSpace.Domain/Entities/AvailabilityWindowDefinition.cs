@@ -8,9 +8,9 @@ namespace BookSpace.Domain.Entities;
 // Resource.ReplaceAvailabilityWindows takes a collection — and a collection of
 // four loose parameters is not a thing C# can express.
 //
-// Id is supplied by the caller rather than minted here, matching
-// AddAvailabilityWindow and the Resource constructor: nothing in the Domain
-// project generates identifiers, so a test can pin them.
+// Id is supplied by the caller rather than minted here, matching the Resource
+// constructor: nothing in the Domain project generates identifiers, so a test
+// can pin them.
 public readonly record struct AvailabilityWindowDefinition(
     Guid Id,
     DayOfWeek Weekday,

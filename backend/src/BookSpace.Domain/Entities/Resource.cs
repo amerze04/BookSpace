@@ -174,12 +174,6 @@ public class Resource : IAuditable, ITenantOwned
         Touch(actorUserId, nowUtc);
     }
 
-    public void RemoveApprover(Guid userId, Guid actorUserId, DateTime nowUtc)
-    {
-        if (_approverAssignments.RemoveAll(a => a.UserId == userId) > 0)
-            Touch(actorUserId, nowUtc);
-    }
-
     // FR-3.3, replace-the-set semantics, matching ReplaceAvailabilityWindows and
     // the PUT that drives it: the argument is the resource's entire approver list
     // afterwards.
@@ -203,33 +197,19 @@ public class Resource : IAuditable, ITenantOwned
         Touch(actorUserId, nowUtc);
     }
 
-    // WP-3 decision D1: this is the only creator of AvailabilityWindow — its
-    // constructor is internal to the Domain assembly — so a window can never
-    // carry an OrgId that disagrees with its resource's. Returns the created
-    // window so a caller can shape a response from it without re-reading.
-    public AvailabilityWindow AddAvailabilityWindow(
-        Guid availabilityWindowId,
-        DayOfWeek weekday,
-        TimeOnly opensAt,
-        TimeOnly closesAt,
-        Guid actorUserId,
-        DateTime nowUtc)
-    {
-        var window = new AvailabilityWindow(availabilityWindowId, OrgId, Id, weekday, opensAt, closesAt);
-        _availabilityWindows.Add(window);
-        Touch(actorUserId, nowUtc);
-        return window;
-    }
-
-    public void RemoveAvailabilityWindow(Guid availabilityWindowId, Guid actorUserId, DateTime nowUtc)
-    {
-        if (_availabilityWindows.RemoveAll(w => w.Id == availabilityWindowId) > 0)
-            Touch(actorUserId, nowUtc);
-    }
-
     // FR-3.2, replace-the-set semantics: the argument is the resource's entire
     // weekly schedule afterwards. An empty set is legal and means the resource
     // currently opens at no time at all.
+    //
+    // WP-3 decision D1: this is the only creator of AvailabilityWindow — its
+    // constructor is internal to the Domain assembly — so a window can never
+    // carry an OrgId that disagrees with its resource's. It is also the *only*
+    // way to change a schedule at all, since Phase 5 step 4 deleted the
+    // per-window AddAvailabilityWindow and RemoveAvailabilityWindow: the API has
+    // gone exclusively through this method since Phase 3, and the per-window add
+    // carried a live EF trap (a window added to an already-tracked resource is
+    // marked Modified, saves as a zero-row UPDATE, and surfaces as a 409 for what
+    // is plainly an insert — see IResourceRepository.AddAvailabilityWindows).
     //
     // Rebuilt rather than diffed, which is what AvailabilityWindow's deliberate
     // lack of audit columns already assumes — entries are bulk-replaced as a

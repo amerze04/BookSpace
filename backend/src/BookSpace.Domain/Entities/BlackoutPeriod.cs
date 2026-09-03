@@ -75,8 +75,9 @@ public class BlackoutPeriod : IAuditable, ITenantOwned
     // never acquired a production caller. Widening it rather than adding a second
     // mutator beside it is deliberate: a `Reschedule` that cannot express the
     // endpoint's payload would be dead code with a live-looking name, which is
-    // the trap CLAUDE.md §12 already records against
-    // Resource.AddAvailabilityWindow. One mutator, one audit stamp.
+    // the trap CLAUDE.md §12 recorded against Resource.AddAvailabilityWindow —
+    // deleted in WP-3 Phase 5 step 4 for that very reason. One mutator, one audit
+    // stamp.
     public void Revise(
         DateTime startsAtUtc,
         DateTime endsAtUtc,

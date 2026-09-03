@@ -58,9 +58,12 @@ public interface IResourceRepository
     // affects zero rows, and throws DbUpdateConcurrencyException — a 409 for
     // what is really an insert.
     //
-    // Resource.AddAvailabilityWindow has the same exposure and does not show it
-    // today only because its one caller (SeedData) adds windows to a resource
-    // that is itself Added, so the children cascade to Added with it.
+    // Resource.AddAvailabilityWindow had the same exposure and escaped it only
+    // because its one caller (SeedData) added windows to a resource that was
+    // itself Added, so the children cascaded with it. WP-3 Phase 5 step 4 deleted
+    // that method for exactly this reason: ReplaceAvailabilityWindows is now the
+    // only way to set a schedule, and this is the only place the insert has to be
+    // stated.
     //
     // Removals need no equivalent: clearing the collection leaves EF with
     // orphans it correctly marks Deleted, since it can see them leave.

@@ -843,7 +843,69 @@ the query and leaving it to WP-4's rejection — both contract changes, so both 
 owner's call, not this phase's. **Not urgent for step 3**: it only bites a
 resource that has a `MinDurationMinutes` *and* partially-consumed capacity.
 
-Still not done: everything with a database, and the endpoint (step 3).
+#### What steps 3 and 4 delivered — done 2026-09-03
+
+The endpoint, and the phase's cleanup and documentation. 634 unit + 263
+integration tests pass (13 net new unit tests — 16 added, 3 deleted with the
+methods they covered — and 37 new integration tests).
+
+**Step 3, the endpoint.** `GET /resources/{id}/availability?from=&to=` on
+`TenantMember`. Three queries and no more, whatever the range length: the
+resource with its schedule, the blackouts overlapping the span, the live bookings
+overlapping the span. Everything after that is in memory.
+
+- `IAvailabilityRepository` — its own port over three tables, following
+  `IBlackoutPeriodRepository`'s precedent that a port should match the question.
+  It differs in owning **no writes at all**, so there is no `SaveChangesAsync`.
+  Its two interval methods return **Domain value types** rather than DTOs,
+  because the consumer is the calculator rather than a response mapper — which
+  leaves the handler nothing to convert.
+- `AvailabilityWindowExpansion.LocalDateRangeToUtc` — the UTC bounds of the
+  requested local dates, so the rows fetched and the windows expanded cannot be
+  scoped to different spans. Added to the Domain rather than computed in the
+  handler for exactly that reason.
+- `AvailabilityQueryRules` — the 90-day cap and the inclusive day count. Nothing
+  here throws an `AppException`, which is the point: an over-long range is a
+  malformed request, so it is `ValidationFailed` 400 like an oversized
+  `pageSize`. **The phase added no reason code at all.**
+- The handler short-circuits an archived resource before the second and third
+  queries, since neither could change the answer. Asserted, because that is the
+  kind of optimisation that quietly stops holding.
+
+**Step 4, cleanup and docs.** The three dead methods deleted (see below);
+`SeedData` moved onto `ReplaceAvailabilityWindows`; D2 and D3 promoted to
+[`0020`](decisions/0020-bookable-interval-semantics.md) and
+[`0021`](decisions/0021-daylight-saving-for-availability-ranges.md); the midnight
+convention written up as [`0022`](decisions/0022-availability-window-midnight-convention.md).
+
+**Three calls worth flagging:**
+
+- **The midnight convention got its own numbered record rather than a paragraph
+  inside `0021`.** The plan said "write up the midnight convention" without
+  saying where. It is not a DST question — it is about `time(0)` being unable to
+  express `24:00:00` and `CK_AvailabilityWindows_Window` forbidding a wrap — so
+  folding it into the DST record would have filed it under the wrong cause.
+- **The AC-4 route table gained the availability route.** `ResourceAcceptanceTests
+  .EveryRouteTakingAnId_TreatsAnotherTenantsRealIdAsNotFound` is parameterised
+  over every resource route, so a new one that takes an id belongs in it or the
+  claim stops being true. *Pre-existing gap, deliberately not changed:* the
+  blackout routes are still absent from that table — they take a body and a
+  nested id, so `SendWriteAsync` would need work — and their cross-tenant
+  coverage lives in `BlackoutPeriodEndpointTests` instead.
+- **Most integration tests use a resource in the `UTC` zone.** The conversion
+  rules already have thorough unit tests against real tzdata, and a resource
+  whose local time *is* UTC keeps these assertions about what the endpoint
+  excludes rather than about arithmetic the test would have to redo to state its
+  own expectation. Two tests use `America/New_York` on fixed dates for the 23-
+  and 25-hour days, and one for the ordinary offset.
+
+**One trap the fixture avoided, worth recording.** The volume test's first
+assertion was `NotEmpty` plus a capacity range — which would have passed just as
+happily if the raw-SQL inserts had affected zero rows, the exact failure decision
+`0017` warns about. It now asserts the **exact** interval count (weekdays × 8,
+because four bookings cut an eight-hour day into eight alternating spans) and the
+presence of a reduced figure. Getting that count wrong on the first attempt is
+how the weakness was found.
 
 #### The inherited cleanup — now answerable
 
@@ -869,6 +931,20 @@ Mechanical, but it touches several test files.
 **`AddApprover` stays.** Approvers are an EF *owned* collection, which EF diffs
 as part of its owner, so it carries no equivalent trap — it is simply a method
 with one legitimate caller.
+
+**Done 2026-09-03.** 20 call sites, not a dozen. Most were arrangement and moved
+to a test-only `Resource.AddWindow` extension
+(`tests/BookSpace.UnitTests/ResourceScheduleArrangement.cs`) that appends *via*
+`ReplaceAvailabilityWindows` — so the append semantics exist nowhere in
+production, which is the whole point of deleting the method.
+`AvailabilityWindowTests` deliberately does not use it: that file is *about* the
+weekly schedule, so its arrangement goes through the real API too. Its four tests
+of the deleted method were **rewritten** rather than deleted — what they assert
+(properties kept, `OrgId` stamped from the owner, `ClosesAt > OpensAt`) belongs
+to `AvailabilityWindow` and still goes through the same constructor. Three tests
+in `ResourceTests` *were* deleted, being tests of the deleted methods themselves.
+Four stale comments elsewhere in the codebase named the removed method and were
+updated to say what replaced it.
 
 #### Risks
 

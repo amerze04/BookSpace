@@ -228,9 +228,9 @@ public class UpdateResourceCommandRequestHandlerTests
     public async Task Handle_ChangedTimeZone_ReportsTheReinterpretedWindowCount()
     {
         var resource = ExistingResource();
-        resource.AddAvailabilityWindow(
+        resource.AddWindow(
             Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), ActorId, CreatedUtc);
-        resource.AddAvailabilityWindow(
+        resource.AddWindow(
             Guid.NewGuid(), DayOfWeek.Tuesday, new TimeOnly(9, 0), new TimeOnly(17, 0), ActorId, CreatedUtc);
         var repository = new FakeResourceRepository(resource);
 

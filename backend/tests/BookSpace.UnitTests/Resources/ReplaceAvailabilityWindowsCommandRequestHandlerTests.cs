@@ -89,7 +89,7 @@ public class ReplaceAvailabilityWindowsCommandRequestHandlerTests
     public async Task Handle_WithAnEmptySet_ClearsTheSchedule()
     {
         var resource = ExistingResource();
-        resource.AddAvailabilityWindow(
+        resource.AddWindow(
             Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), ActorId, CreatedUtc);
         var repository = new FakeResourceRepository(resource);
 
@@ -161,7 +161,7 @@ public class ReplaceAvailabilityWindowsCommandRequestHandlerTests
     {
         var resource = ExistingResource();
         var originalId = Guid.NewGuid();
-        resource.AddAvailabilityWindow(
+        resource.AddWindow(
             originalId, DayOfWeek.Thursday, new TimeOnly(9, 0), new TimeOnly(17, 0), ActorId, CreatedUtc);
         var repository = new FakeResourceRepository(resource);
 

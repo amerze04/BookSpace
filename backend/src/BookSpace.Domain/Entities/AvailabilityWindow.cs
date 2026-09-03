@@ -11,7 +11,7 @@ namespace BookSpace.Domain.Entities;
 // the precedent of docs/decisions/0006-orgid-denormalization.md) so this table
 // sits inside all three CLAUDE.md §4.2 isolation mechanisms instead of being
 // reachable by ResourceId alone. The constructor is internal and Resource
-// .AddAvailabilityWindow is the only caller: a window whose OrgId disagrees
+// .ReplaceAvailabilityWindows is the only caller: a window whose OrgId disagrees
 // with its resource's is then unconstructible, rather than merely caught later
 // by the SaveChanges guard and the composite FK.
 public class AvailabilityWindow : ITenantOwned

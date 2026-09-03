@@ -99,7 +99,7 @@ public class TenantOwnershipValidationTests
         await using var context = CreateContext(Guid.NewGuid().ToString(), orgId);
 
         var resource = NewResource(orgId, actorId);
-        resource.AddAvailabilityWindow(
+        resource.AddWindow(
             Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), actorId, Now);
         context.Resources.Add(resource);
 
@@ -109,7 +109,7 @@ public class TenantOwnershipValidationTests
     }
 
     // A window's OrgId can only come from its resource
-    // (Resource.AddAvailabilityWindow is its only creator), so the way it goes
+    // (Resource.ReplaceAvailabilityWindows is its only creator), so the way it goes
     // wrong is a resource belonging to another tenant. Only the window is
     // tracked here — it has no navigation back to Resource — which keeps the
     // entity the guard reports deterministic.
@@ -122,7 +122,7 @@ public class TenantOwnershipValidationTests
         await using var context = CreateContext(Guid.NewGuid().ToString(), currentOrgId);
 
         var foreignResource = NewResource(otherOrgId, actorId);
-        var window = foreignResource.AddAvailabilityWindow(
+        var window = foreignResource.AddWindow(
             Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), actorId, Now);
         context.AvailabilityWindows.Add(window);
 
