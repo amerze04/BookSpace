@@ -2,6 +2,7 @@ using BookSpace.Application.Abstractions;
 using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.Resources.GetResource;
 using BookSpace.Application.Features.Resources.ListResources;
+using BookSpace.Domain.Availability;
 using BookSpace.Domain.Entities;
 
 namespace BookSpace.UnitTests.Resources;
@@ -79,6 +80,11 @@ internal sealed class FakeTimeZoneCatalog : ITimeZoneCatalog
         _known = new HashSet<string>(knownIds, StringComparer.Ordinal);
 
     public bool IsKnownIanaId(string timeZoneId) => _known.Contains(timeZoneId);
+
+    // Read side: the write handlers only validate an id, they never resolve one.
+    // Phase 5's availability handler is the first caller.
+    public IResourceTimeZone GetResourceTimeZone(string timeZoneId) =>
+        throw new NotSupportedException();
 }
 
 // No FixedCurrentTenant here on purpose: Persistence/FixedCurrentTenant.cs

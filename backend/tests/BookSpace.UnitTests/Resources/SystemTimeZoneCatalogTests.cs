@@ -55,4 +55,28 @@ public class SystemTimeZoneCatalogTests
     {
         Assert.False(_catalog.IsKnownIanaId(timeZoneId));
     }
+
+    // ---- GetResourceTimeZone (WP-3 Phase 5) ----
+
+    // The read side, and deliberately the more forgiving of the two: it only
+    // requires that the stored id resolve. The conversion rules the returned
+    // zone applies have their own tests in Availability/.
+    [Fact]
+    public void ResolvesAStoredIanaIdToItsZone()
+    {
+        var zone = _catalog.GetResourceTimeZone("America/New_York");
+
+        Assert.Equal(
+            new DateTime(2026, 9, 7, 13, 0, 0, DateTimeKind.Utc),
+            zone.ToUtcEarliest(new DateTime(2026, 9, 7, 9, 0, 0, DateTimeKind.Unspecified)));
+    }
+
+    // Every id in Resources.TimeZoneId passed IsKnownIanaId on the way in, so an
+    // id that will not resolve on the read path means the host's tzdata changed
+    // under us — a 500, not something a client did.
+    [Fact]
+    public void Throws_WhenTheStoredIdDoesNotResolveAtAll()
+    {
+        Assert.Throws<TimeZoneNotFoundException>(() => _catalog.GetResourceTimeZone("Mars/Olympus"));
+    }
 }
