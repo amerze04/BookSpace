@@ -171,7 +171,7 @@ public class ResourceTests
     public void ChangeTimeZone_UpdatesZoneAndLeavesAvailabilityWindowsUntouched()
     {
         var resource = CreateValid();
-        var window = resource.AddAvailabilityWindow(
+        var window = resource.AddWindow(
             Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), ActorId, NowUtc);
 
         resource.ChangeTimeZone("Europe/Zagreb", ActorId, NowUtc.AddMinutes(1));
@@ -326,40 +326,12 @@ public class ResourceTests
         Assert.Single(resource.ApproverUserIds);
     }
 
-    [Fact]
-    public void RemoveApprover_RemovesUser()
-    {
-        var resource = CreateValid(requiresApproval: true);
-        var approverId = Guid.NewGuid();
-        resource.AddApprover(approverId, ActorId, NowUtc);
-
-        resource.RemoveApprover(approverId, ActorId, NowUtc.AddMinutes(1));
-
-        Assert.DoesNotContain(approverId, resource.ApproverUserIds);
-    }
-
-    [Fact]
-    public void AddAvailabilityWindow_AddsWindow()
-    {
-        var resource = CreateValid();
-
-        var window = resource.AddAvailabilityWindow(
-            Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), ActorId, NowUtc);
-
-        Assert.Contains(window, resource.AvailabilityWindows);
-    }
-
-    [Fact]
-    public void RemoveAvailabilityWindow_RemovesById()
-    {
-        var resource = CreateValid();
-        var window = resource.AddAvailabilityWindow(
-            Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), ActorId, NowUtc);
-
-        resource.RemoveAvailabilityWindow(window.Id, ActorId, NowUtc.AddMinutes(1));
-
-        Assert.Empty(resource.AvailabilityWindows);
-    }
+    // RemoveApprover, AddAvailabilityWindow and RemoveAvailabilityWindow had a
+    // test each here. All three methods were deleted in WP-3 Phase 5 step 4 —
+    // the API has gone through ReplaceApprovers and ReplaceAvailabilityWindows
+    // exclusively since Phase 3 — so their tests went with them rather than
+    // being pointed at a shim. What they asserted is covered by
+    // ReplaceApprovers_* below and by AvailabilityWindowTests.
 
     [Fact]
     public void Archive_SetsIsArchivedTrue()

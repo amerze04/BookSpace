@@ -426,22 +426,77 @@ index; when a new decision doc is added, add its one-liner here too.
    `BookingStatus.Completed`**, so an attended meeting is still `Confirmed`, and
    status alone would let a blackout rewrite history. **Settled by the repo owner
    2026-09-02**, implemented in WP-3 Phase 4.
+20. [`0020`](docs/decisions/0020-bookable-interval-semantics.md) — a bookable slot
+   is a **free interval carrying `remainingCapacity`**, not a boolean free/busy
+   timeline and not a fixed grid — forced by `0005`'s concurrent-units model,
+   since a slot with one of four units taken is genuinely still open. The
+   interval is **cut wherever the figure changes**, so the number is a floor a
+   client can trust at every instant inside it, and `BookableInterval` refuses a
+   remaining capacity of zero so its name cannot be false. **WP-3's D2**,
+   promoted when Phase 5 implemented it; its "free/busy intervals" wording is
+   **narrowed to bookable intervals only** (owner's call, 2026-09-03) — there is
+   no `kind` discriminator, so a *gap* in the response means "nothing bookable
+   here" without saying whether that is a blackout, a full slot or a closing
+   time. Records the one known limitation: the minimum-duration floor is applied
+   per interval, so a partially-consumed span can hide time that is still
+   bookable at a lower quantity.
+21. [`0021`](docs/decisions/0021-daylight-saving-for-availability-ranges.md) — a
+   DST gap or doubling inside an availability *window* is **absorbed by expanding
+   to the UTC interval that actually elapsed**: the local day is simply 23 or 25
+   hours long. Concretely, two rules `TimeZoneInfo`'s defaults get wrong — a
+   **missing** local time resolves to the **transition instant** (the default
+   throws), and an **ambiguous** one resolves to the **earlier** instant for a
+   window's start and the **later** for its end (the default takes the later for
+   both, quietly shortening the window by an hour). **WP-3's D3**, promoted when
+   Phase 5 implemented it. **Does not close §9's still-open fall-back question**,
+   which is about an *instant* rather than a range — see below.
+22. [`0022`](docs/decisions/0022-availability-window-midnight-convention.md) — a
+   `ClosesAt` of exactly **`23:59:59` means the following midnight**, and
+   **unconditionally**, not only when a next-day window exists to join.
+   `CK_AvailabilityWindows_Window` forbids a window crossing midnight and
+   `time(0)` cannot express `24:00:00`, so an overnight resource is two rows and
+   `23:59:59` is the only way an admin can say "until midnight"; promoting it is
+   also what turns the overnight rejoin into an ordinary merge rather than a
+   special case. Conditional promotion was rejected because it would make one
+   stored row mean two different things depending on its neighbour. Cost: one
+   second granted on an end-of-day window with nothing after it. `23:59:00` is a
+   minute short and is taken literally. **Decided 2026-09-03** during Phase 5
+   step 1.
 
-**Decided but not yet written up as numbered records** — two WP-3 decisions
-(D2, D3) were settled by the repo owner on 2026-08-28 before that package
-started, and live in `docs/wp3-plan.md` until the phase implementing them
-lands (Phase 5) and promotes them to the next free numbers (`0020`+, since Phase 3's approver eligibility took `0018` and Phase 4's lifecycle took `0019`):
-interval-plus-`remainingCapacity` slot semantics, and DST handling for
-availability *ranges*. Treat them as settled, not open. D1 was promoted to
-`0014` when WP-3 Phase 1 landed, and D4 to `0017` when Phase 2 did.
+**All four of WP-3's up-front decisions are now numbered records**: D1 →
+[`0014`](docs/decisions/0014-child-table-tenant-scoping.md) (Phase 1),
+D4 → [`0017`](docs/decisions/0017-test-fixture-booking-inserts.md) (Phase 2),
+D2 → [`0020`](docs/decisions/0020-bookable-interval-semantics.md) and
+D3 → [`0021`](docs/decisions/0021-daylight-saving-for-availability-ranges.md)
+(both Phase 5). Nothing in `docs/wp3-plan.md` is still awaiting promotion.
 
 **Still open** — flag before building the affected feature, don't decide
-silently: the DST **fall-back** case (clocks go back, a local time occurs
-twice and is ambiguous rather than nonexistent). See the Notes section of
-`0008` for why it's a genuinely separate question from spring-forward.
-WP-3's D3 resolves this for availability *windows* (a range absorbs a missing
-or repeated hour); it leaves the *occurrence* case — an instant, which has to
-land somewhere — exactly as open as it was.
+silently:
+
+- The DST **fall-back** case for a recurring booking **occurrence** (clocks go
+  back, a local time occurs twice and is ambiguous rather than nonexistent).
+  See the Notes section of `0008` for why it's a genuinely separate question
+  from spring-forward. `0021` resolves it for availability *ranges* — a range
+  absorbs a missing or repeated hour by being shorter or longer — and leaves
+  the *occurrence* case, an instant which has to land somewhere, exactly as
+  open as it was. **WP-4 owns it.**
+- Whether **`ResourceType` should mean anything**, raised by the repo owner
+  2026-09-03. Today it is a required `NVARCHAR(50)` free string with no domain:
+  it is returned by every resource endpoint and is sortable, but nothing
+  branches on it and it is not even filterable — the only user-facing
+  categorical column in this schema that is not an enum with a `CHECK` (§5).
+  Two questions, and they are separate: (a) should it become an enum, which is
+  a cheap consistency fix; (b) should it *constrain capacity* — "a Room can
+  only be capacity 1". Analysis given to the owner: the real axis is
+  **exclusive vs pooled**, which `Capacity = 1` already expresses under `0005`,
+  and the category name does not line up with it (a pool of identical huddle
+  rooms is a legitimately pooled "Room"; "Van #2" is a legitimately exclusive
+  "Vehicle"), so deriving a capacity rule from a free-text label would block
+  real setups and be typo-past-able. **Deferred to after WP-3 by the owner**,
+  which is safe because nothing reads the column: it is write-then-display, so
+  no behaviour can quietly grow a dependency on its current shape. Expect an
+  amendment to `0005` recording the exclusive/pooled reading either way — the
+  actual gap found is documentation, not schema.
 
 If a task needs a decision that isn't listed above and isn't in this log,
 **stop and ask** rather than picking silently — same rule as always, this
@@ -461,9 +516,17 @@ line. No exceptions, no "and some minor edits".
 One or two sentences: what was accomplished and whether it is working.
 
 ## Files
-- `backend/src/BookSpace.Domain/Entities/Booking.cs` — created — booking entity with status enum and rowversion
-- `backend/src/BookSpace.Infrastructure/Persistence/BookSpaceDbContext.cs` — modified — added Bookings DbSet, global query filter
-- `backend/src/BookSpace.Api/Controllers/BookingsController.cs` — modified — POST endpoint now returns 409 on SlotUnavailable
+- `backend/src/BookSpace.Domain/Entities/Booking.cs` — created — booking entity with status enum and rowversion.
+  The aggregate every write path in the system ends at, and the only place a
+  status transition is expressed as code rather than as a string.
+- `backend/src/BookSpace.Infrastructure/Persistence/BookSpaceDbContext.cs` — modified — added Bookings DbSet, global query filter.
+  The single unit of work, and one of the three §4.2 isolation mechanisms: the
+  filter here is what makes a forgotten `WHERE OrgId` harmless.
+- `backend/src/BookSpace.Api/Controllers/BookingsController.cs` — modified — POST endpoint now returns 409 on SlotUnavailable.
+  The HTTP surface for booking creation; it only binds and dispatches, so the
+  rejection reasons stay in the handler.
+- `backend/tests/BookSpace.UnitTests/BookingTests.cs` — modified — covers the new transition
+- `docs/decisions/0020-something.md` — created — the decision behind it
 
 ## Migrations
 - `20260819_AddBookingTables` — creates Bookings, ApprovalRequests; adds IX_Bookings_Resource_Start
@@ -482,6 +545,13 @@ Rules for the report:
 
 - **Every file touched appears in the list**, with created / modified / deleted
   and a short phrase on what it does or what changed.
+- **A file in `Domain`, `Application`, `Infrastructure` or `Api` gets one or two
+  further sentences saying what the point of the file is** — the job it does in
+  the system and why it exists, not a restatement of its name. The short phrase
+  says what changed; these sentences say why the file is there at all, so I can
+  defend it without reopening it.
+  Test files, docs, migrations and frontend files are **listed only** — the
+  created/modified phrase is enough for those.
 - If more than ~15 files, group them by project (`Domain`, `Application`,
   `Infrastructure`, `Api`, `frontend`) but still list each one.
 - Do not paste code back into the summary. I can read the files.
@@ -884,9 +954,34 @@ Plan and settled decisions: `docs/wp3-plan.md`.
       publish an approval-gated resource — assign approvers, then set the flag.
       The invariant is now enforced from both sides; emptying the list on a
       resource that requires approval is `ApproversRequired` (422).
-- [ ] Build an availability query: given a resource and date range, return
-      bookable slots.
-- [ ] Design clean DTOs, error contracts, and pagination — pagination and the
+- [x] Build an availability query: given a resource and date range, return
+      bookable slots. **Done 2026-09-03** (Phase 5).
+      `GET /resources/{id}/availability?from=&to=` on `TenantMember` — the
+      endpoint the PRD's member flow runs on ("selects a resource and date →
+      sees live availability → picks a slot"). The range is **resource-local
+      dates**, both required, **max 90 days**, refused as a plain
+      `ValidationFailed` 400 rather than a new code — so this phase added **no
+      reason code at all**, a first for WP-3.
+      Returns **only bookable intervals**, each carrying `remainingCapacity`
+      ([`0020`](docs/decisions/0020-bookable-interval-semantics.md)), cut
+      wherever that figure changes so it holds at every instant inside the span.
+      An **archived resource returns an empty list with `isArchived: true`**,
+      not 422 — FR-3.5 keeps it readable and "nothing is bookable" is the true
+      answer; the flag is what distinguishes that from a resource that simply
+      never opens. Intervals shorter than the resource's `MinDurationMinutes`
+      are dropped.
+      The calculation lives in **`BookSpace.Domain/Availability/`** as pure
+      functions — `AvailabilityCalculator` over `AvailabilityWindowExpansion`,
+      `IntervalAlgebra` and `CapacitySweep` — not in the handler, because WP-4's
+      `OutsideAvailability` / `BlackoutPeriod` / `CapacityExceeded` rejections
+      ask the same question of one interval and a second implementation would
+      drift from this one. The handler loads, calls and maps: **three queries,
+      regardless of range length**.
+      Two subtractions, and the distinction is the heart of it: a blackout
+      removes **instants** (`IntervalAlgebra.Subtract`), a booking removes
+      **units** (`CapacitySweep.Subtract`) — so one unit of four leaves the time
+      open with three left, and time disappears only once the units run out.
+- [x] Design clean DTOs, error contracts, and pagination — pagination and the
       DTO conventions landed with Phase 1 (offset paging with a total count,
       `PagedResult<T>`, the `sort` whitelist, and the DTO rules WP-2 had only
       implicitly: [`0015`](docs/decisions/0015-api-contract-and-pagination.md)).
@@ -913,6 +1008,16 @@ Plan and settled decisions: `docs/wp3-plan.md`.
       One genuinely shared type appeared, `ApproverSummary` — a *port* output from
       `IUserRepository`, not an endpoint contract, on the same footing decision
       `0015` gives `IssuedTokens`.
+      **Complete as of 2026-09-03.** Phase 4 added the blackout DTOs and Phase 5
+      the last of them — `GetResourceAvailabilityQueryResponse` with a
+      `BookableIntervalDetail` item, both per-endpoint and in their own files.
+      Phase 5 needed **no new reason code**, so the error contract took the
+      endpoint unchanged, which is the strongest evidence `0016`'s design works:
+      an over-long range is a malformed request, not a domain refusal, so it is
+      `ValidationFailed` 400 like an oversized `pageSize`. Nothing here is paged —
+      the range cap bounds the result instead, which is why `PagedResult<T>` does
+      not appear: the response is one resource's own answer, not a collection
+      whose size the client controls.
 
 Acceptance criteria (source doc):
 - [x] An admin can publish a resource with availability and blackout rules —
@@ -921,8 +1026,22 @@ Acceptance criteria (source doc):
       out spans on it, and a member of the same tenant immediately sees all four
       (`ResourceAcceptanceTests`, `AvailabilityWindowEndpointTests`,
       `ApproverEndpointTests`, `BlackoutPeriodEndpointTests`).
-- [ ] The availability query correctly excludes blackout periods and existing
-      bookings.
+- [x] The availability query correctly excludes blackout periods and existing
+      bookings — **met 2026-09-03** (Phase 5). Proved at both levels.
+      In the unit suite, over the pure calculator: blackout subtraction
+      (including the union of overlapping blackouts, and one covering a whole
+      day), and the capacity sweep (partial consumption, full consumption,
+      concurrent bookings summing, a booking starting before the range).
+      Through the real HTTP pipeline in `AvailabilityEndpointTests`, with
+      blackouts created via the Phase 4 endpoint and bookings inserted by
+      decision `0017`'s raw-SQL fixture — including the case a naive query gets
+      wrong: **only `Pending` and `Confirmed` consume capacity**, asserted
+      against all six `BookingStatus` values, and bookings on a *different*
+      resource change nothing.
+      Also covered there: the PRD's only endpoint-specific NFR
+      ("responsive with realistic data volumes — hundreds of bookings per
+      resource"), as a 90-day range over 260 bookings asserting both the exact
+      interval count and a time bound.
 - [x] Non-admins cannot create or edit resources — **met 2026-08-31**. Every
       write route is asserted forbidden to a Member *and* to an Approver
       (`Approver` sits between Member and TenantAdmin, so "non-admin" has to
@@ -1087,6 +1206,95 @@ approved by the repo owner on 2026-08-28 before any code was written:
      resolves offsets to whole-second instants once and derives the end from the
      start. Same family as the two §4.3 conventions Phase 2 found.
 5. **The availability query** — consumes all of the above; final AC sweep.
+   **Done 2026-09-03**, all four steps, plan approved by the owner the same day —
+   full detail in `docs/wp3-plan.md`. 634 unit + 263 integration tests pass.
+   **This completes WP-3**: every task item is ticked and all four acceptance
+   criteria are met. In brief:
+   `GET /resources/{id}/availability` on `TenantMember`, taking a **resource-local
+   date range** (max **90 days**, over-range refused as a plain
+   `ValidationFailed` 400 rather than a new code — so this phase may add **no
+   reason codes at all**), returning **only bookable intervals** carrying
+   `remainingCapacity`. An **archived resource returns an empty list**, not a 422
+   — FR-3.5 keeps it readable and "nothing is bookable" is the true answer — and
+   intervals shorter than the resource's `MinDurationMinutes` are **dropped**.
+   Five shape questions settled by the owner 2026-09-03; **answer 1 narrows D2**,
+   whose "free/busy intervals" wording becomes "bookable intervals" when it is
+   promoted to `0020`.
+   **The one architectural call, made before any code**: the interval algebra
+   goes in `BookSpace.Domain` as pure functions, not in
+   `Application/Features/…Rules` where Phases 2–4 put their rules. It is the
+   read-side twin of FR-4.2's rejection checks (`OutsideAvailability`,
+   `BlackoutPeriod`, `CapacityExceeded`), which **WP-4 has to implement over the
+   same data** — written twice they will drift, and the failure mode is the API
+   offering a slot it then refuses.
+   Two things the plan pins down that `TimeZoneInfo`'s defaults get wrong for us:
+   an **invalid** local time (spring-forward gap) resolves to the transition
+   instant rather than throwing, and an **ambiguous** one (fall-back) resolves to
+   the *earlier* offset for a window's start and the *later* for its end — the
+   default takes the later for both and quietly shortens the window by an hour.
+   Four steps: expansion → algebra → endpoint → cleanup/docs/AC.
+   **Step 1 done 2026-09-03** — timezone conversion and window expansion, no
+   database and no endpoint, 578 unit tests passing (49 new) with the 226
+   integration tests re-run unchanged. `BookSpace.Domain/Availability/` now holds
+   `UtcInterval` (half-open, `Utc`-Kind enforced, an empty span unrepresentable),
+   `IntervalAlgebra.Merge` (joins overlapping *and touching* intervals — touching
+   is what collapses Phase 3's adjacent windows and rejoins the overnight pair),
+   `AvailabilityWindowExpansion.ExpandToUtc`, and `IResourceTimeZone`;
+   `BookSpace.Infrastructure/Time/SystemResourceTimeZone` implements the two DST
+   rules and `ITimeZoneCatalog.GetResourceTimeZone(string)` hands it out.
+   Three things the plan did not anticipate, all written up in `docs/wp3-plan.md`:
+   - **The conversion contract is declared in `Domain`, not `Application`.** The
+     plan wanted the algebra pure *and* the DST rules behind `ITimeZoneCatalog`,
+     and a pure Domain function cannot call an Application port — so Domain
+     declares `IResourceTimeZone` and the catalog hands out implementations. The
+     tzdata dependency stays behind the abstraction; only the interface moved a
+     project down. It also splits the tests usefully: the risky rules are asserted
+     against real tzdata, the algebra against a fixed-offset fake.
+   - **The midnight convention applies unconditionally**, as
+     `AvailabilityWindowExpansion.ClosesAtEndOfDay`: a `ClosesAt` of exactly
+     `23:59:59` is read as the next midnight whether or not a next-day window
+     follows. Conditional would make one stored window mean two things depending
+     on its neighbour, and `time(0)` plus `CK_AvailabilityWindows_Window` leave an
+     admin no other way to say "until midnight". Cost: one second granted on an
+     end-of-day window with nothing after it.
+   - **Finding a gap's transition instant needed its own method.**
+     `TimeZoneInfo` does not expose a gap's start, and `GetUtcOffset` on an
+     invalid local time returns the *pre*-transition offset, which reproduces the
+     "shift it an hour later" behaviour D3 rejects. `SystemResourceTimeZone` walks
+     forward one second to the first real local time instead — exact for `time(0)`
+     inputs, bounded at four hours, and only ever run for a local time actually
+     inside a gap.
+   **Step 2 done 2026-09-03** — the rest of the calculation, still with no
+   database and no endpoint, 621 unit tests passing (43 new) with the 226
+   integration tests re-run unchanged. Two subtractions, and the distinction is
+   the heart of it: `IntervalAlgebra.Subtract` removes the *instants* a blackout
+   covers (FR-3.4), while `CapacitySweep.Subtract` removes *units* — a 1-unit
+   booking against a capacity of 4 leaves the same time open with 3 left
+   (decision `0005`), and time only disappears once the units run out. The sweep
+   is a sweep line over claim/release events, reporting the figure per interval
+   where `IResourceRepository.PeakConcurrentBookedQuantityAsync` reduces a range
+   to one worst case. `BookedQuantity` and `BookableInterval` are its input and
+   output; `BookableInterval` is decision D2 as a type and refuses a remaining
+   capacity of zero, so its name cannot be false. Three things to know:
+   - **`AvailabilityCalculator.BookableIntervals` composes all four steps**, which
+     the plan had left to step 3's handler. Same reasoning as putting the algebra
+     in `Domain`: WP-4 answers "may this booking be created" over the same four
+     inputs, and a second orchestration would drift from this one. Step 3's
+     handler is correspondingly thinner — load, call, map.
+   - **Two orderings are load-bearing.** Blackouts are subtracted before bookings
+     (a booking inside blacked-out time was already cancelled by decision
+     `0001`'s cascade); and zero-capacity spans are dropped **after** adjacent
+     equal-capacity spans are rejoined, since the other order would rejoin across
+     a fully-booked gap and report time that is not free.
+   - **Q5's minimum-duration floor has a consequence the owner may want to
+     revisit.** It is applied per interval, as specified — but the sweep splits at
+     every capacity change, so a 1-unit booking mid-day leaves three intervals and
+     the flanking two can fall under the floor and vanish, even though a 1-unit
+     booking across the whole run *would* be accepted. Inherent in D2's
+     one-figure-per-interval shape, implemented as specified, recorded by a test,
+     and written up in `docs/wp3-plan.md`. Only bites a resource that has a
+     `MinDurationMinutes` **and** partially-consumed capacity, so it does not
+     block step 3.
    Carries one item inherited from Phase 3 (settled 2026-09-02): an availability
    window **cannot cross midnight**, because `CK_AvailabilityWindows_Window`
    requires `ClosesAt > OpensAt`, so 22:00–02:00 is two windows on consecutive
@@ -1097,20 +1305,38 @@ approved by the repo owner on 2026-08-28 before any code was written:
    end-of-day when joining) rather than an off-by-one-second surprise.
    Also carries a **deliberate cleanup, deferred here on purpose** (owner's call,
    2026-09-02): `Resource.AddAvailabilityWindow`, `RemoveAvailabilityWindow`,
-   `AddApprover` and `RemoveApprover` have had no production callers since Phase 3
-   — the API goes exclusively through the two `Replace…` methods, and only
-   `SeedData` and tests still call them. That would be ordinary dead code except
-   that `AddAvailabilityWindow` **carries a live trap**: a window added through it
-   to an already-tracked resource is marked `Modified`, not `Added`, and saves as
-   a zero-row UPDATE that surfaces as a 409 `ConcurrencyConflict` for what is
-   plainly an insert (see `IResourceRepository.AddAvailabilityWindows`). It looks
-   fine today only because `SeedData` calls it on a resource that is itself
-   `Added`, so the children cascade. **Phase 5 must decide**: once it is confirmed
-   that nothing needs per-row access, either delete the two window methods and
-   have `SeedData` use `ReplaceAvailabilityWindows`, or route them through the
-   same explicit-insert path. Leaving a known trap in the codebase for a method
-   nobody calls is not acceptable as a resting state — it was left only because
-   Phase 5 is the phase that can confirm the callers.
+   `AddApprover` and `RemoveApprover` are barely called since Phase 3 — the API
+   goes exclusively through the two `Replace…` methods. That would be ordinary
+   dead code except that `AddAvailabilityWindow` **carries a live trap**: a window
+   added through it to an already-tracked resource is marked `Modified`, not
+   `Added`, and saves as a zero-row UPDATE that surfaces as a 409
+   `ConcurrencyConflict` for what is plainly an insert (see
+   `IResourceRepository.AddAvailabilityWindows`). It looks fine today only because
+   `SeedData` calls it on a resource that is itself `Added`, so the children
+   cascade.
+   **Resolved 2026-09-03**, caller counts checked: `RemoveAvailabilityWindow` and
+   `RemoveApprover` have **zero** production callers, `AddAvailabilityWindow` and
+   `AddApprover` have one each (`SeedData`). Phase 5 step 4 **deletes the first
+   three** and moves `SeedData` onto `ReplaceAvailabilityWindows`, which kills the
+   trap and leaves one way to mutate the schedule. **`AddApprover` stays** —
+   approvers are an EF *owned* collection, diffed as part of the owner, so it
+   carries no equivalent trap. Cost: about a dozen test call sites move to
+   `ReplaceAvailabilityWindows`.
+   **Done 2026-09-03** in step 4: the three methods are gone, `SeedData` builds
+   its weekday schedule through `ReplaceAvailabilityWindows`, and the 20 affected
+   test call sites (more than the dozen estimated) moved across. Most were
+   arrangement — "give this resource a window, then test something else" — and go
+   through a test-only `Resource.AddWindow` extension
+   (`tests/BookSpace.UnitTests/ResourceScheduleArrangement.cs`) that appends *via*
+   `ReplaceAvailabilityWindows`, so the append semantics exist nowhere in
+   production. `AvailabilityWindowTests` does not use it, deliberately: that file
+   is *about* the schedule, so its arrangement goes through the real API too. The
+   four tests there that covered the deleted method were rewritten against
+   `ReplaceAvailabilityWindows` rather than deleted — the invariants they assert
+   (properties kept, `OrgId` stamped from the owner, `ClosesAt > OpensAt`) are
+   `AvailabilityWindow`'s, not the deleted method's, and go through the same
+   constructor. Three tests in `ResourceTests` *were* deleted, being tests of the
+   deleted methods themselves.
 
 **Four decisions were settled up front** (`docs/wp3-plan.md`), to be written
 up as numbered records 0014+ as each implementing phase lands (D1 and D4 are

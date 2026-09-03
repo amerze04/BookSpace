@@ -171,7 +171,7 @@ public class GlobalQueryFilterTests
     private static Resource NewResourceWithWindow(Guid orgId, Guid actorId)
     {
         var resource = NewResource(orgId, actorId);
-        resource.AddAvailabilityWindow(
+        resource.AddWindow(
             Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), actorId, Now);
         return resource;
     }

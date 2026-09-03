@@ -18,15 +18,24 @@ public class AvailabilityWindowTests
             minDurationMinutes: null, maxDurationMinutes: null,
             description: null, createdByUserId: ActorId, nowUtc: NowUtc);
 
+    // A window's own invariants, exercised through ReplaceAvailabilityWindows —
+    // which is the only way to set a schedule since WP-3 Phase 5 step 4 deleted
+    // the per-window AddAvailabilityWindow. What is asserted here is unchanged:
+    // the constructor these go through is the same one, and it is still the only
+    // place a window can be built.
+
     [Fact]
-    public void AddAvailabilityWindow_SetsProperties_WhenClosesAtIsAfterOpensAt()
+    public void AWindowKeepsTheWeekdayAndTimesItWasGiven()
     {
         var resource = CreateResource();
         var id = Guid.NewGuid();
         var opens = new TimeOnly(9, 0);
         var closes = new TimeOnly(17, 0);
 
-        var window = resource.AddAvailabilityWindow(id, DayOfWeek.Monday, opens, closes, ActorId, NowUtc);
+        var window = Assert.Single(resource.ReplaceAvailabilityWindows(
+            [new AvailabilityWindowDefinition(id, DayOfWeek.Monday, opens, closes)],
+            ActorId,
+            NowUtc));
 
         Assert.Equal(id, window.Id);
         Assert.Equal(resource.Id, window.ResourceId);
@@ -39,40 +48,60 @@ public class AvailabilityWindowTests
     // never from the caller, so a window scoped to a tenant its resource isn't
     // in cannot be constructed at all.
     [Fact]
-    public void AddAvailabilityWindow_StampsOwningResourceOrgId()
+    public void AWindowIsStampedWithItsOwningResourcesOrgId()
     {
         var resource = CreateResource();
 
-        var window = resource.AddAvailabilityWindow(
-            Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), ActorId, NowUtc);
+        var window = Assert.Single(resource.ReplaceAvailabilityWindows(
+            [new AvailabilityWindowDefinition(
+                Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0))],
+            ActorId,
+            NowUtc));
 
         Assert.Equal(resource.OrgId, window.OrgId);
         Assert.Equal(resource.OrgId, ((ITenantOwned)window).OrgId);
     }
 
-    [Fact]
-    public void AddAvailabilityWindow_Throws_WhenClosesAtEqualsOpensAt()
+    // CK_AvailabilityWindows_Window, restated in the constructor. Equal is
+    // refused as well as inverted: a zero-width window opens at no time.
+    [Theory]
+    [InlineData(9, 0, 9, 0)]
+    [InlineData(17, 0, 9, 0)]
+    public void AWindowThatDoesNotCloseAfterItOpensIsRefused(
+        int opensHour, int opensMinute, int closesHour, int closesMinute)
     {
         var resource = CreateResource();
-        var time = new TimeOnly(9, 0);
 
-        Assert.Throws<ArgumentException>(() =>
-            resource.AddAvailabilityWindow(Guid.NewGuid(), DayOfWeek.Monday, time, time, ActorId, NowUtc));
+        Assert.Throws<ArgumentException>(() => resource.ReplaceAvailabilityWindows(
+            [new AvailabilityWindowDefinition(
+                Guid.NewGuid(),
+                DayOfWeek.Monday,
+                new TimeOnly(opensHour, opensMinute),
+                new TimeOnly(closesHour, closesMinute))],
+            ActorId,
+            NowUtc));
 
-        // The interval check runs in the constructor, before the window is
-        // added, so a rejected window leaves the collection untouched.
+        // The interval check runs in the constructor, while the replacement is
+        // still being built, so a rejected window leaves the collection
+        // untouched rather than half-replaced.
         Assert.Empty(resource.AvailabilityWindows);
     }
 
-    [Fact]
-    public void AddAvailabilityWindow_Throws_WhenClosesAtIsBeforeOpensAt()
+    // A prior schedule for a replacement to overwrite, set through the same
+    // method under test. This file does not use the shared
+    // ResourceScheduleArrangement shim on purpose: it is *about* the weekly
+    // schedule, so its arrangement should go through the real API too.
+    private static Guid GiveMondayNineToFive(Resource resource)
     {
-        var resource = CreateResource();
+        var id = Guid.NewGuid();
 
-        Assert.Throws<ArgumentException>(() => resource.AddAvailabilityWindow(
-            Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(17, 0), new TimeOnly(9, 0), ActorId, NowUtc));
+        resource.ReplaceAvailabilityWindows(
+            [new AvailabilityWindowDefinition(
+                id, DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0))],
+            ActorId,
+            NowUtc);
 
-        Assert.Empty(resource.AvailabilityWindows);
+        return id;
     }
 
     // ---- ReplaceAvailabilityWindows (WP-3 Phase 3, FR-3.2) ----
@@ -81,8 +110,7 @@ public class AvailabilityWindowTests
     public void ReplaceAvailabilityWindows_ReplacesTheWholeSet()
     {
         var resource = CreateResource();
-        resource.AddAvailabilityWindow(
-            Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), ActorId, NowUtc);
+        GiveMondayNineToFive(resource);
 
         var tuesdayId = Guid.NewGuid();
         var replaced = resource.ReplaceAvailabilityWindows(
@@ -109,8 +137,7 @@ public class AvailabilityWindowTests
     public void ReplaceAvailabilityWindows_WithAnEmptySet_ClearsTheSchedule()
     {
         var resource = CreateResource();
-        resource.AddAvailabilityWindow(
-            Guid.NewGuid(), DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), ActorId, NowUtc);
+        GiveMondayNineToFive(resource);
 
         resource.ReplaceAvailabilityWindows(
             Array.Empty<AvailabilityWindowDefinition>(), ActorId, NowUtc.AddMinutes(1));
@@ -148,9 +175,7 @@ public class AvailabilityWindowTests
     public void ReplaceAvailabilityWindows_WithAnInvalidWindow_LeavesTheExistingScheduleUntouched()
     {
         var resource = CreateResource();
-        var originalId = Guid.NewGuid();
-        resource.AddAvailabilityWindow(
-            originalId, DayOfWeek.Monday, new TimeOnly(9, 0), new TimeOnly(17, 0), ActorId, NowUtc);
+        var originalId = GiveMondayNineToFive(resource);
 
         Assert.Throws<ArgumentException>(() => resource.ReplaceAvailabilityWindows(
             new[]

@@ -553,18 +553,412 @@ gives bookings a real write path.
 
 ### Phase 5 — The availability query
 
+**Plan approved by the repo owner on 2026-09-03**, including the five shape
+questions in "Settled by the owner" below. Not yet started.
+
 Last, because it consumes every phase above: availability windows, blackouts,
 capacity, existing bookings, and the archived flag. This is WP-3's genuinely
 hard problem and where D2 and D3 do their work.
 
-- Returns **free/busy intervals carrying `remainingCapacity`** (D2), not a
-  fixed grid of slots.
-- Expands resource-local windows across the requested date range and over DST
-  boundaries per D3.
-- Excludes blackouts and subtracts `Confirmed`/`Pending` booking `Quantity`
-  from capacity, per decision `0005`.
-- Bounded by a maximum date-range span rather than paginated — the result is
-  a function of a range, not a list of records.
+#### What it serves
+
+The query **has no FR of its own** — it is a WP-3 task item. It serves the read
+side of FR-4.2 ("a booking is rejected if it falls outside availability, inside
+a blackout, or exceeds capacity") and FR-6.3 ("the timezone in which a
+resource's availability is expressed is defined and applied consistently"). The
+PRD's member flow is the shape to build for: *"selects a resource and date →
+sees live availability → picks a slot."*
+
+It also carries the PRD's **only endpoint-specific NFR**: "availability queries
+and calendar views remain responsive with realistic data volumes (hundreds of
+bookings per resource)."
+
+#### The architectural point, decided before any code
+
+Phase 5's calculator is the **read-side twin of FR-4.2's rejection rules**,
+which WP-4 implements as the tier-4 checks behind `OutsideAvailability`,
+`BlackoutPeriod` and `CapacityExceeded`. Written separately, the two will
+drift, and the failure mode is bad: the API offers a member a slot and then
+refuses the booking for it.
+
+So the interval algebra goes in **`BookSpace.Domain`** as pure functions over
+inputs — no EF, no I/O, which is what CLAUDE.md §3 says Domain is for — and the
+Phase 5 handler orchestrates it. WP-4 then reuses the same code to answer "is
+this one interval bookable" instead of reimplementing it.
+
+This is a deliberate departure from where Phases 2–4 put their rules
+(`Application/Features/…Rules`). Those are validation; this is the domain's core
+algorithm, and it has a second consumer arriving in the next work package.
+
+#### The algorithm, in order
+
+1. **Load the resource**, tenant-filtered → 404 `ResourceNotFound`, with a
+   cross-tenant id indistinguishable from one that exists nowhere (AC-4).
+2. **Expand windows to UTC.** For each resource-local date in range, take the
+   windows matching that `Weekday` and convert `(date, OpensAt)` and
+   `(date, ClosesAt)` from the resource's IANA zone to UTC. Per D3 this absorbs
+   DST for free — the day is simply 23 or 25 hours long.
+3. **Merge contiguous intervals.** Needed twice over: Phase 3 deliberately
+   allows adjacent windows (09:00–12:00 + 12:00–17:00 coexist because `ClosesAt`
+   is exclusive), and the midnight-crossing case is two windows on consecutive
+   weekdays that are really one span.
+4. **Subtract blackouts** — interval difference against the `BlackoutPeriods`
+   overlapping the span.
+5. **Subtract booked capacity.** Split what remains at every `Pending` /
+   `Confirmed` booking boundary and compute `Capacity − Σ Quantity` per
+   sub-interval: a sweep line over start/end events. The same arithmetic as
+   `IResourceRepository.PeakConcurrentBookedQuantityAsync`, but reported per
+   interval rather than reduced to a single maximum.
+6. **Drop what is not bookable** — `remainingCapacity == 0`, and anything
+   shorter than the resource's `MinDurationMinutes` (see Q5).
+
+#### The DST convention, because `TimeZoneInfo`'s defaults are wrong here
+
+`TimeZoneInfo.ConvertTimeToUtc` **throws** on a local time inside a
+spring-forward gap, and for an ambiguous fall-back time it **assumes standard
+time** — the *later* of the two instants. Neither is what a window wants. D3
+says a range absorbs the anomaly; making that concrete needs a stated rule:
+
+- **An invalid local time resolves to the transition instant.** A window opening
+  at 02:30 inside a 02:00–03:00 gap opens at 03:00.
+- **An ambiguous local time resolves to the earlier offset for a window's
+  *start*, and the later offset for its *end*.** That maximises the interval and
+  produces D3's 25-hour day. The default would take the later instant for both,
+  quietly shortening the window by an hour.
+
+This is the riskiest code in the phase and gets its own helper with focused
+tests. It also belongs behind `ITimeZoneCatalog` rather than in a handler,
+because it depends on the host's tzdata — which is the reason that abstraction
+exists (see its header).
+
+#### The port has to grow
+
+`ITimeZoneCatalog` currently answers only `IsKnownIanaId`. Phase 5 needs real
+conversion, plus the two resolution rules above.
+
+#### Settled by the owner, 2026-09-03
+
+Five shape questions, none of them answered by the PRD or CLAUDE.md §9:
+
+1. **Only bookable intervals are returned** — those with
+   `remainingCapacity > 0`. Not a full timeline with a kind
+   (`Open`/`BlackedOut`/`Full`). The WP task says "return bookable slots" and
+   the AC says the query "excludes" blackouts and bookings; a timeline is API
+   surface the PRD never asks for, and can be added later without breaking this
+   shape.
+2. **The range is expressed as resource-local dates**, not UTC instants.
+   Decision `0003` makes availability resource-local, and the PRD flow says
+   "selects a resource and date". Instants would force the server to decide
+   which local days they touch anyway.
+3. **Maximum span 90 days**, refused as a plain `ValidationFailed` 400 rather
+   than a new reason code — the same treatment an oversized `pageSize` gets
+   (decision `0015`). Consequence worth noting: **Phase 5 may add no reason
+   codes at all**, which would be a first for WP-3.
+4. **An archived resource returns an empty interval list**, not 422
+   `ResourceArchived`. FR-3.5 keeps archived resources readable, "nothing is
+   bookable" is the true answer, and a 422 on a read is out of character with
+   every other read in this API. The response carries `isArchived` so a client
+   can tell an empty result apart from a closed schedule.
+5. **Intervals shorter than the resource's `MinDurationMinutes` are dropped.**
+   An endpoint promising bookable time should not return a 15-minute gap on a
+   resource with a 30-minute floor.
+
+**Note for whoever promotes D2 to `0020`:** answer 1 narrows D2's wording. D2
+says "free/busy intervals carrying `remainingCapacity`"; the endpoint returns
+**free intervals only**. D2's substance is intact — an interval with a number,
+not a fixed grid — but the record should say "bookable intervals" and note the
+narrowing rather than repeating "free/busy".
+
+#### Step split — four
+
+Each built and handed back for review on its own, per the delivery style above.
+Steps 1 and 2 need no database at all, which makes them quick to review.
+
+1. **Timezone conversion and window expansion.** `ITimeZoneCatalog` grows; local
+   windows become merged UTC intervals across a date range, including the two
+   DST rules and the midnight bridge. Pure unit tests, no endpoint.
+2. **Interval algebra and the capacity sweep.** Blackout subtraction,
+   `remainingCapacity`, the minimum-duration filter. Also pure.
+3. **The endpoint.** Query, handler, validator, DTOs, repository port and
+   implementation, controller, integration tests — bookings via decision
+   `0017`'s raw-SQL fixture, plus a seeded-volume smoke test for the NFR.
+4. **Cleanup, docs, AC sweep.** The dead-method cleanup below; promote D2 and D3
+   to `0020` and `0021`; write up the midnight convention; the cross-cutting AC
+   pass; roadmap and Postman docs.
+
+Three steps is possible by folding 1 and 2 into one "calculator" step, but those
+are the two hardest things in the phase and separating them means each is
+reviewed on its own.
+
+#### What step 1 delivered — done 2026-09-03
+
+Timezone conversion and window expansion, no database and no endpoint. 578 unit
+tests pass (49 new); the 226 integration tests were re-run unchanged, since
+nothing in this step is reachable from a client yet.
+
+New in `BookSpace.Domain/Availability/`:
+
+- **`UtcInterval`** — a half-open `[StartUtc, EndUtc)` span, the unit every later
+  step works in. It refuses a non-`Utc` `DateTimeKind` and refuses an empty span:
+  emptiness is expressed by an interval being *absent* from a list, so no later
+  step has to ask whether an interval it was handed is real.
+- **`IntervalAlgebra.Merge`** — ordered, non-overlapping output, joining
+  overlapping *and merely touching* intervals. Touching is the common case here,
+  not a corner: it is what collapses Phase 3's deliberately adjacent windows and
+  what rejoins the two-row overnight schedule.
+- **`AvailabilityWindowExpansion.ExpandToUtc`** — the weekly schedule over a
+  resource-local date range, merged.
+- **`IResourceTimeZone`** — the one architectural thing the plan did not
+  anticipate; see below.
+
+New in `BookSpace.Infrastructure/Time/`: **`SystemResourceTimeZone`**, the two D3
+resolution rules against real tzdata, handed out by `ITimeZoneCatalog
+.GetResourceTimeZone(string)`.
+
+**Where the conversion contract ended up, and why it is not quite what the plan
+said.** The plan asked for two things that pull in opposite directions: the
+interval algebra in `Domain` as pure functions, and the DST rules "behind
+`ITimeZoneCatalog`" because they depend on the host's tzdata. A pure Domain
+function cannot call an Application port, so the split is: **Domain declares
+`IResourceTimeZone`** (a resolved zone, two methods, nothing else about it), and
+**`ITimeZoneCatalog` hands out implementations of it**. The tzdata dependency is
+still behind the abstraction, exactly as the plan wanted; the *interface* just
+lives one project lower than the plan assumed. The alternative — Domain resolving
+zone ids itself — would have put the host's timezone database inside code that is
+supposed to have no I/O.
+
+A useful side effect: the risky code and the algebra are now tested separately.
+`SystemResourceTimeZoneTests` asserts the two rules against real
+`America/New_York` (and `Australia/Lord_Howe`, whose gap is 30 minutes rather than
+an hour, so nothing can be hard-coded to a whole hour);
+`AvailabilityWindowExpansionTests` runs mostly against a fixed-offset fake zone,
+so the expansion loop, the merge and the midnight convention cannot fail because
+a CI image ships different tzdata. The 23-hour and 25-hour day assertions use the
+real zone, since that is the one claim a fake cannot make.
+
+**The two DST rules, verified rather than assumed.** Probed against this
+machine's tzdata before any code was written, and the plan's description of
+`TimeZoneInfo`'s defaults is confirmed: `ConvertTimeToUtc` throws on a local time
+in a clocks-forward gap, and for an ambiguous local time it returns the *later*
+instant. Under the rules as implemented, `2026-03-08` in `America/New_York`
+expands to 23 hours and `2026-11-01` to 25.
+
+Finding the transition instant for a gap needed a decision the plan did not
+reach. `TimeZoneInfo` does not expose a gap's own start without unpacking
+`AdjustmentRule.DaylightTransitionStart`'s floating "second Sunday in March"
+form, and `GetUtcOffset` on an invalid local time returns the *pre*-transition
+offset, which reproduces the "shift it forward by an hour" behaviour D3 does not
+want. So `SystemResourceTimeZone` walks forward one second at a time to the first
+local time the zone considers real and converts that. Exact for anything this
+system can express (`time(0)` columns, and every tzdata transition falls on a
+whole minute), bounded at four hours so it can never spin, and it runs only for a
+local time actually inside a gap — twice a year at most per resource.
+
+**Two things worth the owner's eye, both behaviour rather than plumbing:**
+
+- **The midnight convention is now `AvailabilityWindowExpansion.ClosesAtEndOfDay`
+  and it applies unconditionally**, not only when there is a next-day window to
+  join. A `ClosesAt` of exactly `23:59:59` is read as the following midnight. The
+  plan framed this as a convention "when joining consecutive-day windows", but
+  making it conditional would mean the same stored window means two different
+  things depending on what its neighbour happens to be. Unconditional is also the
+  more faithful reading: `CK_AvailabilityWindows_Window` and `time(0)` leave an
+  admin no other way to say "until midnight". Cost: one second of availability
+  granted on a window that closes at end-of-day with nothing following it —
+  invisible at booking granularity, and the direction an admin intended.
+- **A window lying entirely inside a clocks-forward gap disappears for that date
+  only.** It opens and closes at the same instant, so it is dropped rather than
+  reported as a zero-length slot. That is D3 working as intended — those local
+  times did not happen that day — but it is the one case where a resource's
+  schedule silently produces less than it says, so it has a test of its own next
+  to one proving the same window is ordinary a week later.
+
+Not done in this step, as planned: blackout subtraction, the capacity sweep, the
+minimum-duration filter (all step 2), and everything with a database (step 3).
+`IntervalAlgebra` holds only `Merge` so far.
+
+#### What step 2 delivered — done 2026-09-03
+
+The rest of the calculation, still with no database and no endpoint. 621 unit
+tests pass (43 new); the 226 integration tests were re-run unchanged.
+
+- **`IntervalAlgebra.Subtract`** — interval difference, which is how a blackout
+  overrides the weekly schedule (FR-3.4). It removes *instants*, so it can take a
+  chunk out of the middle of an open span and leave two. Both sides are merged
+  first, which is also what makes decision `0019`'s **overlapping blackouts** need
+  no special handling — a pile of them merges into the single span it means.
+- **`CapacitySweep.Subtract`** — the other subtraction, and the one that is not
+  about time. A booking removes *units*, not instants (decision `0005`), so a
+  1-unit booking against a capacity of 4 leaves the same time open with 3 left,
+  and time only disappears once the units run out. Implemented as a sweep line:
+  each booking becomes a claim event and a release event, and one ordered pass
+  keeps a running total. Reports the figure per interval rather than reducing the
+  range to a single worst case, which is the difference from
+  `IResourceRepository.PeakConcurrentBookedQuantityAsync`.
+- **`BookedQuantity`** and **`BookableInterval`** — the sweep's input and output.
+  `BookableInterval` is decision **D2** as a type: an interval and a number, never
+  a boolean and never a fixed grid. It refuses a remaining capacity of zero, so
+  the name cannot be false.
+- **`AvailabilityCalculator.BookableIntervals`** — all four steps as one call.
+
+**One addition beyond the step's stated contents, and why.** The plan listed step
+2 as the pieces and left orchestration to step 3's handler. `AvailabilityCalculator`
+composes them here instead. The reason is the same one behind putting the algebra
+in `Domain` at all: WP-4 has to answer "may this booking be created" over the same
+four inputs, and if it composes the steps itself the two orderings will drift —
+which is precisely the failure the architectural note warns about. Composing costs
+about forty lines and gives WP-4 one call to make. The cost is that step 3's
+handler is now thinner than the plan implies: load, call, map.
+
+**Two ordering decisions inside the calculator, both load-bearing:**
+
+- **Blackouts are subtracted before bookings.** A booking inside blacked-out time
+  has already been cancelled by decision `0001`'s cascade, so counting its units
+  against a span the blackout removed would be arithmetic on a row whose meaning
+  is gone. The other order gives the same intervals here but would start to
+  matter the moment a cascade missed something.
+- **Zero-capacity spans are dropped *after* adjacent equal-capacity spans are
+  rejoined**, not before. The sweep cuts at every booking boundary, and a boundary
+  where the figure does not change is an artefact of storage — two back-to-back
+  1-unit bookings would otherwise split a free afternoon into two identical
+  halves. Doing the drop first would instead rejoin spans *across* a fully-booked
+  gap and report time that is not free. Rejoining is confined to one open
+  interval, so spans either side of a closing time or a blackout stay separate
+  whatever their capacity says.
+
+**One consequence of Q5 worth the owner's decision, found while testing it.** The
+minimum-duration floor is applied to the intervals as they come out of the sweep,
+which is what Q5 says. But the sweep splits at every capacity change, so a 1-unit
+booking in the middle of an open day leaves three intervals, and the two flanking
+it can fall under the floor and disappear — even though a 1-unit booking spanning
+the whole run *would* be accepted by WP-4. On a resource with a 4-hour floor, an
+hour-long booking at 16:00 can hide the whole afternoon before it.
+
+This is inherent in D2's response shape rather than a bug in the filter: an
+interval carries one remaining-capacity figure, so it cannot also say "at least
+one unit, for longer". Implemented as specified, with a test recording the
+behaviour (`AShortBookingCanHideTimeThatIsStillBookableAtALowerQuantity`).
+Widening it would mean either a per-quantity response or dropping the floor from
+the query and leaving it to WP-4's rejection — both contract changes, so both the
+owner's call, not this phase's. **Not urgent for step 3**: it only bites a
+resource that has a `MinDurationMinutes` *and* partially-consumed capacity.
+
+#### What steps 3 and 4 delivered — done 2026-09-03
+
+The endpoint, and the phase's cleanup and documentation. 634 unit + 263
+integration tests pass (13 net new unit tests — 16 added, 3 deleted with the
+methods they covered — and 37 new integration tests).
+
+**Step 3, the endpoint.** `GET /resources/{id}/availability?from=&to=` on
+`TenantMember`. Three queries and no more, whatever the range length: the
+resource with its schedule, the blackouts overlapping the span, the live bookings
+overlapping the span. Everything after that is in memory.
+
+- `IAvailabilityRepository` — its own port over three tables, following
+  `IBlackoutPeriodRepository`'s precedent that a port should match the question.
+  It differs in owning **no writes at all**, so there is no `SaveChangesAsync`.
+  Its two interval methods return **Domain value types** rather than DTOs,
+  because the consumer is the calculator rather than a response mapper — which
+  leaves the handler nothing to convert.
+- `AvailabilityWindowExpansion.LocalDateRangeToUtc` — the UTC bounds of the
+  requested local dates, so the rows fetched and the windows expanded cannot be
+  scoped to different spans. Added to the Domain rather than computed in the
+  handler for exactly that reason.
+- `AvailabilityQueryRules` — the 90-day cap and the inclusive day count. Nothing
+  here throws an `AppException`, which is the point: an over-long range is a
+  malformed request, so it is `ValidationFailed` 400 like an oversized
+  `pageSize`. **The phase added no reason code at all.**
+- The handler short-circuits an archived resource before the second and third
+  queries, since neither could change the answer. Asserted, because that is the
+  kind of optimisation that quietly stops holding.
+
+**Step 4, cleanup and docs.** The three dead methods deleted (see below);
+`SeedData` moved onto `ReplaceAvailabilityWindows`; D2 and D3 promoted to
+[`0020`](decisions/0020-bookable-interval-semantics.md) and
+[`0021`](decisions/0021-daylight-saving-for-availability-ranges.md); the midnight
+convention written up as [`0022`](decisions/0022-availability-window-midnight-convention.md).
+
+**Three calls worth flagging:**
+
+- **The midnight convention got its own numbered record rather than a paragraph
+  inside `0021`.** The plan said "write up the midnight convention" without
+  saying where. It is not a DST question — it is about `time(0)` being unable to
+  express `24:00:00` and `CK_AvailabilityWindows_Window` forbidding a wrap — so
+  folding it into the DST record would have filed it under the wrong cause.
+- **The AC-4 route table gained the availability route.** `ResourceAcceptanceTests
+  .EveryRouteTakingAnId_TreatsAnotherTenantsRealIdAsNotFound` is parameterised
+  over every resource route, so a new one that takes an id belongs in it or the
+  claim stops being true. *Pre-existing gap, deliberately not changed:* the
+  blackout routes are still absent from that table — they take a body and a
+  nested id, so `SendWriteAsync` would need work — and their cross-tenant
+  coverage lives in `BlackoutPeriodEndpointTests` instead.
+- **Most integration tests use a resource in the `UTC` zone.** The conversion
+  rules already have thorough unit tests against real tzdata, and a resource
+  whose local time *is* UTC keeps these assertions about what the endpoint
+  excludes rather than about arithmetic the test would have to redo to state its
+  own expectation. Two tests use `America/New_York` on fixed dates for the 23-
+  and 25-hour days, and one for the ordinary offset.
+
+**One trap the fixture avoided, worth recording.** The volume test's first
+assertion was `NotEmpty` plus a capacity range — which would have passed just as
+happily if the raw-SQL inserts had affected zero rows, the exact failure decision
+`0017` warns about. It now asserts the **exact** interval count (weekdays × 8,
+because four bookings cut an eight-hour day into eight alternating spans) and the
+presence of a reduced figure. Getting that count wrong on the first attempt is
+how the weakness was found.
+
+#### The inherited cleanup — now answerable
+
+Caller counts checked 2026-09-03:
+
+| Method | Production callers | Trap? |
+|---|---|---|
+| `Resource.RemoveAvailabilityWindow` | none | no |
+| `Resource.RemoveApprover` | none | no |
+| `Resource.AddAvailabilityWindow` | one (`SeedData`) | **yes** |
+| `Resource.AddApprover` | one (`SeedData`) | no |
+
+**Delete the first three**, converting `SeedData` to `ReplaceAvailabilityWindows`.
+That kills the trap outright — a window added through `AddAvailabilityWindow` to
+an already-tracked resource is marked `Modified`, saves as a zero-row UPDATE and
+surfaces as a 409 `ConcurrencyConflict` for what is plainly an insert — and
+leaves exactly one way to mutate the schedule, the way the API already uses.
+
+Cost, so it is not a surprise: roughly a dozen test call sites use
+`AddAvailabilityWindow` for arrangement and move to `ReplaceAvailabilityWindows`.
+Mechanical, but it touches several test files.
+
+**`AddApprover` stays.** Approvers are an EF *owned* collection, which EF diffs
+as part of its owner, so it carries no equivalent trap — it is simply a method
+with one legitimate caller.
+
+**Done 2026-09-03.** 20 call sites, not a dozen. Most were arrangement and moved
+to a test-only `Resource.AddWindow` extension
+(`tests/BookSpace.UnitTests/ResourceScheduleArrangement.cs`) that appends *via*
+`ReplaceAvailabilityWindows` — so the append semantics exist nowhere in
+production, which is the whole point of deleting the method.
+`AvailabilityWindowTests` deliberately does not use it: that file is *about* the
+weekly schedule, so its arrangement goes through the real API too. Its four tests
+of the deleted method were **rewritten** rather than deleted — what they assert
+(properties kept, `OrgId` stamped from the owner, `ClosesAt > OpensAt`) belongs
+to `AvailabilityWindow` and still goes through the same constructor. Three tests
+in `ResourceTests` *were* deleted, being tests of the deleted methods themselves.
+Four stale comments elsewhere in the codebase named the removed method and were
+updated to say what replaced it.
+
+#### Risks
+
+- **The midnight one-second hole needs the documented convention**, not
+  discovery in a test. `ClosesAt` is `time(0)`, so the latest expressible value
+  is `23:59:59` and a rejoined overnight pair has a one-second gap at the
+  boundary. Treat `23:59:59` as end-of-day when joining consecutive-day windows.
+- **The NFR is what tests will not catch.** Three queries over a 90-day span
+  plus an in-memory sweep should be fine, but "responsive with hundreds of
+  bookings per resource" deserves a deliberate check rather than an assumption.
+- **CLAUDE.md §9's DST fall-back question stays open.** D3 resolves it for
+  *ranges*, which is all Phase 5 touches. The *occurrence* case — an instant,
+  which has to land somewhere — is untouched and belongs to WP-4. Phase 5 must
+  not quietly close it.
 
 The final AC sweep lands here: publishing a resource with rules end-to-end,
 the query excluding blackouts and bookings, non-admin writes rejected, and

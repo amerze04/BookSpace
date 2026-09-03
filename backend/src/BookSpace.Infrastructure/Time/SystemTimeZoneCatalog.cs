@@ -1,10 +1,11 @@
 using BookSpace.Application.Abstractions;
+using BookSpace.Domain.Availability;
 
 namespace BookSpace.Infrastructure.Time;
 
 // ITimeZoneCatalog against the host's timezone database.
 //
-// Two checks, not one, and the second is the interesting one.
+// IsKnownIanaId does two checks, not one, and the second is the interesting one.
 // TryFindSystemTimeZoneById on Windows resolves *both* IANA ids
 // ("America/New_York", via ICU) and Windows ids ("Eastern Standard Time"), so
 // on its own it would happily accept a Windows id. CLAUDE.md §4.3 needs IANA
@@ -33,4 +34,11 @@ internal sealed class SystemTimeZoneCatalog : ITimeZoneCatalog
         return TimeZoneInfo.TryFindSystemTimeZoneById(timeZoneId, out _)
             && TimeZoneInfo.TryConvertIanaIdToWindowsId(timeZoneId, out _);
     }
+
+    // Resolution only — no IANA check, see the interface for why the read path
+    // is deliberately the more forgiving of the two. FindSystemTimeZoneById's
+    // own TimeZoneNotFoundException is the failure, unwrapped: it already says
+    // which id could not be found, and there is no better answer to give.
+    public IResourceTimeZone GetResourceTimeZone(string timeZoneId)
+        => new SystemResourceTimeZone(TimeZoneInfo.FindSystemTimeZoneById(timeZoneId));
 }

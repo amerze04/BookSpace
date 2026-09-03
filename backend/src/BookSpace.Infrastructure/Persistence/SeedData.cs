@@ -131,6 +131,14 @@ public static class SeedData
         context.RecurrenceRules.Add(recurrenceRule);
     }
 
+    // ReplaceAvailabilityWindows, which is the only way to set a schedule — the
+    // per-window AddAvailabilityWindow was deleted in WP-3 Phase 5 step 4. It
+    // carried a live EF trap: a window added to an already-tracked resource is
+    // marked Modified rather than Added and saves as a zero-row UPDATE, which
+    // surfaces as a 409 for what is plainly an insert (see
+    // IResourceRepository.AddAvailabilityWindows). This method was its last
+    // caller, and only escaped the trap because it runs against a resource that
+    // is itself Added, so the children cascade with it.
     private static void AddWeekdayWindows(Resource resource, Guid actorUserId, DateTime now)
     {
         var weekdays = new[]
@@ -138,10 +146,10 @@ public static class SeedData
             DayOfWeek.Monday, DayOfWeek.Tuesday, DayOfWeek.Wednesday, DayOfWeek.Thursday, DayOfWeek.Friday
         };
 
-        foreach (var weekday in weekdays)
-        {
-            resource.AddAvailabilityWindow(
-                Guid.NewGuid(), weekday, new TimeOnly(9, 0), new TimeOnly(17, 0), actorUserId, now);
-        }
+        resource.ReplaceAvailabilityWindows(
+            weekdays.Select(weekday => new AvailabilityWindowDefinition(
+                Guid.NewGuid(), weekday, new TimeOnly(9, 0), new TimeOnly(17, 0))),
+            actorUserId,
+            now);
     }
 }
