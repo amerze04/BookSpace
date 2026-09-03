@@ -1,5 +1,6 @@
 using BookSpace.Domain.Common;
 using BookSpace.Domain.Entities;
+using BookSpace.Domain.Enums;
 
 namespace BookSpace.UnitTests;
 
@@ -13,7 +14,7 @@ public class AvailabilityWindowTests
     private static readonly DateTime NowUtc = new(2026, 8, 21, 12, 0, 0, DateTimeKind.Utc);
 
     private static Resource CreateResource() =>
-        new(Guid.NewGuid(), OrgId, "Conference Room A", "Room", capacity: 8,
+        new(Guid.NewGuid(), OrgId, "Conference Room A", ResourceType.Room, capacity: 8,
             timeZoneId: "America/New_York", requiresApproval: false,
             minDurationMinutes: null, maxDurationMinutes: null,
             description: null, createdByUserId: ActorId, nowUtc: NowUtc);

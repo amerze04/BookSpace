@@ -68,7 +68,13 @@ public sealed class GetResourceAvailabilityQueryRequestHandler
             resource.Id, span, cancellationToken);
 
         var bookable = AvailabilityCalculator.BookableIntervals(
-            resource, request.FromLocalDate, request.ToLocalDate, zone, blackouts, bookings);
+            resource,
+            request.FromLocalDate,
+            request.ToLocalDate,
+            zone,
+            blackouts,
+            bookings,
+            request.Quantity);
 
         // Already ordered by start and non-overlapping — every step of the
         // calculation preserves that — so no sort is needed here. Mapped by hand,
@@ -93,6 +99,7 @@ public sealed class GetResourceAvailabilityQueryRequestHandler
             timeZoneId,
             request.FromLocalDate,
             request.ToLocalDate,
+            request.Quantity,
             isArchived,
             intervals);
 }

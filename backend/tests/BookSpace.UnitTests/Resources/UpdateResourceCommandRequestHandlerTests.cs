@@ -1,6 +1,7 @@
 using BookSpace.Application.Common.Errors;
 using BookSpace.Application.Features.Resources.UpdateResource;
 using BookSpace.Domain.Entities;
+using BookSpace.Domain.Enums;
 using BookSpace.UnitTests.Security;
 
 namespace BookSpace.UnitTests.Resources;
@@ -19,7 +20,7 @@ public class UpdateResourceCommandRequestHandlerTests
     private const string OtherKnownZone = "Europe/Zagreb";
 
     private static Resource ExistingResource(int capacity = 8, bool requiresApproval = false) =>
-        new(Guid.NewGuid(), OrgId, "Conference Room A", "Room", capacity, KnownZone,
+        new(Guid.NewGuid(), OrgId, "Conference Room A", ResourceType.Room, capacity, KnownZone,
             requiresApproval, minDurationMinutes: 30, maxDurationMinutes: 240,
             description: "Main room", createdByUserId: ActorId, nowUtc: CreatedUtc);
 
@@ -32,7 +33,7 @@ public class UpdateResourceCommandRequestHandlerTests
         bool requiresApproval = false,
         int? min = 30,
         int? max = 240) =>
-        new(resourceId, name, description, "MeetingRoom", capacity, timeZoneId, requiresApproval, min, max);
+        new(resourceId, name, description, ResourceType.LabSlot, capacity, timeZoneId, requiresApproval, min, max);
 
     private static UpdateResourceCommandRequestHandler Handler(FakeResourceRepository repository) =>
         new(
@@ -53,7 +54,7 @@ public class UpdateResourceCommandRequestHandlerTests
         Assert.Equal(1, repository.SaveChangesCount);
         Assert.Equal("Board Room", response.Name);
         Assert.Equal("Top floor", response.Description);
-        Assert.Equal("MeetingRoom", response.ResourceType);
+        Assert.Equal(ResourceType.LabSlot, response.ResourceType);
         Assert.Equal(12, response.Capacity);
         Assert.Equal(15, response.MinDurationMinutes);
         Assert.Equal(60, response.MaxDurationMinutes);

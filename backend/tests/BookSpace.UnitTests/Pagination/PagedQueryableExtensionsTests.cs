@@ -1,5 +1,6 @@
 using BookSpace.Application.Common.Pagination;
 using BookSpace.Domain.Entities;
+using BookSpace.Domain.Enums;
 using BookSpace.Infrastructure.Persistence;
 using BookSpace.UnitTests.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -118,7 +119,7 @@ public class PagedQueryableExtensionsTests
                 for (var i = 1; i <= resourcesPerOrg; i++)
                 {
                     writer.Resources.Add(new Resource(
-                        Guid.NewGuid(), orgId, $"Room {i:00}", "Room",
+                        Guid.NewGuid(), orgId, $"Room {i:00}", ResourceType.Room,
                         capacity: 4, timeZoneId: "UTC", requiresApproval: false,
                         minDurationMinutes: null, maxDurationMinutes: null,
                         description: null, createdByUserId: actorId, nowUtc: Now));

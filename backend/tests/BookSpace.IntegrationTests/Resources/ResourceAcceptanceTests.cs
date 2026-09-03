@@ -73,7 +73,7 @@ public class ResourceAcceptanceTests
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-            var archived = await response.Content.ReadFromJsonAsync<ArchiveResourceCommandResponse>();
+            var archived = await response.Content.ReadFromJsonAsync<ArchiveResourceCommandResponse>(TestJson.Options);
             Assert.True(archived!.IsArchived);
             // FR-3.5: archiving preserves the resource, it does not blank it.
             Assert.Equal("Room To Archive", archived.Name);
@@ -85,11 +85,11 @@ public class ResourceAcceptanceTests
             Assert.True(fetched!.IsArchived);
 
             var defaultList = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
-                $"/resources?pageSize={PagingDefaults.MaxPageSize}");
+                $"/resources?pageSize={PagingDefaults.MaxPageSize}", TestJson.Options);
             Assert.DoesNotContain(created.Id, defaultList!.Items.Select(r => r.Id));
 
             var fullList = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
-                $"/resources?pageSize={PagingDefaults.MaxPageSize}&includeArchived=true");
+                $"/resources?pageSize={PagingDefaults.MaxPageSize}&includeArchived=true", TestJson.Options);
             Assert.Contains(created.Id, fullList!.Items.Select(r => r.Id));
         }
         finally
@@ -114,8 +114,8 @@ public class ResourceAcceptanceTests
             Assert.Equal(HttpStatusCode.OK, first.StatusCode);
             Assert.Equal(HttpStatusCode.OK, second.StatusCode);
 
-            var firstBody = await first.Content.ReadFromJsonAsync<ArchiveResourceCommandResponse>();
-            var secondBody = await second.Content.ReadFromJsonAsync<ArchiveResourceCommandResponse>();
+            var firstBody = await first.Content.ReadFromJsonAsync<ArchiveResourceCommandResponse>(TestJson.Options);
+            var secondBody = await second.Content.ReadFromJsonAsync<ArchiveResourceCommandResponse>(TestJson.Options);
 
             // Byte-for-byte identical, including UpdatedAtUtc: the second call
             // changed nothing, so it must not move "last changed".
@@ -178,7 +178,7 @@ public class ResourceAcceptanceTests
             var memberClient = await AuthenticatedClientAsync(AcmeMember);
 
             var list = await memberClient.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
-                $"/resources?pageSize={PagingDefaults.MaxPageSize}");
+                $"/resources?pageSize={PagingDefaults.MaxPageSize}", TestJson.Options);
             var summary = list!.Items.Single(r => r.Id == created.Id);
             Assert.Equal("Published Room", summary.Name);
             Assert.Equal(12, summary.Capacity);
@@ -509,7 +509,7 @@ public class ResourceAcceptanceTests
     {
         var response = await client.PostAsJsonAsync("/resources", payload);
         response.EnsureSuccessStatusCode();
-        return (await response.Content.ReadFromJsonAsync<CreateResourceCommandResponse>())!;
+        return (await response.Content.ReadFromJsonAsync<CreateResourceCommandResponse>(TestJson.Options))!;
     }
 
     private static async Task AssertReasonCodeAsync(HttpResponseMessage response, string expected)

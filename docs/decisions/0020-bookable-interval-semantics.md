@@ -76,18 +76,68 @@ slot, or a closing time.
   `BookSpace.Domain` rather than in the query handler — one implementation, two
   callers.
 
-## Known limitation, not yet resolved
+## Amendment — 2026-09-04: the answer is per-quantity
 
-The minimum-duration filter is applied to these intervals as they come out of
-the sweep (Phase 5's answer 5). Because the sweep splits at every capacity
-change, a booking that partially consumes capacity in the middle of an open span
-leaves shorter intervals either side, and those can fall under the floor and
-disappear — **even though a booking at a lower quantity spanning the whole run
-would be accepted**.
+This record originally closed with a known limitation, and it is now fixed. The
+fix changed the response's meaning, so it belongs here rather than in a note.
 
-This is inherent in the shape above: one figure per interval cannot also express
-"at least one unit, for longer". It is recorded in `docs/wp3-plan.md` with a
-worked example and pinned by a test
-(`AShortBookingCanHideTimeThatIsStillBookableAtALowerQuantity`). Resolving it
-means either a per-quantity response or moving the floor out of this query and
-leaving it to WP-4's rejection — both contract changes, so both open.
+### The limitation
+
+The minimum-duration filter was applied to intervals as they came out of the
+sweep, and the sweep cut at every capacity change. So a booking that partially
+consumed capacity in the middle of an open span left shorter intervals either
+side, and those could fall under the floor and vanish — **even though a booking
+at a lower quantity spanning the whole run would have been accepted**. On a
+resource with a four-hour floor, one hour booked at 16:00 could hide the whole
+afternoon.
+
+### The root cause, which was not the filter
+
+On a pooled resource, **"how long can I book?" has no single answer**, because
+it depends on how many units you want:
+
+```
+Capacity 4, open 09:00–17:00, one booking 12:00–16:00 × 1 unit
+
+want 1–3 units → 09:00–17:00   (8 hours)
+want 4 units   → 09:00–12:00 and 16:00–17:00
+```
+
+The old shape answered with the finest partition — complete, but not a list of
+bookable runs — and the filter then measured those fragments. Measuring the
+wrong thing was the bug; the filter was only where it showed.
+
+### The decision
+
+**The endpoint takes an optional `quantity`, defaulting to 1.** Given a
+quantity, the runs are determined: a segment that cannot hold that many units is
+a wall, everything between two walls is one interval, and its
+`remainingCapacity` is the **floor** across it. The minimum-duration filter then
+measures runs a caller can actually take, and is correct by construction.
+
+One is the honest default — the smallest legal booking
+(`CK_Bookings_Quantity`), so the most permissive and most complete answer — and
+on an exclusive resource (`Capacity = 1`, see
+[`0005`](0005-capacity-semantics.md)'s amendment) it is the only possible value,
+so nothing changes for those resources at all.
+
+The response echoes `quantity`, because the same range on the same resource
+answers differently for a different one.
+
+### What it costs
+
+**A run hides the fact that part of it had more units free than the rest.** With
+the data above and `quantity=1`, the answer is one interval carrying 3, not a
+three-part breakdown showing 4 either side of the booking. That figure is still
+a floor a client can trust for any sub-span, which is what keeps it safe; a
+caller who needs the texture asks again with a higher quantity.
+
+Accepted, because the alternative — the finest partition, with the filter
+measuring runs — would hand every client the job of joining the pieces before it
+could answer the only question a booker actually has.
+
+### Not resolved by this
+
+The response still carries no `kind`, so a **gap** in the list means "nothing
+bookable here" without saying whether that is a blackout, a wall, or a closing
+time. That is answer 1's narrowing above, and it stands.

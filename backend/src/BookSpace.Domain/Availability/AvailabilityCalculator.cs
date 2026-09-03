@@ -30,13 +30,21 @@ namespace BookSpace.Domain.Availability;
 //     belongs to the endpoint's validator, which can report it as a field error.
 public static class AvailabilityCalculator
 {
+    // The number of units a booker wants to hold at once when the endpoint is not
+    // asked. One is the honest default: it is the smallest legal booking
+    // (CK_Bookings_Quantity), so it yields the most permissive — and therefore
+    // most complete — answer, and on an exclusive resource (Capacity 1) it is the
+    // only possible value.
+    public const int DefaultRequiredQuantity = 1;
+
     public static IReadOnlyList<BookableInterval> BookableIntervals(
         Resource resource,
         DateOnly fromLocalDate,
         DateOnly toLocalDate,
         IResourceTimeZone zone,
         IEnumerable<UtcInterval> blackouts,
-        IEnumerable<BookedQuantity> bookings)
+        IEnumerable<BookedQuantity> bookings,
+        int requiredQuantity = DefaultRequiredQuantity)
     {
         ArgumentNullException.ThrowIfNull(resource);
         ArgumentNullException.ThrowIfNull(zone);
@@ -52,37 +60,39 @@ public static class AvailabilityCalculator
         //    cover, which can split an open span in two or delete it entirely.
         var afterBlackouts = IntervalAlgebra.Subtract(open, blackouts);
 
-        // 3. Existing bookings consume units, not time, so what comes back is
-        //    intervals carrying what is left of Capacity (decision D2).
-        var bookable = CapacitySweep.Subtract(afterBlackouts, bookings, resource.Capacity);
+        // 3. Existing bookings consume units, not time. What comes back is the
+        //    runs where at least requiredQuantity units are free throughout,
+        //    each carrying the floor of what is left across it (decision 0020).
+        var bookable = CapacitySweep.Subtract(
+            afterBlackouts, bookings, resource.Capacity, requiredQuantity);
 
         // 4. An endpoint promising bookable time should not offer a span too
         //    short to book (owner's call, 2026-09-03).
-        return DropShorterThanMinimumDuration(bookable, resource.MinDurationMinutes);
+        return DropShorterThanMinimumDuration(resource, bookable);
     }
 
-    // Applied to the intervals as they come out of the sweep, which is the
-    // owner's stated rule and also has a consequence worth knowing about: the
-    // sweep cuts wherever remaining capacity changes, so a booking of one unit
-    // in the middle of a long open span leaves three shorter intervals, and the
-    // two flanking it can fall under the floor and disappear — even though a
-    // single-unit booking spanning the whole run would in fact be accepted.
+    // Correct as written *because* step 3 already rejoined every run that can
+    // hold the booking. That was not true before 2026-09-04: the sweep used to
+    // cut wherever the remaining figure changed, so this filter measured
+    // constant-capacity fragments rather than bookable runs, and a single 1-unit
+    // booking in the middle of an open day could push the spans either side of it
+    // under the floor and delete them from the answer — time WP-4 would have
+    // accepted a booking for. Asking for a quantity is what made the runs
+    // well-defined, and measuring the runs is what makes this filter honest.
     //
-    // That is inherent in decision D2's response shape: an interval carries one
-    // remaining-capacity figure, so it cannot also express "at least one unit,
-    // for longer". Flagged rather than worked around, because widening it is a
-    // contract question, not an implementation detail.
+    // The rule itself asks the *resource*, not this method: MinDurationMinutes is
+    // read through Resource.CanFitABooking so that WP-4's booking-length
+    // rejection and this filter cannot drift apart. Only the minimum bears on a
+    // span — see that method for why the maximum does not.
     private static IReadOnlyList<BookableInterval> DropShorterThanMinimumDuration(
-        IReadOnlyList<BookableInterval> intervals,
-        int? minDurationMinutes)
+        Resource resource,
+        IReadOnlyList<BookableInterval> intervals)
     {
-        if (minDurationMinutes is null)
+        if (resource.MinDurationMinutes is null)
         {
             return intervals;
         }
 
-        var minimum = TimeSpan.FromMinutes(minDurationMinutes.Value);
-
-        return intervals.Where(i => i.Interval.Duration >= minimum).ToList();
+        return intervals.Where(i => resource.CanFitABooking(i.Interval.Duration)).ToList();
     }
 }

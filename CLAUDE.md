@@ -292,6 +292,18 @@ index; when a new decision doc is added, add its one-liner here too.
 5. [`0005`](docs/decisions/0005-capacity-semantics.md) — `Capacity` means
    concurrent units, not seats within one exclusive booking.
    `Bookings.Quantity` sums against it.
+   **Amended 2026-09-04** with the reading the original only ruled out:
+   **`Capacity = 1` *is* exclusivity** (one room, one printer), and
+   `Capacity = N` is a pool of N interchangeable units (pool cars, loaner
+   laptops). Prompted by the owner asking whether `ResourceType` should force a
+   room to capacity 1 — **it does not, and deliberately**: the label and the
+   booking model don't line up (a pool of identical huddle rooms is a
+   legitimately pooled `Room`), FR-3.1 gives the type no behaviour, and a wrong
+   capacity is a data-entry error the system cannot detect. The amendment also
+   records the **evidence that this needed writing down**: the seed data had
+   `Conference Room A` at capacity 8 — eight simultaneous bookings of one room —
+   which is exactly the seats reading `0005` forbids, corrected to 1 the same
+   day.
 6. [`0006`](docs/decisions/0006-orgid-denormalization.md) — `Bookings.OrgId`
    duplicating `Resources.OrgId` is deliberate (query performance +
    enforceable isolation), not accidental drift — and it's not just
@@ -430,16 +442,26 @@ index; when a new decision doc is added, add its one-liner here too.
    is a **free interval carrying `remainingCapacity`**, not a boolean free/busy
    timeline and not a fixed grid — forced by `0005`'s concurrent-units model,
    since a slot with one of four units taken is genuinely still open. The
-   interval is **cut wherever the figure changes**, so the number is a floor a
-   client can trust at every instant inside it, and `BookableInterval` refuses a
-   remaining capacity of zero so its name cannot be false. **WP-3's D2**,
-   promoted when Phase 5 implemented it; its "free/busy intervals" wording is
-   **narrowed to bookable intervals only** (owner's call, 2026-09-03) — there is
-   no `kind` discriminator, so a *gap* in the response means "nothing bookable
-   here" without saying whether that is a blackout, a full slot or a closing
-   time. Records the one known limitation: the minimum-duration floor is applied
-   per interval, so a partially-consumed span can hide time that is still
-   bookable at a lower quantity.
+   number is a floor a client can trust at every instant inside the interval, and
+   `BookableInterval` refuses a remaining capacity of zero so its name cannot be
+   false. **WP-3's D2**, promoted when Phase 5 implemented it; its "free/busy
+   intervals" wording is **narrowed to bookable intervals only** (owner's call,
+   2026-09-03) — there is no `kind` discriminator, so a *gap* in the response
+   means "nothing bookable here" without saying whether that is a blackout, a
+   wall or a closing time.
+   **Amended 2026-09-04**: the answer is now **per quantity**. The endpoint takes
+   an optional `quantity` (default 1), a segment that cannot hold that many units
+   is a **wall**, and everything between two walls is one interval carrying the
+   **floor** across it. That replaced cutting at every capacity change, which was
+   the root of the limitation this record used to close with: the
+   minimum-duration floor measured constant-capacity *fragments* rather than
+   bookable runs, so one 1-unit booking mid-day could delete the spans either
+   side of it from the answer — time WP-4 would have accepted. "How long can I
+   book" simply has no single answer on a pooled resource, and asking for the
+   quantity is what makes it well-defined. Cost, accepted: a run no longer shows
+   that part of it had *more* units free; a caller who needs that asks again with
+   a higher quantity. Nothing changes for an exclusive resource, where the
+   parameter can only be 1.
 21. [`0021`](docs/decisions/0021-daylight-saving-for-availability-ranges.md) — a
    DST gap or doubling inside an availability *window* is **absorbed by expanding
    to the UTC interval that actually elapsed**: the local day is simply 23 or 25
@@ -479,24 +501,9 @@ silently:
   from spring-forward. `0021` resolves it for availability *ranges* — a range
   absorbs a missing or repeated hour by being shorter or longer — and leaves
   the *occurrence* case, an instant which has to land somewhere, exactly as
-  open as it was. **WP-4 owns it.**
-- Whether **`ResourceType` should mean anything**, raised by the repo owner
-  2026-09-03. Today it is a required `NVARCHAR(50)` free string with no domain:
-  it is returned by every resource endpoint and is sortable, but nothing
-  branches on it and it is not even filterable — the only user-facing
-  categorical column in this schema that is not an enum with a `CHECK` (§5).
-  Two questions, and they are separate: (a) should it become an enum, which is
-  a cheap consistency fix; (b) should it *constrain capacity* — "a Room can
-  only be capacity 1". Analysis given to the owner: the real axis is
-  **exclusive vs pooled**, which `Capacity = 1` already expresses under `0005`,
-  and the category name does not line up with it (a pool of identical huddle
-  rooms is a legitimately pooled "Room"; "Van #2" is a legitimately exclusive
-  "Vehicle"), so deriving a capacity rule from a free-text label would block
-  real setups and be typo-past-able. **Deferred to after WP-3 by the owner**,
-  which is safe because nothing reads the column: it is write-then-display, so
-  no behaviour can quietly grow a dependency on its current shape. Expect an
-  amendment to `0005` recording the exclusive/pooled reading either way — the
-  actual gap found is documentation, not schema.
+  open as it was. **WP-4 owns it.** This is now the only open item — the
+  `ResourceType` question raised on 2026-09-03 was settled on 2026-09-04 and is
+  recorded in `0005`'s amendment.
 
 If a task needs a decision that isn't listed above and isn't in this log,
 **stop and ask** rather than picking silently — same rule as always, this
@@ -1283,18 +1290,16 @@ approved by the repo owner on 2026-08-28 before any code was written:
      handler is correspondingly thinner — load, call, map.
    - **Two orderings are load-bearing.** Blackouts are subtracted before bookings
      (a booking inside blacked-out time was already cancelled by decision
-     `0001`'s cascade); and zero-capacity spans are dropped **after** adjacent
-     equal-capacity spans are rejoined, since the other order would rejoin across
-     a fully-booked gap and report time that is not free.
-   - **Q5's minimum-duration floor has a consequence the owner may want to
-     revisit.** It is applied per interval, as specified — but the sweep splits at
-     every capacity change, so a 1-unit booking mid-day leaves three intervals and
-     the flanking two can fall under the floor and vanish, even though a 1-unit
-     booking across the whole run *would* be accepted. Inherent in D2's
-     one-figure-per-interval shape, implemented as specified, recorded by a test,
-     and written up in `docs/wp3-plan.md`. Only bites a resource that has a
-     `MinDurationMinutes` **and** partially-consumed capacity, so it does not
-     block step 3.
+     `0001`'s cascade); and spans that cannot hold the booking are dropped
+     **before** the surviving ones are rejoined, since the other order would
+     rejoin across a fully-booked gap and report time that is not free.
+   - **Q5's minimum-duration floor had a consequence, since fixed.** As
+     originally built it measured constant-capacity fragments rather than
+     bookable runs, so a 1-unit booking mid-day could push the spans either side
+     of it under the floor and delete them from the answer — time WP-4 would have
+     accepted a booking for. **Resolved 2026-09-04** by the `quantity` parameter
+     (see `0020`'s amendment); the regression test is
+     `AShortBookingNoLongerHidesTimeThatIsStillBookable`.
    Carries one item inherited from Phase 3 (settled 2026-09-02): an availability
    window **cannot cross midnight**, because `CK_AvailabilityWindows_Window`
    requires `ClosesAt > OpensAt`, so 22:00–02:00 is two windows on consecutive
@@ -1368,6 +1373,35 @@ Notes:
 - WP-3 deliberately does not touch `dbo.CreateBooking`/`dbo.ApproveBooking`,
   recurrence expansion, or the notification dispatch job. Phase 4 writes
   `Notifications` rows; sending them is later work.
+
+#### Corrections after WP-3 closed — 2026-09-04
+
+Not a new work package: three fixes to what WP-3 shipped, agreed with the owner
+after a review pass over the resource model. 666 unit + 279 integration tests
+pass. Detail in `docs/wp3-plan.md`; the reasoning lives in the decision records.
+
+1. **`ResourceType` became an enum with a `CHECK`, and filterable.**
+   `Room | Equipment | Vehicle | LabSlot | Other`, stored as its name per §5
+   (migration `AddResourceTypeDomain`, `Down` verified by a real revert), plus
+   `?type=` on `GET /resources`. It was the only user-facing categorical column
+   in the schema with no domain — `"Room"`, `"room"` and `"Meeting Room"` were
+   three distinct types — and it was sortable but not filterable, which is an odd
+   shape for a browse endpoint. **It still constrains nothing**, `Capacity` in
+   particular: see `0005`'s amendment for why the label and the booking model
+   don't line up. The seed's `Conference Room A` went from capacity 8 to 1, which
+   is the same decision's evidence rather than a tidy-up.
+2. **The duration limits became two questions on `Resource`.**
+   `CanFitABooking(span)` reads only the minimum — a span longer than the maximum
+   is fine, because a booker takes a piece of it — and
+   `AllowsBookingDuration(duration)` applies both. Before this,
+   `MinDurationMinutes` was read in exactly one place and `MaxDurationMinutes`
+   **nowhere at all**: stored, constrained, echoed in responses, never enforced.
+   WP-4 must call `AllowsBookingDuration` rather than re-deriving it; putting it
+   on the aggregate now is what stops the minimum existing in two
+   implementations, the same argument that put the interval algebra in `Domain`.
+3. **The availability query takes `quantity` (default 1).** Fixes the bug step 2
+   had recorded as an inherent limitation — see `0020`'s amendment and item 3 of
+   the Phase 5 entry above.
 
 ### Future work packages
 Appended here as the mentor sends them — one subsection per WP, same

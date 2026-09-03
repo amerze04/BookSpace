@@ -1,3 +1,5 @@
+using BookSpace.Domain.Enums;
+
 namespace BookSpace.Application.Features.Resources;
 
 // The fields a create and an edit have in common — which, because an edit is a
@@ -15,7 +17,7 @@ public interface IResourceWriteCommand
 
     string? Description { get; }
 
-    string ResourceType { get; }
+    ResourceType ResourceType { get; }
 
     int Capacity { get; }
 

@@ -6,6 +6,7 @@ using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.Resources.GetResource;
 using BookSpace.Application.Features.Resources.ListResources;
 using BookSpace.Domain.Entities;
+using BookSpace.Domain.Enums;
 using BookSpace.Infrastructure.Persistence;
 using BookSpace.IntegrationTests.Authentication;
 using BookSpace.IntegrationTests.Support;
@@ -45,7 +46,7 @@ public class ResourceReadEndpointTests
     {
         var client = await AuthenticatedClientAsync(AcmeMember);
 
-        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>("/resources");
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>("/resources", TestJson.Options);
 
         Assert.Equal(2, page!.TotalCount);
         Assert.Equal(2, page.Items.Count);
@@ -64,9 +65,9 @@ public class ResourceReadEndpointTests
         var client = await AuthenticatedClientAsync(AcmeMember);
 
         var first = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
-            "/resources?page=1&pageSize=1");
+            "/resources?page=1&pageSize=1", TestJson.Options);
         var second = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
-            "/resources?page=2&pageSize=1");
+            "/resources?page=2&pageSize=1", TestJson.Options);
 
         Assert.Equal(2, first!.TotalCount);
         Assert.Equal(2, second!.TotalCount);
@@ -86,7 +87,7 @@ public class ResourceReadEndpointTests
         var client = await AuthenticatedClientAsync(AcmeMember);
 
         var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
-            "/resources?page=50&pageSize=20");
+            "/resources?page=50&pageSize=20", TestJson.Options);
 
         Assert.Empty(page!.Items);
         Assert.Equal(2, page.TotalCount);
@@ -99,7 +100,7 @@ public class ResourceReadEndpointTests
     {
         var client = await AuthenticatedClientAsync(AcmeMember);
 
-        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>("/resources");
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>("/resources", TestJson.Options);
 
         Assert.Equal(["3D Printer", "Conference Room A"], page!.Items.Select(r => r.Name));
     }
@@ -109,20 +110,33 @@ public class ResourceReadEndpointTests
     {
         var client = await AuthenticatedClientAsync(AcmeMember);
 
-        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>("/resources?sort=-name");
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>("/resources?sort=-name", TestJson.Options);
 
         Assert.Equal(["Conference Room A", "3D Printer"], page!.Items.Select(r => r.Name));
     }
 
+    // Sorts by resourceType rather than capacity, and the reason is worth
+    // recording: both seeded resources now have capacity 1, since Conference Room
+    // A was corrected from 8 on 2026-09-04 (capacity counts concurrent units, and
+    // 8 was reading it as seats — decision 0005). A descending-capacity sort over
+    // two equal values is decided by the ThenBy(Id) tiebreak, which proves
+    // nothing.
+    //
+    // The type is stored as its name (CLAUDE.md §5), so descending order is
+    // alphabetical over the names — "Room" then "Equipment" — not the enum's
+    // declaration order. That distinction is easy to get wrong and this is where
+    // it is pinned.
     [Fact]
     public async Task List_SortsByAWhitelistedFieldOtherThanName()
     {
         var client = await AuthenticatedClientAsync(AcmeMember);
 
         var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
-            "/resources?sort=-capacity");
+            "/resources?sort=-resourceType", TestJson.Options);
 
-        Assert.Equal([8, 1], page!.Items.Select(r => r.Capacity));
+        Assert.Equal(
+            [ResourceType.Room, ResourceType.Equipment],
+            page!.Items.Select(r => r.ResourceType));
     }
 
     // SortOption matches case-insensitively, but the whitelist owns the spelling.
@@ -132,9 +146,11 @@ public class ResourceReadEndpointTests
         var client = await AuthenticatedClientAsync(AcmeMember);
 
         var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
-            "/resources?sort=-CAPACITY");
+            "/resources?sort=-RESOURCETYPE", TestJson.Options);
 
-        Assert.Equal([8, 1], page!.Items.Select(r => r.Capacity));
+        Assert.Equal(
+            [ResourceType.Room, ResourceType.Equipment],
+            page!.Items.Select(r => r.ResourceType));
     }
 
     // timeZoneId is a real response field but deliberately not sortable — the
@@ -188,7 +204,7 @@ public class ResourceReadEndpointTests
     public async Task GetById_ReturnsTheFullDetailRepresentation()
     {
         var client = await AuthenticatedClientAsync(AcmeMember);
-        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>("/resources");
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>("/resources", TestJson.Options);
         var printer = page!.Items.Single(r => r.Name == "3D Printer");
 
         var detail = await client.GetFromJsonAsync<GetResourceQueryResponse>($"/resources/{printer.Id}", TestJson.Options);
@@ -196,7 +212,7 @@ public class ResourceReadEndpointTests
         Assert.Equal(printer.Id, detail!.Id);
         Assert.Equal("3D Printer", detail.Name);
         Assert.Equal("Shared prototyping printer", detail.Description);
-        Assert.Equal("Equipment", detail.ResourceType);
+        Assert.Equal(ResourceType.Equipment, detail.ResourceType);
         Assert.Equal(1, detail.Capacity);
         Assert.True(detail.RequiresApproval);
         Assert.Equal(60, detail.MinDurationMinutes);
@@ -214,7 +230,7 @@ public class ResourceReadEndpointTests
     public async Task GetById_SerializesTimestampsAsUtcWithAnExplicitZ()
     {
         var client = await AuthenticatedClientAsync(AcmeMember);
-        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>("/resources");
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>("/resources", TestJson.Options);
         var anyResource = page!.Items.First();
 
         var body = await client.GetFromJsonAsync<JsonElement>($"/resources/{anyResource.Id}");
@@ -273,7 +289,7 @@ public class ResourceReadEndpointTests
         var client = await AuthenticatedClientAsync(AcmeMember);
 
         var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
-            $"/resources?pageSize={PagingDefaults.MaxPageSize}&includeArchived=true");
+            $"/resources?pageSize={PagingDefaults.MaxPageSize}&includeArchived=true", TestJson.Options);
 
         Assert.DoesNotContain(globexResourceId, page!.Items.Select(r => r.Id));
     }
@@ -311,7 +327,7 @@ public class ResourceReadEndpointTests
     {
         var client = await AuthenticatedClientAsync(AcmeAdmin);
 
-        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>("/resources");
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>("/resources", TestJson.Options);
 
         Assert.Equal(2, page!.TotalCount);
     }
@@ -324,6 +340,89 @@ public class ResourceReadEndpointTests
     // TenantIsolationTests among them — assert on Acme's exact resource count;
     // a test that permanently added a row would break them from a distance.
 
+    // ---- The type filter (2026-09-04) ----
+    //
+    // New with the enum. Before that the column was sortable but not filterable —
+    // an odd shape for a browse endpoint — and filtering free text could not have
+    // been trusted anyway, since "Room" and "room" were different values.
+
+    [Fact]
+    public async Task List_FiltersByType()
+    {
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
+            "/resources?type=Room", TestJson.Options);
+
+        Assert.All(page!.Items, r => Assert.Equal(ResourceType.Room, r.ResourceType));
+        Assert.Contains("Conference Room A", page.Items.Select(r => r.Name));
+        Assert.DoesNotContain("3D Printer", page.Items.Select(r => r.Name));
+    }
+
+    // The count comes from the filtered set, not the whole tenant — otherwise
+    // paging over a filter would promise pages that do not exist.
+    [Fact]
+    public async Task List_FilteringByType_NarrowsTheTotalCount()
+    {
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var all = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
+            "/resources", TestJson.Options);
+        var rooms = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
+            "/resources?type=Room", TestJson.Options);
+
+        Assert.Equal(2, all!.TotalCount);
+        Assert.Equal(1, rooms!.TotalCount);
+    }
+
+    // Query-string enum binding is Enum.TryParse, which is case-insensitive —
+    // separate machinery from the JSON converter, so worth its own assertion.
+    [Fact]
+    public async Task List_TypeFilterMatchIsCaseInsensitive()
+    {
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
+            "/resources?type=room", TestJson.Options);
+
+        Assert.Equal(1, page!.TotalCount);
+    }
+
+    [Fact]
+    public async Task List_FilteringByATypeNothingHas_IsEmptyButStillAPage()
+    {
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
+            "/resources?type=Vehicle", TestJson.Options);
+
+        Assert.Empty(page!.Items);
+        Assert.Equal(0, page.TotalCount);
+    }
+
+    [Fact]
+    public async Task List_WithNoTypeFilter_ReturnsEveryType()
+    {
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
+            "/resources", TestJson.Options);
+
+        Assert.Equal(
+            new[] { ResourceType.Equipment, ResourceType.Room },
+            page!.Items.Select(r => r.ResourceType).OrderBy(t => t.ToString()));
+    }
+
+    [Fact]
+    public async Task List_WithAnUnknownType_Returns400()
+    {
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var response = await client.GetAsync("/resources?type=Spaceship");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
     [Fact]
     public Task List_ExcludesArchivedResourcesByDefault() =>
         WithArchivedAcmeResourceAsync("Retired Projector", async archivedId =>
@@ -331,7 +430,7 @@ public class ResourceReadEndpointTests
             var client = await AuthenticatedClientAsync(AcmeMember);
 
             var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
-                $"/resources?pageSize={PagingDefaults.MaxPageSize}");
+                $"/resources?pageSize={PagingDefaults.MaxPageSize}", TestJson.Options);
 
             Assert.DoesNotContain(archivedId, page!.Items.Select(r => r.Id));
         });
@@ -343,7 +442,7 @@ public class ResourceReadEndpointTests
             var client = await AuthenticatedClientAsync(AcmeMember);
 
             var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
-                $"/resources?pageSize={PagingDefaults.MaxPageSize}&includeArchived=true");
+                $"/resources?pageSize={PagingDefaults.MaxPageSize}&includeArchived=true", TestJson.Options);
 
             var archived = page!.Items.Single(r => r.Id == archivedId);
             Assert.True(archived.IsArchived);
@@ -435,7 +534,7 @@ public class ResourceReadEndpointTests
 
         var now = DateTime.UtcNow;
         var resource = new Resource(
-            Guid.NewGuid(), acmeOrgId, name, "Equipment",
+            Guid.NewGuid(), acmeOrgId, name, ResourceType.Equipment,
             capacity: 1, timeZoneId: "America/New_York", requiresApproval: false,
             minDurationMinutes: null, maxDurationMinutes: null,
             description: null, createdByUserId: adminId, nowUtc: now);

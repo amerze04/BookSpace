@@ -593,7 +593,7 @@ public class ApproverEndpointTests
     {
         var response = await client.PostAsJsonAsync("/resources", ValidResource(name));
         response.EnsureSuccessStatusCode();
-        return (await response.Content.ReadFromJsonAsync<CreateResourceCommandResponse>())!;
+        return (await response.Content.ReadFromJsonAsync<CreateResourceCommandResponse>(TestJson.Options))!;
     }
 
     // Both isolation layers bypassed, same justification as TenantIsolationTests:

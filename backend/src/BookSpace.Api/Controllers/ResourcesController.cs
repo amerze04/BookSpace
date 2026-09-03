@@ -8,6 +8,7 @@ using BookSpace.Application.Features.Resources.ReplaceApprovers;
 using BookSpace.Application.Features.Resources.ReplaceAvailabilityWindows;
 using BookSpace.Application.Features.Resources.UpdateResource;
 using BookSpace.Application.Messaging;
+using BookSpace.Domain.Enums;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -41,11 +42,18 @@ public sealed class ResourcesController : ControllerBase
     // controller, the query with the handler, even where the fields coincide.
     // Defaults are repeated here rather than inherited from the query so an
     // omitted parameter binds to the documented default instead of 0/false.
+    // `?type=Room` — bound by name, not by ordinal, because
+    // JsonStringEnumConverter is a JSON concern and query binding is separate:
+    // ASP.NET Core parses an enum query value with Enum.TryParse, which accepts
+    // the name (case-insensitively) *and* the underlying number. `type=0` is
+    // therefore also accepted and means Room; harmless, and not worth a custom
+    // binder to forbid.
     public sealed record ListResourcesRequest(
         int Page = PagingDefaults.Page,
         int PageSize = PagingDefaults.PageSize,
         string? Sort = null,
-        bool IncludeArchived = false);
+        bool IncludeArchived = false,
+        ResourceType? Type = null);
 
     // Paging/sorting failures come back as 400 from ValidationBehavior, with
     // per-field errors — not silently clamped (PagingDefaults.MaxPageSize).
@@ -59,7 +67,8 @@ public sealed class ResourcesController : ControllerBase
         CancellationToken cancellationToken)
     {
         var result = await _sender.Send(
-            new ListResourcesQueryRequest(request.Page, request.PageSize, request.Sort, request.IncludeArchived),
+            new ListResourcesQueryRequest(
+                request.Page, request.PageSize, request.Sort, request.IncludeArchived, request.Type),
             cancellationToken);
 
         return Ok(result);
@@ -84,7 +93,7 @@ public sealed class ResourcesController : ControllerBase
     public sealed record CreateResourceRequest(
         string Name,
         string? Description,
-        string ResourceType,
+        ResourceType ResourceType,
         int Capacity,
         string TimeZoneId,
         bool RequiresApproval,
@@ -98,7 +107,7 @@ public sealed class ResourcesController : ControllerBase
     public sealed record UpdateResourceRequest(
         string Name,
         string? Description,
-        string ResourceType,
+        ResourceType ResourceType,
         int Capacity,
         string TimeZoneId,
         bool RequiresApproval,

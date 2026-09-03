@@ -1,3 +1,4 @@
+using BookSpace.Domain.Enums;
 using BookSpace.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
@@ -25,6 +26,15 @@ internal sealed class ResourceConfiguration : IEntityTypeConfiguration<Resource>
                 "AND ([MaxDurationMinutes] IS NULL OR [MaxDurationMinutes] > 0) " +
                 "AND ([MinDurationMinutes] IS NULL OR [MaxDurationMinutes] IS NULL " +
                 "OR [MaxDurationMinutes] >= [MinDurationMinutes])");
+            // CLAUDE.md §5: an enum is stored as its name *plus* a CHECK. The
+            // column was a free NVARCHAR(50) until 2026-09-04, which made it the
+            // only categorical column in this schema with no domain — "Room" and
+            // "room" were different types. The constraint is what stops a value
+            // the C# enum cannot express from being written by anything that
+            // bypasses EF (a migration, a fixture, a DBA).
+            t.HasCheckConstraint(
+                "CK_Resources_ResourceType",
+                "[ResourceType] IN ('Room', 'Equipment', 'Vehicle', 'LabSlot', 'Other')");
         });
         builder.HasKey(r => r.Id).HasName("PK_Resources");
         // Alternate key: target of Bookings' composite tenant FK (Decision #6).
@@ -32,7 +42,10 @@ internal sealed class ResourceConfiguration : IEntityTypeConfiguration<Resource>
 
         builder.Property(r => r.Name).HasMaxLength(200).IsRequired();
         builder.Property(r => r.Description).HasMaxLength(1000);
-        builder.Property(r => r.ResourceType).HasMaxLength(50).IsRequired();
+        // Stored as the enum's name, never as an int (CLAUDE.md §5). Length kept
+        // at the original 50 so the column itself does not change — only what
+        // may go in it.
+        builder.Property(r => r.ResourceType).HasConversion<string>().HasMaxLength(50).IsRequired();
         builder.Property(r => r.Capacity).IsRequired();
         builder.Property(r => r.TimeZoneId).HasMaxLength(60).IsRequired();
         builder.Property(r => r.RequiresApproval).IsRequired();

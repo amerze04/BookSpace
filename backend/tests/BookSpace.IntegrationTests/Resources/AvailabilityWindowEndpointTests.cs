@@ -498,7 +498,7 @@ public class AvailabilityWindowEndpointTests
     {
         var response = await client.PostAsJsonAsync("/resources", ValidResource(name));
         response.EnsureSuccessStatusCode();
-        return (await response.Content.ReadFromJsonAsync<CreateResourceCommandResponse>())!;
+        return (await response.Content.ReadFromJsonAsync<CreateResourceCommandResponse>(TestJson.Options))!;
     }
 
     // Counted through EF with both isolation layers bypassed, so the assertion is

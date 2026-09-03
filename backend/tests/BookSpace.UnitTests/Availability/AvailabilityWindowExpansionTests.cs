@@ -1,5 +1,6 @@
 using BookSpace.Domain.Availability;
 using BookSpace.Domain.Entities;
+using BookSpace.Domain.Enums;
 using BookSpace.Infrastructure.Time;
 
 namespace BookSpace.UnitTests.Availability;
@@ -28,7 +29,7 @@ public class AvailabilityWindowExpansionTests
         params (DayOfWeek Weekday, TimeOnly OpensAt, TimeOnly ClosesAt)[] windows)
     {
         var resource = new Resource(
-            Guid.NewGuid(), OrgId, "Conference Room A", "Room", capacity: 4,
+            Guid.NewGuid(), OrgId, "Conference Room A", ResourceType.Room, capacity: 4,
             timeZoneId: "America/New_York", requiresApproval: false,
             minDurationMinutes: null, maxDurationMinutes: null,
             description: null, createdByUserId: ActorId, nowUtc: NowUtc);

@@ -817,31 +817,41 @@ handler is now thinner than the plan implies: load, call, map.
   against a span the blackout removed would be arithmetic on a row whose meaning
   is gone. The other order gives the same intervals here but would start to
   matter the moment a cascade missed something.
-- **Zero-capacity spans are dropped *after* adjacent equal-capacity spans are
-  rejoined**, not before. The sweep cuts at every booking boundary, and a boundary
-  where the figure does not change is an artefact of storage — two back-to-back
-  1-unit bookings would otherwise split a free afternoon into two identical
-  halves. Doing the drop first would instead rejoin spans *across* a fully-booked
-  gap and report time that is not free. Rejoining is confined to one open
-  interval, so spans either side of a closing time or a blackout stay separate
-  whatever their capacity says.
+- **Spans that cannot hold the booking are dropped *before* the survivors are
+  rejoined**, not after. Doing it the other way round would rejoin spans *across*
+  a fully-booked gap and report time that is not free. Rejoining is confined to
+  one open interval, so spans either side of a closing time or a blackout stay
+  separate whatever their capacity says.
+  *(As first built, on 2026-09-03, this read "zero-capacity spans are dropped
+  after adjacent equal-capacity spans are rejoined" — the sweep cut at every
+  capacity change and joined only neighbours with an identical figure. The
+  ordering argument is unchanged; what a "wall" means widened on 2026-09-04.)*
 
-**One consequence of Q5 worth the owner's decision, found while testing it.** The
-minimum-duration floor is applied to the intervals as they come out of the sweep,
-which is what Q5 says. But the sweep splits at every capacity change, so a 1-unit
-booking in the middle of an open day leaves three intervals, and the two flanking
-it can fall under the floor and disappear — even though a 1-unit booking spanning
-the whole run *would* be accepted by WP-4. On a resource with a 4-hour floor, an
-hour-long booking at 16:00 can hide the whole afternoon before it.
+**One consequence of Q5 worth the owner's decision, found while testing it —
+and fixed on 2026-09-04.** Recorded here as it was found, because the diagnosis
+is the useful part.
 
-This is inherent in D2's response shape rather than a bug in the filter: an
-interval carries one remaining-capacity figure, so it cannot also say "at least
-one unit, for longer". Implemented as specified, with a test recording the
-behaviour (`AShortBookingCanHideTimeThatIsStillBookableAtALowerQuantity`).
-Widening it would mean either a per-quantity response or dropping the floor from
-the query and leaving it to WP-4's rejection — both contract changes, so both the
-owner's call, not this phase's. **Not urgent for step 3**: it only bites a
-resource that has a `MinDurationMinutes` *and* partially-consumed capacity.
+The minimum-duration floor was applied to the intervals as they came out of the
+sweep, which is what Q5 says. But the sweep split at every capacity change, so a
+1-unit booking in the middle of an open day left three intervals, and the two
+flanking it could fall under the floor and disappear — even though a 1-unit
+booking spanning the whole run *would* be accepted by WP-4. On a resource with a
+4-hour floor, an hour-long booking at 16:00 hid the whole afternoon before it.
+
+It looked inherent in D2's response shape — one remaining-capacity figure per
+interval cannot also say "at least one unit, for longer" — and was written up as
+a limitation with a test pinning it. It was not inherent. **The filter was
+measuring the wrong thing**: constant-capacity fragments rather than runs a
+booker could take. The root cause was that "how long can I book" has no single
+answer on a pooled resource without knowing how many units the caller wants.
+
+**Resolved by the `quantity` parameter** (owner's call, 2026-09-04; option C-i of
+three offered). Given a quantity, a segment that cannot hold it is a wall,
+everything between two walls is one interval carrying the floor across it, and
+the filter measures those — correct by construction rather than by a second rule.
+Written up in [`0020`](decisions/0020-bookable-interval-semantics.md)'s
+amendment; the test that pinned the bug became
+`AShortBookingNoLongerHidesTimeThatIsStillBookable`.
 
 #### What steps 3 and 4 delivered — done 2026-09-03
 
@@ -1182,3 +1192,82 @@ cheaply; none changes the schema.
   not create or expand series.
 - The notification *dispatch* job. Phase 4 writes `Notifications` rows; sending
   them is §7 work in a later package.
+
+---
+
+## Corrections after WP-3 closed — 2026-09-04
+
+Not part of the work package. A review pass over the resource model, prompted by
+the owner asking whether `ResourceType` should mean anything, surfaced a cluster
+of related problems; three were fixed in one pass (options **A-i**, **B-i**,
+**C-i** of the set offered, with the capacity coupling declined). 666 unit + 279
+integration tests pass.
+
+### What was wrong
+
+Nine problems in three clusters, and the relationships mattered more than the
+list:
+
+**What a resource *is*.** `ResourceType` was a free `NVARCHAR(50)` with no
+domain, sortable but not filterable, and nothing branched on it. Nothing
+distinguished an *exclusive* resource from a *pooled* one — `Capacity = 1`
+already expresses it, but that reading was written down nowhere. And the seed
+data proved the gap was real: `Conference Room A` had **capacity 8**, meaning
+eight simultaneous bookings of one room, which is the "seats" reading decision
+`0005` exists to forbid, sitting in the dataset the project demos from.
+
+**What the duration limits *do*.** `MaxDurationMinutes` was enforced **nowhere at
+all**. `MinDurationMinutes` was read in exactly one place — the availability
+query's filter — and WP-4 needs both on a booking, at which point the minimum
+would have existed twice.
+
+**What the response can *express*.** The endpoint took no quantity, so "how long
+can I book" had no single answer on a pooled resource; the minimum-duration floor
+therefore measured the wrong thing and hid bookable time; and because the
+response has no `kind`, the loss was invisible to a client.
+
+The clusters connect through the capacity model, not through the label:
+**the availability bug cannot occur on a capacity-1 resource**, because there a
+constant-capacity run *is* a free run and the floor measures exactly the right
+thing. That is provable, and it is why the two topics arrived together.
+
+### What was done
+
+- **A-i.** `ResourceType` is an enum (`Room | Equipment | Vehicle | LabSlot |
+  Other`) stored as its name with `CK_Resources_ResourceType`; `?type=` filters
+  `GET /resources`; the seed's capacity corrected to 1; decision
+  [`0005`](decisions/0005-capacity-semantics.md) amended with the
+  exclusive/pooled reading and with why the type does **not** constrain
+  capacity.
+- **B-i.** `Resource.CanFitABooking(span)` and
+  `Resource.AllowsBookingDuration(duration)` — one place, two named questions,
+  so WP-4's rejection and the read filter cannot drift.
+- **C-i.** `quantity` on the availability query, default 1;
+  [`0020`](decisions/0020-bookable-interval-semantics.md) amended.
+
+The capacity coupling ("a Room must be capacity 1") was **declined** by the
+owner, on the analysis that the label and the booking model do not line up.
+
+### Two things the pass turned up that were not in the plan
+
+- **`JsonStringEnumConverter` reads case-insensitively**, so `"room"` is accepted
+  and stored as `Room`. Deliberately left as-is and asserted
+  (`Create_AcceptsATypeInAnyCasingAndStoresItCanonically`), because unlike a
+  timezone id — which `ITimeZoneCatalog` keeps canonical by refusing
+  `"america/new_york"` — an enum is stored as the enum's own name whatever the
+  client sent, so strictness would protect nothing. Found by a test that
+  *expected* a 400 and instead leaked a resource into the shared test database,
+  breaking every count assertion downstream.
+- **The integration suite needed `TestJson.Options` on ~50 more
+  deserializations.** Putting an enum on the wire means a client has to opt in to
+  read it, which is the same consequence Phase 3 recorded when `DayOfWeek` became
+  the first enum in a response — the note there said so, and this pass is what it
+  was predicting.
+
+### Suggested, not done
+
+The seed data now has **no pooled resource at all** (both templates are capacity
+1), so nothing in the demo dataset exercises `remainingCapacity` below full or
+the `quantity` parameter. Adding one — "Pool Cars", capacity 5 — would make the
+seed teach the distinction `0005` now documents. Left out because it changes the
+resource counts several tests assert on, which is a separate, mechanical change.

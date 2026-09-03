@@ -1,6 +1,7 @@
 using BookSpace.Application.Features.Resources;
 using BookSpace.Application.Features.Resources.CreateResource;
 using BookSpace.Application.Features.Resources.UpdateResource;
+using BookSpace.Domain.Enums;
 using FluentValidation.Results;
 
 namespace BookSpace.UnitTests.Resources;
@@ -20,7 +21,7 @@ public class ResourceWriteValidatorTests
     private static ValidationResult ValidateCreate(
         string name = "Room A",
         string? description = null,
-        string resourceType = "Room",
+        ResourceType resourceType = ResourceType.Room,
         int capacity = 4,
         string timeZoneId = "America/New_York",
         int? min = null,
@@ -32,7 +33,7 @@ public class ResourceWriteValidatorTests
         Guid? resourceId = null,
         string name = "Room A",
         string? description = null,
-        string resourceType = "Room",
+        ResourceType resourceType = ResourceType.Room,
         int capacity = 4,
         string timeZoneId = "America/New_York",
         int? min = null,
@@ -90,22 +91,33 @@ public class ResourceWriteValidatorTests
         Assert.True(ValidateUpdate(description: null).IsValid);
     }
 
-    [Theory]
-    [InlineData("")]
-    [InlineData("   ")]
-    public void ResourceType_MustNotBeBlank(string resourceType)
+    // ResourceType became an enum on 2026-09-04, so the two rules that used to
+    // be here — not blank, fits the column — are gone with the free string, and
+    // this is what replaced them. An unknown *string* on the wire never reaches
+    // a validator (System.Text.Json refuses it, which is a 400 of its own); what
+    // this catches is an undefined value an internal caller can still construct,
+    // since C# lets any int be cast to an enum.
+    [Fact]
+    public void ResourceType_MustBeAValueTheEnumDefines()
     {
-        AssertFailsOn(ValidateCreate(resourceType: resourceType), nameof(CreateResourceCommandRequest.ResourceType));
-        AssertFailsOn(ValidateUpdate(resourceType: resourceType), nameof(UpdateResourceCommandRequest.ResourceType));
+        AssertFailsOn(
+            ValidateCreate(resourceType: (ResourceType)99),
+            nameof(CreateResourceCommandRequest.ResourceType));
+        AssertFailsOn(
+            ValidateUpdate(resourceType: (ResourceType)99),
+            nameof(UpdateResourceCommandRequest.ResourceType));
     }
 
-    [Fact]
-    public void ResourceType_MustFitTheColumn()
+    [Theory]
+    [InlineData(ResourceType.Room)]
+    [InlineData(ResourceType.Equipment)]
+    [InlineData(ResourceType.Vehicle)]
+    [InlineData(ResourceType.LabSlot)]
+    [InlineData(ResourceType.Other)]
+    public void ResourceType_AcceptsEveryDefinedValue(ResourceType resourceType)
     {
-        var tooLong = new string('x', ResourceFieldRules.ResourceTypeMaxLength + 1);
-
-        AssertFailsOn(ValidateCreate(resourceType: tooLong), nameof(CreateResourceCommandRequest.ResourceType));
-        AssertFailsOn(ValidateUpdate(resourceType: tooLong), nameof(UpdateResourceCommandRequest.ResourceType));
+        Assert.True(ValidateCreate(resourceType: resourceType).IsValid);
+        Assert.True(ValidateUpdate(resourceType: resourceType).IsValid);
     }
 
     // CK_Resources_Capacity, and decision 0005: zero concurrent units is a

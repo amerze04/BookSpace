@@ -1,4 +1,5 @@
 using BookSpace.Application.Messaging;
+using BookSpace.Domain.Enums;
 
 namespace BookSpace.Application.Features.Resources.CreateResource;
 
@@ -15,7 +16,7 @@ namespace BookSpace.Application.Features.Resources.CreateResource;
 public sealed record CreateResourceCommandRequest(
     string Name,
     string? Description,
-    string ResourceType,
+    ResourceType ResourceType,
     int Capacity,
     string TimeZoneId,
     bool RequiresApproval,

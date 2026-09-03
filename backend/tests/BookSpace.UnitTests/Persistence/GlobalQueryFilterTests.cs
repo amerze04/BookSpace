@@ -1,4 +1,5 @@
 using BookSpace.Domain.Entities;
+using BookSpace.Domain.Enums;
 using BookSpace.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 
@@ -181,7 +182,7 @@ public class GlobalQueryFilterTests
         Now.AddDays(1), Now.AddDays(2), "Maintenance", actorId, Now);
 
     private static Resource NewResource(Guid orgId, Guid actorId) => new(
-        Guid.NewGuid(), orgId, "Conference Room A", "Room",
+        Guid.NewGuid(), orgId, "Conference Room A", ResourceType.Room,
         capacity: 4, timeZoneId: "UTC", requiresApproval: false,
         minDurationMinutes: null, maxDurationMinutes: null,
         description: null, createdByUserId: actorId, nowUtc: Now);

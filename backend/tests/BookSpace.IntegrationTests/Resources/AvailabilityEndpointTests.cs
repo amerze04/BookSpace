@@ -365,9 +365,10 @@ public class AvailabilityEndpointTests
     // ---- Excludes existing bookings (WP-3 acceptance criterion) ----
 
     // The capacity model, through the endpoint: one unit of four leaves the time
-    // open with three left, rather than removing it.
+    // open with three left, rather than removing it — and for a caller wanting
+    // one unit it does not even break the span.
     [Fact]
-    public async Task Get_ABookingReducesRemainingCapacityWithoutRemovingTheTime()
+    public async Task Get_ABookingLowersTheFloorWithoutRemovingTheTime()
     {
         var client = await AuthenticatedClientAsync(AcmeAdmin);
         var resource = await CreateResourceAsync(client, "Availability Booking Partial");
@@ -381,11 +382,41 @@ public class AvailabilityEndpointTests
 
             var body = await GetAvailabilityAsync(client, resource.Id, monday, monday);
 
+            Assert.Equal(1, body.Quantity);
+            var interval = Assert.Single(body.Intervals);
+            Assert.Equal(Utc(monday, 9), interval.StartUtc);
+            Assert.Equal(Utc(monday, 17), interval.EndUtc);
+            Assert.Equal(3, interval.RemainingCapacity);
+        }
+        finally
+        {
+            await CleanUpAsync(resource.Id);
+        }
+    }
+
+    // The same day and the same booking, asked for all four units: now the booked
+    // hour is a wall. This pair is why `quantity` exists — one list of intervals
+    // cannot answer both questions.
+    [Fact]
+    public async Task Get_WithAQuantity_TreatsAPartialBookingAsAWall()
+    {
+        var client = await AuthenticatedClientAsync(AcmeAdmin);
+        var resource = await CreateResourceAsync(client, "Availability Booking Quantity");
+
+        try
+        {
+            await SetScheduleAsync(client, resource.Id, Window("Monday", "09:00:00", "17:00:00"));
+
+            var monday = new DateOnly(2026, 9, 7);
+            await InsertBookingAsync(resource.Id, Utc(monday, 12), Utc(monday, 13), quantity: 1);
+
+            var body = await GetAvailabilityAsync(client, resource.Id, monday, monday, quantity: 4);
+
+            Assert.Equal(4, body.Quantity);
             Assert.Equal(
                 new[]
                 {
                     (Utc(monday, 9), Utc(monday, 12), 4),
-                    (Utc(monday, 12), Utc(monday, 13), 3),
                     (Utc(monday, 13), Utc(monday, 17), 4),
                 },
                 body.Intervals.Select(i => (i.StartUtc, i.EndUtc, i.RemainingCapacity)));
@@ -394,6 +425,43 @@ public class AvailabilityEndpointTests
         {
             await CleanUpAsync(resource.Id);
         }
+    }
+
+    // Asking for more units than the resource has is a true "nothing", not an
+    // error: the validator cannot see the capacity, and an empty list is the
+    // honest answer.
+    [Fact]
+    public async Task Get_WithAQuantityAboveCapacity_ReturnsNoIntervals()
+    {
+        var client = await AuthenticatedClientAsync(AcmeAdmin);
+        var resource = await CreateResourceAsync(client, "Availability Quantity Too Big");
+
+        try
+        {
+            await SetScheduleAsync(client, resource.Id, Window("Monday", "09:00:00", "17:00:00"));
+
+            var monday = new DateOnly(2026, 9, 7);
+            var body = await GetAvailabilityAsync(client, resource.Id, monday, monday, quantity: 5);
+
+            Assert.Empty(body.Intervals);
+        }
+        finally
+        {
+            await CleanUpAsync(resource.Id);
+        }
+    }
+
+    [Fact]
+    public async Task Get_WithAQuantityOfZero_Returns400()
+    {
+        var client = await AuthenticatedClientAsync(AcmeAdmin);
+        var monday = new DateOnly(2026, 9, 7);
+
+        var response = await client.GetAsync(
+            $"{Url(Guid.NewGuid(), monday, monday)}&quantity=0");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        await AssertReasonCodeAsync(response, "ValidationFailed");
     }
 
     [Fact]
@@ -444,11 +512,10 @@ public class AvailabilityEndpointTests
             Assert.Equal(
                 new[]
                 {
-                    (Utc(monday, 9), Utc(monday, 10), 4),
-                    (Utc(monday, 10), Utc(monday, 12), 3),
-                    (Utc(monday, 12), Utc(monday, 13), 1),
-                    (Utc(monday, 13), Utc(monday, 14), 3),
-                    (Utc(monday, 14), Utc(monday, 17), 4),
+                    // One unit is free all day — the tightest hour has exactly
+                    // one — so a caller wanting one unit sees one span, and the
+                    // figure is the floor across it.
+                    (Utc(monday, 9), Utc(monday, 17), 1),
                 },
                 body.Intervals.Select(i => (i.StartUtc, i.EndUtc, i.RemainingCapacity)));
         }
@@ -514,8 +581,9 @@ public class AvailabilityEndpointTests
             Assert.Equal(
                 new[]
                 {
-                    (Utc(monday, 9), Utc(monday, 11), 2),
-                    (Utc(monday, 11), Utc(monday, 17), 4),
+                    // Two of four units are held until 11:00, which lowers the
+                    // day's floor without breaking the span.
+                    (Utc(monday, 9), Utc(monday, 17), 2),
                 },
                 body.Intervals.Select(i => (i.StartUtc, i.EndUtc, i.RemainingCapacity)));
         }
@@ -574,9 +642,9 @@ public class AvailabilityEndpointTests
             Assert.Equal(
                 new[]
                 {
-                    (Utc(monday, 9), Utc(monday, 10), 4),
-                    (Utc(monday, 10), Utc(monday, 11), 3),
-                    (Utc(monday, 11), Utc(monday, 15), 4),
+                    // The blackout is a hard split; the booking only lowers the
+                    // first half's floor.
+                    (Utc(monday, 9), Utc(monday, 15), 3),
                     (Utc(monday, 16), Utc(monday, 17), 4),
                 },
                 body.Intervals.Select(i => (i.StartUtc, i.EndUtc, i.RemainingCapacity)));
@@ -884,15 +952,32 @@ public class AvailabilityEndpointTests
                 .Select(from.AddDays)
                 .Count(date => date.DayOfWeek is not (DayOfWeek.Saturday or DayOfWeek.Sunday));
 
-            // Four one-hour bookings cut each eight-hour weekday into eight
-            // alternating intervals — 9, 10, 9, 10, … — none of which coalesce,
-            // because the figure changes at every boundary.
-            Assert.Equal(weekdays * 8, body.Intervals.Count);
-            Assert.All(body.Intervals, i => Assert.InRange(i.RemainingCapacity, 1, 10));
-            Assert.Contains(body.Intervals, i => i.RemainingCapacity == 9);
+            // At one unit, every hour of every weekday can take the booking, so
+            // each day is one interval — carrying 9 rather than 10, which is what
+            // proves the fixture's rows were actually counted. Without that
+            // second assertion this would pass just as happily if the inserts had
+            // silently affected zero rows, the exact failure decision 0017 warns
+            // about.
+            Assert.Equal(weekdays, body.Intervals.Count);
+            Assert.All(body.Intervals, i => Assert.Equal(9, i.RemainingCapacity));
             Assert.True(
                 stopwatch.Elapsed < TimeSpan.FromSeconds(5),
                 $"Availability over 90 days took {stopwatch.ElapsedMilliseconds} ms.");
+
+            // The same range needing every unit, which is strictly more work: the
+            // four bookings each become a wall, leaving the four free hours
+            // between and after them. This is where the sweep is actually
+            // exercised — 260 bookings turned into 1,040 intervals.
+            var everyUnit = Stopwatch.StartNew();
+            var exclusive = await GetAvailabilityAsync(
+                client, resource.Id, from, from.AddDays(89), quantity: 10);
+            everyUnit.Stop();
+
+            Assert.Equal(weekdays * 4, exclusive.Intervals.Count);
+            Assert.All(exclusive.Intervals, i => Assert.Equal(10, i.RemainingCapacity));
+            Assert.True(
+                everyUnit.Elapsed < TimeSpan.FromSeconds(5),
+                $"Availability at full quantity took {everyUnit.ElapsedMilliseconds} ms.");
         }
         finally
         {
@@ -906,9 +991,13 @@ public class AvailabilityEndpointTests
         HttpClient client,
         Guid resourceId,
         DateOnly from,
-        DateOnly to)
+        DateOnly to,
+        int? quantity = null)
     {
-        var response = await client.GetAsync(Url(resourceId, from, to));
+        // Omitted rather than sent as 1 when the caller does not care, so the
+        // endpoint's own default is what most of these tests exercise.
+        var url = Url(resourceId, from, to) + (quantity is null ? string.Empty : $"&quantity={quantity}");
+        var response = await client.GetAsync(url);
         response.EnsureSuccessStatusCode();
 
         return (await response.Content.ReadFromJsonAsync<GetResourceAvailabilityQueryResponse>(

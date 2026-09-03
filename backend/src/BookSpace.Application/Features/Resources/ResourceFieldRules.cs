@@ -1,3 +1,4 @@
+using BookSpace.Domain.Enums;
 using FluentValidation;
 
 namespace BookSpace.Application.Features.Resources;
@@ -20,7 +21,6 @@ public static class ResourceFieldRules
 {
     public const int NameMaxLength = 200;
     public const int DescriptionMaxLength = 1000;
-    public const int ResourceTypeMaxLength = 50;
     public const int TimeZoneIdMaxLength = 60;
 
     public static void AddResourceFieldRules<TCommand>(this AbstractValidator<TCommand> validator)
@@ -33,9 +33,16 @@ public static class ResourceFieldRules
         validator.RuleFor(c => c.Description)
             .MaximumLength(DescriptionMaxLength);
 
+        // A closed set since 2026-09-04, so the shape rules changed with it:
+        // "not blank" and a length cap are meaningless for an enum, and what
+        // matters instead is that the value is one the enum actually defines.
+        // Without IsInEnum, `(ResourceType)99` — which JSON cannot send but an
+        // internal caller can construct — would reach the entity and then the
+        // CK_Resources_ResourceType constraint, arriving as a 500 rather than a
+        // field error. An unparseable *string* on the wire never gets this far:
+        // System.Text.Json refuses it first, which is a 400 of its own.
         validator.RuleFor(c => c.ResourceType)
-            .NotEmpty()
-            .MaximumLength(ResourceTypeMaxLength);
+            .IsInEnum();
 
         // CK_Resources_Capacity. Decision 0005: this is a count of concurrent
         // units, so zero would mean a resource nothing can ever be booked on.
