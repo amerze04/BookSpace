@@ -428,7 +428,36 @@ The whole write path, in three chunks:
   - **A guard test already mirrored §6's list in code** (`ReasonCodesTests
     .SectionSixCodesAreAllPresent`), so deleting `ApprovalRequired` failed the
     suite until CLAUDE.md §6 and the test moved with it. Working as intended.
-- **1b — The procedure.** `dbo.CreateBooking` and the
+- **1b — The procedure. Done 2026-09-07.** 722 unit + 299 integration tests
+  pass (20 new, all integration). Delivered as planned, plus the evidence
+  section of `0023`. Four things worth recording:
+  - **The tests were verified to be able to fail.** Removing
+    `WITH (UPDLOCK, HOLDLOCK)` from the procedure and changing nothing else made
+    exactly the four concurrency tests fail and left the other sixteen passing:
+    20 simultaneous requests for one slot produced **3** bookings, and a pool of
+    4 was filled **10** times. This is what replaces the work package's
+    watch-it-fail step, and it is stronger — it indicts *this* procedure with one
+    thing removed, not a different implementation nobody would ship. The
+    weakened version was never committed.
+  - **The overlapping rows go into a table variable before the arithmetic.**
+    The lock is then taken by one obvious statement and the peak calculation is
+    plain SQL over a local, rather than table hints buried in a CTE that is
+    expanded twice. `HOLDLOCK` holds the range to the end of the transaction
+    either way.
+  - **`BookingRepository` uses raw ADO, not `ExecuteSqlAsync`/`FromSql`** — a
+    stated deviation from CLAUDE.md §5's usual instruction. The procedure returns
+    two columns and `Database.SqlQuery<T>` reads one scalar column, so the
+    alternatives were a keyless entity type in the model to describe a
+    procedure's result, or output parameters bolted onto an interpolated `EXEC`.
+    Every value is a typed `SqlParameter`, so §5's actual rule — never
+    concatenation — is met more strictly than interpolation meets it. The
+    connection is opened through `Database.OpenConnectionAsync`, never the raw
+    `DbConnection`, or `TenantSessionContextInterceptor` would not fire and the
+    procedure would fail closed on every call.
+  - **`IBookingRepository` carries only `CreateAsync` for now.** The EF-side
+    writes (the `ApprovalRequest` and `Notifications` rows) are added in 1c, when
+    the handler that builds them exists and their shape is known.
+- **1b as planned — The procedure.** `dbo.CreateBooking` and the
   `AddCreateBookingProcedure` migration (with a `Down` that drops it, verified by
   a real revert and re-apply, as every WP-3 migration was); `IBookingRepository`
   and its implementation; **and the parallel-procedure test straight away** —

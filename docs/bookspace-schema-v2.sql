@@ -464,3 +464,48 @@ CREATE INDEX IX_ApprovalRequests_Pending
 CREATE INDEX IX_Notifications_Due
     ON Notifications (SendAtUtc)
     WHERE SentAtUtc IS NULL;
+
+/* --- Stored procedures ---------------------------------- */
+
+-- FR-4.2 / AC-1: the only place the no-double-booking guarantee lives
+-- (CLAUDE.md §4.1). Added by WP-4 (migration AddCreateBookingProcedure).
+-- Full reasoning, rejected alternatives and measured evidence:
+-- docs/decisions/0023-booking-concurrency-strategy.md.
+--
+-- The shape, in brief:
+--   * UPDLOCK, HOLDLOCK key-range locks on the overlapping Bookings rows.
+--     HOLDLOCK locks the gaps too, so a row that does not exist yet cannot be
+--     inserted into a range this transaction already counted; UPDLOCK makes the
+--     range locks U-mode, so two contenders block and run in turn instead of
+--     deadlocking on their inserts. IX_Bookings_Resource_Start is what keeps
+--     that range to one resource rather than the table.
+--   * PEAK concurrent Quantity, not the SUM of overlapping rows. Two bookings
+--     that never coexist do not stack: with capacity 2, 09:00-10:00 and
+--     10:00-11:00 of one unit each leave 09:30-10:30 bookable. Summing would
+--     refuse a slot the availability query had already offered.
+--   * Reads Resources through the RLS-filtered table FIRST. TenantAccessPolicy
+--     is a filter policy, so it filters this procedure's SELECTs but does not
+--     block its INSERT — a connection with no session context would see zero
+--     overlapping bookings and overbook. No context means no visible Resources
+--     row either, so the procedure fails closed with 'ResourceNotFound'.
+--   * Re-checks BlackoutPeriods under HOLDLOCK. Decision 0001 gives a blackout
+--     absolute priority, and the cascade can otherwise miss a booking that did
+--     not exist when it ran.
+--   * Joins an ambient transaction (@@TRANCOUNT) rather than opening its own, so
+--     the ApprovalRequest and Notifications rows written by EF afterwards commit
+--     with the booking or not at all.
+--   * Takes @NowUtc from the caller rather than SYSUTCDATETIME(): datetime2(0)
+--     rounds on write (CLAUDE.md §4.3), and the response must match the row.
+--
+-- Returns one row on every path:
+--   ResultCode NVARCHAR(30) -- Created | ResourceNotFound | ResourceArchived
+--                           -- | BlackoutPeriod | SlotUnavailable | CapacityExceeded
+--   RemainingCapacity INT   -- units free across the interval; NULL where the
+--                           -- question did not arise
+--
+-- SlotUnavailable vs CapacityExceeded is split on what is left, not on the
+-- resource: nothing free at all vs. some free but fewer than asked. An exclusive
+-- resource can only ever produce the first (owner's call, 2026-09-07).
+--
+-- dbo.ApproveBooking (FR-7.5, AC-5) is WP-5 and takes the same locks in the same
+-- order over the same index.

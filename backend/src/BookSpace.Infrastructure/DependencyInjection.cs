@@ -51,6 +51,11 @@ public static class DependencyInjection
         services.AddScoped<IUserRepository, UserRepository>();
         services.AddScoped<IBlackoutPeriodRepository, BlackoutPeriodRepository>();
         services.AddScoped<IAvailabilityRepository, AvailabilityRepository>();
+        services.AddScoped<IBookingRepository, BookingRepository>();
+
+        // Scoped, like the repositories, and for the same reason: it wraps the
+        // request's own DbContext and its transaction (CLAUDE.md §5).
+        services.AddScoped<IUnitOfWork, UnitOfWork>();
 
         return services;
     }

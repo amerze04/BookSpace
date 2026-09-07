@@ -1,0 +1,88 @@
+using BookSpace.Domain.Enums;
+
+namespace BookSpace.Application.Abstractions;
+
+// The write port for bookings (WP-4 Phase 1b). Declared here, implemented in
+// BookSpace.Infrastructure, like every other port — CLAUDE.md §3 keeps EF Core
+// out of BookSpace.Application entirely.
+//
+// **It has no Add(Booking) and never will.** CLAUDE.md §4.1: booking creation
+// goes through dbo.CreateBooking, because the capacity guarantee is a
+// UPDLOCK/HOLDLOCK range lock that LINQ cannot express and SQL Server has no
+// exclusion constraint to fall back on. So the one method here hands the
+// procedure its arguments and returns what it decided — the shape of this
+// interface is the §4.1 rule made structural, rather than a comment asking
+// people to remember it.
+public interface IBookingRepository
+{
+    // Calls dbo.CreateBooking and reports the outcome. Never throws for a
+    // business rejection: a slot being taken is an answer, not a fault, and the
+    // handler is what turns the answer into an AppException with a reason code.
+    //
+    // Runs inside the caller's transaction when there is one (IUnitOfWork), so
+    // the ApprovalRequest and Notifications rows written afterwards commit with
+    // the booking or not at all. The procedure joins an ambient transaction
+    // rather than opening its own.
+    Task<BookingCreationOutcome> CreateAsync(NewBooking booking, CancellationToken cancellationToken);
+}
+
+// Everything dbo.CreateBooking needs, and nothing it does not.
+//
+// **Id is chosen by the caller**, before the unit of work starts, which is not
+// a style preference: IUnitOfWork's delegate can be re-run after a deadlock
+// (1205), and a procedure that minted its own id would insert a second booking
+// on the retry instead of the same one.
+//
+// **NowUtc is passed in rather than read as SYSUTCDATETIME()** inside the
+// procedure. CLAUDE.md §4.3: IClock.UtcNow is truncated to whole seconds
+// because datetime2(0) *rounds* on write, so a stamp taken in SQL could round
+// to a different second than the one the response is built from, and a client
+// reading the booking back would see a timestamp it was never given.
+public sealed record NewBooking(
+    Guid Id,
+    Guid ResourceId,
+    Guid UserId,
+    Guid? RecurrenceRuleId,
+    DateTime StartsAtUtc,
+    DateTime EndsAtUtc,
+    int Quantity,
+    string? Title,
+    BookingStatus Status,
+    Guid CreatedByUserId,
+    DateTime NowUtc);
+
+// What the procedure decided, and how much room was left when it decided it.
+//
+// RemainingCapacity is the units free across the requested interval *before*
+// this booking: the figure the two capacity refusals are split on, and on the
+// Created path what is left after it. Null where the question did not arise —
+// the resource was missing, archived, or blacked out.
+public sealed record BookingCreationOutcome(BookingCreationResult Result, int? RemainingCapacity);
+
+// The procedure's result codes. Deliberately not ReasonCodes strings: those are
+// the Application layer's wire contract and the mapping to them is the
+// handler's, so a change to what a client sees never reaches into SQL.
+public enum BookingCreationResult
+{
+    Created,
+
+    // The resource is not visible on this connection. Also what a missing tenant
+    // session context produces, and that is the point — see BookingRepository
+    // for why the procedure reads Resources before it counts anything.
+    ResourceNotFound,
+
+    // FR-3.5. Checked again here even though the handler checks it first,
+    // because the procedure is the last gate before a row exists.
+    ResourceArchived,
+
+    // Decision 0001 gives a blackout absolute priority, so the check is repeated
+    // under the lock — see the procedure for the race that makes this necessary
+    // rather than merely tidy.
+    BlackoutPeriod,
+
+    // No units free at some instant inside the interval.
+    SlotUnavailable,
+
+    // Units free throughout, but fewer than were asked for.
+    CapacityExceeded,
+}

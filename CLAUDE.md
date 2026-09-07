@@ -509,6 +509,25 @@ index; when a new decision doc is added, add its one-liner here too.
    second granted on an end-of-day window with nothing after it. `23:59:00` is a
    minute short and is taken literally. **Decided 2026-09-03** during Phase 5
    step 1.
+23. [`0023`](docs/decisions/0023-booking-concurrency-strategy.md) — the booking
+    concurrency strategy (WP-4's hard problem, FR-4.2, AC-1):
+    `dbo.CreateBooking` takes **`UPDLOCK, HOLDLOCK` key-range locks** on the
+    overlapping rows and compares the **peak concurrent** quantity — not the
+    sum — against capacity. `HOLDLOCK` locks the gaps, so a row that does not
+    exist yet cannot appear in a range already counted; `UPDLOCK` makes the
+    locks U-mode so contenders *block* rather than deadlock on their inserts;
+    `IX_Bookings_Resource_Start` keeps the range to one resource; 1205 retry is
+    part of the design, because the blackout re-check inverts lock order against
+    decision `0001`'s cascade. Two things it records beyond the choice: §4.1's
+    "sum" was **wrong** and would have refused legal bookings on a pooled
+    resource, and the RLS filter policy creates a **fail-open** hole (no session
+    context → zero overlapping rows → overbooking) that the procedure closes by
+    reading `Resources` first. `sp_getapplock` was the main rejected
+    alternative — deadlock-free, but it moves the guarantee off the data into a
+    string nothing forces a caller to take. Measured: without the hints, 20
+    simultaneous requests for one slot produced **3** bookings and a pool of 4
+    was filled **10** times. **Decided 2026-09-07**, implemented in WP-4
+    Phase 1b.
 
 **All four of WP-3's up-front decisions are now numbered records**: D1 →
 [`0014`](docs/decisions/0014-child-table-tenant-scoping.md) (Phase 1),
