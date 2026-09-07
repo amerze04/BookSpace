@@ -524,7 +524,54 @@ public class CreateBookingProcedureTests
             connection, resource, bookingId, startsAtUtc, endsAtUtc, quantity, status, nowUtc ?? At(0));
     }
 
+    // **Retries a deadlock victim, because production does.** Every real call to
+    // this procedure goes through IUnitOfWork, which runs inside
+    // Database.CreateExecutionStrategy() with 1205 in the retryable set
+    // (CLAUDE.md §5) — so a test calling it over a raw connection with no retry
+    // would be exercising a configuration that does not exist anywhere in the
+    // application, and would fail for a reason production has already handled.
+    //
+    // This is not papering over a flake. Decision 0023 says 1205 is an expected
+    // outcome rather than a fault, and one was in fact observed here at ten-way
+    // contention (2026-09-07) — the U-mode range locks turn ordinary two-way
+    // contention into blocking, but they do not make a deadlock impossible, and
+    // the blackout re-check inverts lock order against the cascade besides.
+    // Retrying is the design; the assertion that matters is that exactly the
+    // right number of bookings exist at the end, however many attempts that took.
+    //
+    // The booking id is passed in and reused across attempts, exactly as
+    // production reuses it — a retry must re-insert the same row, not a second
+    // one.
     private static async Task<ProcedureOutcome> ExecuteAsync(
+        SqlConnection connection,
+        TestResource resource,
+        Guid bookingId,
+        DateTime startsAtUtc,
+        DateTime endsAtUtc,
+        int quantity,
+        string status,
+        DateTime nowUtc)
+    {
+        const int deadlockVictim = 1205;
+        const int maxAttempts = 5;
+
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await ExecuteOnceAsync(
+                    connection, resource, bookingId, startsAtUtc, endsAtUtc, quantity, status, nowUtc);
+            }
+            catch (SqlException e) when (e.Number == deadlockVictim && attempt < maxAttempts)
+            {
+                // A short back-off, so the retry does not collide with the same
+                // contender again immediately. EF's strategy does the same.
+                await Task.Delay(attempt * 20);
+            }
+        }
+    }
+
+    private static async Task<ProcedureOutcome> ExecuteOnceAsync(
         SqlConnection connection,
         TestResource resource,
         Guid bookingId,

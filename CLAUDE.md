@@ -1457,32 +1457,50 @@ pass. Detail in `docs/wp3-plan.md`; the reasoning lives in the decision records.
 Appended here as the mentor sends them — one subsection per WP, same
 checklist format as above, status kept current as work lands.
 
-### WP-4 — Core Booking Engine — **Planned, not started**
+### WP-4 — Core Booking Engine — **In progress**
 Source doc: `docs/Work Packages - Week 4.pdf` (weeks 3–4, backend track), which
 carries WP-4 and WP-5 together. Plan: `docs/wp4-plan.md`, drafted 2026-09-07
 before any code, on four shape answers from the owner the same day.
 
 Tasks — Week 3 (correct for a single user):
-- [ ] Create a one-off booking for an available slot. FR-4.1.
-- [ ] Reject bookings outside availability, inside blackout, or over capacity. FR-4.3.
-- [ ] Return a clear, machine-readable reason on rejection. FR-4.5.
+- [x] Create a one-off booking for an available slot. FR-4.1. **Done 2026-09-07**
+      (Phase 1): POST /bookings on TenantMember, Confirmed or Pending.
+- [x] Reject bookings outside availability, inside blackout, or over capacity.
+      FR-4.3. **Done 2026-09-07** (Phase 1).
+- [x] Return a clear, machine-readable reason on rejection. FR-4.5.
+      **Done 2026-09-07** (Phase 1).
 - [ ] Let a member view and cancel their own bookings. FR-4.4.
 - [ ] Write tests for the single-user happy path and each rejection reason.
 
 Tasks — Week 4 (correct under concurrency):
-- [ ] Write a test that fires two bookings for the same slot simultaneously.
-- [ ] Choose and implement a concurrency strategy that makes a double-booking
-      impossible. FR-4.2.
-- [ ] Prove the fix with a concurrent test that passes.
-- [ ] Document which strategy was chosen and why.
+- [x] Write a test that fires two bookings for the same slot simultaneously.
+      **Done 2026-09-07** (Phase 1b), at the procedure level over parallel raw
+      connections, plus a 20-way and two pooled variants.
+- [x] Choose and implement a concurrency strategy that makes a double-booking
+      impossible. FR-4.2. **Done 2026-09-07** (Phase 1b): `dbo.CreateBooking`
+      takes UPDLOCK/HOLDLOCK key-range locks and compares the peak concurrent
+      quantity against capacity. Documented and defended in
+      [`0023`](docs/decisions/0023-booking-concurrency-strategy.md); the
+      remaining Week-4 tasks are the HTTP-level proof and the AC sweep.
+- [ ] Prove the fix with a concurrent test that passes. **Partly done** (Phase
+      1b): the procedure-level races pass, and the same tests were confirmed to
+      *fail* with the lock hints removed (three bookings on a capacity-1 room,
+      a pool of four filled ten times). Phase 3 adds the HTTP-level suite.
+- [x] Document which strategy was chosen and why. **Done 2026-09-07**:
+      [`0023`](docs/decisions/0023-booking-concurrency-strategy.md).
 
 Acceptance criteria:
 - [ ] Given one remaining slot and two simultaneous requests, exactly one
       succeeds and the other gets a clear rejection — never both. AC-1.
-- [ ] All rule violations (availability, blackout, capacity) are rejected with
-      clear reasons.
+- [x] All rule violations (availability, blackout, capacity) are rejected with
+      clear reasons. **Met 2026-09-07** (Phase 1c): every code this endpoint can
+      raise is asserted against the status its `ErrorKind` promises, alongside
+      the correlation id and the message never reaching the wire.
 - [ ] A member can cancel their own booking; the slot is freed.
-- [ ] The concurrency strategy is documented and defended.
+- [x] The concurrency strategy is documented and defended. **Met 2026-09-07**:
+      [`0023`](docs/decisions/0023-booking-concurrency-strategy.md), including
+      the four rejected alternatives, the peak-vs-sum correction to §4.1, the
+      RLS fail-open guard, and measured evidence from removing the lock hints.
 
 **Open decision (source doc): "Can a TenantAdmin cancel another user's booking,
 and if so, how is that user notified?"** — already answered by

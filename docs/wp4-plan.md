@@ -468,8 +468,35 @@ The whole write path, in three chunks:
   2026-09-07): the procedure *is* the strategy and this chunk already proves it,
   so a record written two phases later would justify a choice rather than record
   it. Phase 3 adds the measured end-to-end evidence to it.
-- **1c — The endpoint.** `POST /bookings`, the handler, validator and DTOs;
-  approval routing (`Pending` + `ApprovalRequest`); the `Confirmed` /
+- **1c — The endpoint. Done 2026-09-07.** 779 unit + 326 integration tests pass
+  (57 new). Delivered as planned: `POST /bookings`, the handler, validator and
+  DTOs; the four remaining exception subclasses; approval routing (`Pending` +
+  `ApprovalRequest`); the `Confirmed` / `ApprovalRequested` notification rows;
+  and the reason-code table extended to the create path.
+  Three things worth recording:
+  - **A deadlock was observed at ten-way contention, with the lock in place**,
+    during the first full-suite run. It is not a defect and the fix was not in
+    the procedure: the procedure-level test called it over a raw connection with
+    no execution strategy, so it lacked the 1205 retry that every production
+    call has through `IUnitOfWork`. The test now retries the way production
+    does. `0023`'s first draft overstated `UPDLOCK` as making contenders "block
+    instead of deadlocking" — corrected to *usually* block, with the observation
+    recorded as evidence for why the retry is part of the design rather than a
+    safety net.
+  - **Everything is staged before the unit of work opens.** The booking's id is
+    minted outside the delegate and the `ApprovalRequest` and `Notifications`
+    are added outside it too, because a retry re-runs the delegate: an id minted
+    inside would insert a second booking, and entities added inside would be
+    added twice — a rollback discards the rows but not the `ChangeTracker`
+    entries, so the second attempt would try to insert two approval requests
+    against `UQ_ApprovalRequests_Booking`. The delegate is therefore only "call
+    the procedure, then save".
+  - **Capacity is deliberately checked twice**, and dropping the pre-check would
+    still be correct — it would just cost the API its ability to explain itself.
+    A booker asking for a plainly full slot would get the same bare 409 as one
+    who lost a race by a millisecond (FR-4.5).
+- **1c as planned — The endpoint.** `POST /bookings`, the handler, validator and
+  DTOs; approval routing (`Pending` + `ApprovalRequest`); the `Confirmed` /
   `ApprovalRequested` notification rows; unit tests for each rejection and
   integration tests for the happy path and the reason-code table.
 

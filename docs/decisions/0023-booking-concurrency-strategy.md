@@ -42,13 +42,22 @@ serializable semantics, so SQL Server locks the *key range* the seek covers,
 gaps included, and a second transaction cannot insert into a range this one has
 already counted.
 
-**2. `UPDLOCK` — U-mode, so contenders block instead of deadlocking.** With
-`HOLDLOCK` alone the two transactions take compatible `RangeS-S` locks, both
+**2. `UPDLOCK` — U-mode, so contenders usually block instead of deadlocking.**
+With `HOLDLOCK` alone the two transactions take compatible `RangeS-S` locks, both
 pass the capacity check, and then deadlock when each tries to insert into the
-other's locked range. That is *correct* — one dies as victim 1205 and retries —
-but it makes a deadlock the normal path under contention. `UPDLOCK` makes them
-`RangeS-U`, which are mutually incompatible, so the second transaction waits,
-then reads the winner's committed row and refuses honestly.
+other's locked range — so a deadlock would be the *normal* path for every pair.
+`UPDLOCK` makes them `RangeS-U`, which are mutually incompatible, so the second
+transaction waits, then reads the winner's committed row and refuses honestly.
+
+**It reduces deadlocks; it does not abolish them** — a correction to this
+record's first draft, made the same day on observed evidence. A 1205 was seen at
+ten-way contention on one slot during a full-suite run, with no concurrent
+blackout write involved. Ordinary two-way contention blocks cleanly, which is
+what `UPDLOCK` buys, but higher contention still finds cycles, and the blackout
+re-check inverts lock order against decision `0001`'s cascade besides. This is
+why point 4 is part of the design rather than a safety net, and why anything
+calling the procedure without a retry — including a test — is running a
+configuration production does not have.
 
 **3. `IX_Bookings_Resource_Start` is what keeps the range narrow.** The seek is
 `ResourceId = @r AND StartsAtUtc < @EndsAtUtc`, so the lock covers one
@@ -140,6 +149,14 @@ never failed proves nothing.
 Three confirmed bookings on a room that holds one, and a pool of four sold ten
 times. The other 16 tests in the file passed either way, which is what confirms
 the four are measuring the lock and not something else.
+
+**A deadlock was also observed**, in the ten-way pooled race during a full-suite
+run with the lock in place. It is recorded here rather than tidied away, because
+it is the evidence for point 4: the strategy's correctness does not depend on
+deadlocks being impossible, only on their being retried. Production retries
+through `IUnitOfWork`; the procedure-level test now retries the same way and for
+the same reason, since a raw connection with no execution strategy is a
+configuration the application never runs in.
 
 ## Alternatives considered
 

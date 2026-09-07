@@ -43,16 +43,24 @@ public class AppExceptionCatalogueTests
         [typeof(BlackoutPeriodNotFoundException)] =
             (ReasonCodes.BlackoutPeriodNotFound, ErrorKind.NotFound),
 
-        // WP-4 Phase 1a. The four codes WP-4 adds; the four it inherits from §6
-        // (SlotUnavailable, CapacityExceeded, OutsideAvailability,
-        // BlackoutPeriod) get their subclasses in Phase 1c, with the handler
-        // that throws them.
+        // WP-4 Phase 1a — the four codes WP-4 adds.
         [typeof(BookingNotFoundException)] = (ReasonCodes.BookingNotFound, ErrorKind.NotFound),
         [typeof(BookingNotCancellableException)] =
             (ReasonCodes.BookingNotCancellable, ErrorKind.RuleViolation),
         [typeof(BookingDurationOutOfRangeException)] =
             (ReasonCodes.BookingDurationOutOfRange, ErrorKind.RuleViolation),
         [typeof(BookingInThePastException)] = (ReasonCodes.BookingInThePast, ErrorKind.RuleViolation),
+
+        // WP-4 Phase 1c — the four §6 declared in WP-3 and left without a
+        // thrower until the create path existed. The two Conflicts are the ones
+        // to look at: a slot being taken is not a rule violation, it is a fact
+        // about what else exists, and it may succeed on a retry.
+        [typeof(OutsideAvailabilityException)] =
+            (ReasonCodes.OutsideAvailability, ErrorKind.RuleViolation),
+        [typeof(BookingInBlackoutPeriodException)] =
+            (ReasonCodes.BlackoutPeriod, ErrorKind.RuleViolation),
+        [typeof(SlotUnavailableException)] = (ReasonCodes.SlotUnavailable, ErrorKind.Conflict),
+        [typeof(CapacityExceededException)] = (ReasonCodes.CapacityExceeded, ErrorKind.Conflict),
     };
 
     // AuthenticationException is excluded deliberately, and it is the one

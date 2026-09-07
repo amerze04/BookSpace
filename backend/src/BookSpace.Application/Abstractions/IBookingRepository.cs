@@ -1,3 +1,4 @@
+using BookSpace.Domain.Entities;
 using BookSpace.Domain.Enums;
 
 namespace BookSpace.Application.Abstractions;
@@ -24,6 +25,36 @@ public interface IBookingRepository
     // the booking or not at all. The procedure joins an ambient transaction
     // rather than opening its own.
     Task<BookingCreationOutcome> CreateAsync(NewBooking booking, CancellationToken cancellationToken);
+
+    // ---- The rows derived from a booking (WP-4 Phase 1c) ----
+    //
+    // These go through EF, not the procedure: they carry no capacity claim and
+    // need no lock, and composing notification content in SQL would put it in the
+    // one place nothing can unit-test. They commit with the booking because the
+    // handler runs all of it inside IUnitOfWork.
+
+    // FR-7.1: a booking on an approval-gated resource enters Pending with a
+    // decision record waiting for an approver (WP-5 decides it).
+    void AddApprovalRequest(ApprovalRequest approvalRequest);
+
+    // FR-8.1. Rows only — the dispatch job (CLAUDE.md §7) does not exist yet, and
+    // UQ_Notifications_Once is what will make the eventual send idempotent
+    // (FR-9.4, AC-6). Same arrangement BlackoutCascade already relies on.
+    void AddNotifications(IEnumerable<Notification> notifications);
+
+    // Organizations.ApprovalExpiryHours, which drives ApprovalRequest.ExpiresAtUtc
+    // and the stale-approval job after it (FR-7.4, FR-9.3). Null means the tenant
+    // has set no expiry, and a pending request then waits indefinitely.
+    //
+    // Takes the org id rather than reading ICurrentTenant, because the caller
+    // already has it from the resource — and taking it from the resource is what
+    // makes it impossible for this to read a different tenant's setting than the
+    // booking is being made against.
+    Task<int?> FindApprovalExpiryHoursAsync(Guid orgId, CancellationToken cancellationToken);
+
+    // Separate from the mutations, as on the other repositories: the handler owns
+    // the unit of work, so one save covers everything it staged.
+    Task SaveChangesAsync(CancellationToken cancellationToken);
 }
 
 // Everything dbo.CreateBooking needs, and nothing it does not.

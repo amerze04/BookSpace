@@ -1,5 +1,6 @@
 using System.Data;
 using BookSpace.Application.Abstractions;
+using BookSpace.Domain.Entities;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -99,6 +100,33 @@ internal sealed class BookingRepository : IBookingRepository
             }
         }
     }
+
+    // ---- The rows derived from a booking (WP-4 Phase 1c) ----
+    //
+    // Plain EF adds. They carry no capacity claim, so none of the procedure's
+    // machinery applies; they commit with the booking because the handler runs
+    // both inside IUnitOfWork.
+
+    public void AddApprovalRequest(ApprovalRequest approvalRequest) =>
+        _context.ApprovalRequests.Add(approvalRequest);
+
+    public void AddNotifications(IEnumerable<Notification> notifications) =>
+        _context.Notifications.AddRange(notifications);
+
+    // Organizations carries no query filter and no RLS predicate — it is the
+    // tenant table itself, not a tenant-owned one (CLAUDE.md §4.2 lists the five
+    // that do). So the org id is supplied by the caller, taken from the resource
+    // it already loaded through the filtered DbSet, which is what keeps this from
+    // being a way to read another tenant's settings.
+    public Task<int?> FindApprovalExpiryHoursAsync(Guid orgId, CancellationToken cancellationToken) =>
+        _context.Organizations
+            .AsNoTracking()
+            .Where(o => o.Id == orgId)
+            .Select(o => o.ApprovalExpiryHours)
+            .FirstOrDefaultAsync(cancellationToken);
+
+    public Task SaveChangesAsync(CancellationToken cancellationToken) =>
+        _context.SaveChangesAsync(cancellationToken);
 
     private static void AddParameters(System.Data.Common.DbCommand command, NewBooking booking)
     {
