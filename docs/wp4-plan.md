@@ -1,0 +1,609 @@
+# WP-4 — Core Booking Engine: proposed approach
+
+Status: drafted 2026-09-07, **before any WP-4 code was written**. Four shape
+questions were put to the repo owner before this document was written; their
+answers are recorded in "Settled before planning" below and the plan is built on
+them. Nothing here is implemented yet.
+
+Source: `docs/Work Packages - Week 4.pdf`, which carries **two** work packages —
+WP-4 (weeks 3–4, core booking engine) and WP-5 (week 4, recurrence, approvals
+and time correctness). This plan covers WP-4 only, both of its task lists.
+
+---
+
+## What WP-4 asks for
+
+> "The heart of the product: creating bookings that respect the rules and,
+> critically, never collide. Build it correctly for one user first (Week 3),
+> then make it bulletproof under concurrency (Week 4)."
+
+**Week 3 tasks — correct for a single user**
+
+1. Create a one-off booking for an available slot. (FR-4.1)
+2. Reject bookings outside availability, inside blackout, or over capacity. (FR-4.3)
+3. Return a clear, machine-readable reason on rejection. (FR-4.5)
+4. Let a member view and cancel their own bookings. (FR-4.4)
+5. Tests for the single-user happy path and each rejection reason.
+
+**Week 4 tasks — correct under concurrency**
+
+6. A test firing two bookings for the same slot simultaneously.
+7. A concurrency strategy that makes a double-booking impossible. (FR-4.2)
+8. Prove the fix with a concurrent test that passes.
+9. Document which strategy was chosen and why.
+
+**Acceptance criteria**
+
+- Given one remaining slot and two simultaneous requests, exactly one succeeds
+  and the other gets a clear rejection — never both. (AC-1)
+- All rule violations (availability, blackout, capacity) are rejected with clear
+  reasons.
+- A member can cancel their own booking; the slot is freed.
+- The concurrency strategy is documented and defended.
+
+**The work package's open decision** — "can a TenantAdmin cancel another user's
+booking, and if so, how is that user notified?" — is **already answered**, by
+[`0002`](decisions/0002-tenant-admin-cancellation.md), taken 2026-08-19: yes,
+within their own tenant, with `CancelledByUserId` recording the actor distinctly
+from the owner, and the affected user notified by email. WP-4 implements it and
+raises the record with the mentor rather than re-deciding it.
+
+---
+
+## Where WP-4 starts from
+
+WP-4 is unusual in this project: **most of its inputs already exist**, and the
+one thing it needs most does not exist at all.
+
+Already built, and consumed directly:
+
+- **`BookSpace.Domain/Availability/`** — `UtcInterval`, `IntervalAlgebra`,
+  `CapacitySweep`, `AvailabilityWindowExpansion`, `AvailabilityCalculator`.
+  WP-3 Phase 5 put this in `Domain` **specifically so WP-4 could reuse it**;
+  `AvailabilityCalculator`'s header names WP-4's three rejections and says the
+  failure mode of writing them twice is "the API offers a member a slot and then
+  refuses the booking for it". This plan is where that promise gets tested.
+- **`Resource.AllowsBookingDuration` / `CanFitABooking`** — added in the
+  2026-09-04 corrections pass precisely so WP-4 would not re-derive the duration
+  limits. `AllowsBookingDuration` still has **no production caller**; WP-4 is it.
+- **The `Bookings` table, its EF configuration, its query filter, its RLS
+  predicate and `IX_Bookings_Resource_Start`** — all in place since WP-1/WP-2.
+- **The error contract** — `AppException` subclasses, `ErrorKind`, `ReasonCodes`,
+  one mapping arm ([`0016`](decisions/0016-error-contract-and-reason-codes.md)).
+  Six booking codes are already declared and waiting for a thrower.
+- **`Booking.Cancel(actorUserId, reason, nowUtc)`** — written in WP-1 with
+  decision 0002 in mind, never called.
+- **The notification precedent** — `BlackoutCascade` already enqueues
+  `Notifications` rows for a dispatch job that does not exist yet.
+
+Does not exist, and is the centre of this package:
+
+- **`dbo.CreateBooking`.** It is named in CLAUDE.md §4.1 as a hard rule, cited in
+  eleven files, assumed by decision 0017's test carve-out — and it is not in
+  `docs/bookspace-schema-v2.sql` and not in any migration. WP-4 writes it.
+
+Also missing, and needed: any transactional boundary at all. WP-2 recorded that
+"no explicit `BeginTransaction` calls exist anywhere yet". WP-4 introduces the
+first one, and §5 means it has to go through
+`Database.CreateExecutionStrategy().ExecuteAsync(...)`.
+
+---
+
+## Settled before planning (owner, 2026-09-07)
+
+1. **No fail-first theatre.** The work package asks for a concurrency test that
+   is watched to fail before being fixed. There is no naive path to fail with —
+   §4.1 forbids inserting `Bookings` through LINQ or `SaveChanges`, so a
+   "check then save" implementation cannot legitimately exist even temporarily.
+   `dbo.CreateBooking` is therefore **correct from its first migration**, the
+   concurrent test is written once and shown passing, and the defence lives in
+   the decision record rather than in a captured failure. The record states the
+   race it prevents explicitly, so the reasoning survives without the
+   demonstration.
+2. **An approval-gated resource produces a `Pending` booking**, plus its
+   `ApprovalRequest` row — FR-7.1, and the capacity is genuinely held, since
+   `Pending` already consumes units everywhere else in this system. WP-4 builds
+   **no approve/reject endpoints**; those are WP-5's task list.
+3. **Notification rows are enqueued, nothing is sent.** `Confirmed` on a
+   confirmed create, `ApprovalRequested` per approver on a pending one,
+   `Cancelled` on cancellation — inserted in the same transaction as the booking
+   write, exactly as `BlackoutCascade` does. Dispatch and email stay out of scope.
+4. **Both cancellation paths, plus admin read.** A member cancels their own; a
+   TenantAdmin cancels any booking in their tenant (decision 0002).
+   `GET /bookings` returns the caller's own by default, with a TenantAdmin-only
+   widening filter — which WP-5's approver queue then builds on.
+
+---
+
+## The hard problem: the concurrency strategy
+
+### The rule as CLAUDE.md §4.1 currently states it is wrong
+
+§4.1 says the procedure "compares the **sum** of overlapping `Quantity` against
+`Resources.Capacity`". That is not the right arithmetic, and on a pooled resource
+it produces false rejections.
+
+Capacity 2. Existing bookings A `[09:00–10:00)` qty 1 and B `[10:00–11:00)`
+qty 1. A request for `[09:30–10:30)` qty 1 overlaps both, so the *sum* is 2 and
+`2 + 1 > 2` rejects it. But A and B never coexist: at every instant of the
+request, exactly one unit is held, so one is free throughout and the booking is
+legal. The availability query would have offered this slot —
+`CapacitySweep` computes the **peak concurrent** figure, not a sum — and the
+booking would then be refused. That is precisely the drift
+`AvailabilityCalculator`'s header warns about, arriving from the SQL side
+instead of the C# side.
+
+The procedure must compute the **peak concurrent committed quantity across the
+requested interval**, which is what decision `0005` means by "concurrent units"
+and what `IResourceRepository.PeakConcurrentBookedQuantityAsync` already computes
+for the capacity-decrease check. §4.1's wording needs correcting; the guarantee
+it describes does not change.
+
+Because the peak of a step function occurs at a step, only two kinds of instant
+need testing: the request's own start, and the start of each overlapping booking
+inside the request. That makes it a small correlated aggregate rather than a
+real sweep.
+
+### Chosen: `UPDLOCK, HOLDLOCK` key-range locks on the overlap read
+
+Sketch — the shape, not the final text:
+
+```sql
+CREATE PROCEDURE dbo.CreateBooking
+    @BookingId UNIQUEIDENTIFIER, @ResourceId UNIQUEIDENTIFIER, @UserId UNIQUEIDENTIFIER,
+    @RecurrenceRuleId UNIQUEIDENTIFIER = NULL, @StartsAtUtc DATETIME2(0), @EndsAtUtc DATETIME2(0),
+    @Quantity INT, @Title NVARCHAR(200) = NULL, @Status NVARCHAR(20),
+    @CreatedByUserId UNIQUEIDENTIFIER, @NowUtc DATETIME2(0)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @ownTransaction BIT = 0;
+    IF @@TRANCOUNT = 0 BEGIN SET @ownTransaction = 1; BEGIN TRANSACTION; END
+
+    -- Read through the RLS-filtered table on purpose: see "the fail-open trap".
+    DECLARE @orgId UNIQUEIDENTIFIER, @capacity INT;
+    SELECT @orgId = OrgId, @capacity = Capacity
+    FROM dbo.Resources
+    WHERE Id = @ResourceId AND IsArchived = 0;
+
+    IF @orgId IS NULL ... RETURN 'ResourceNotFound';
+
+    ;WITH Overlapping AS (
+        SELECT b.StartsAtUtc, b.EndsAtUtc, b.Quantity
+        FROM dbo.Bookings AS b WITH (UPDLOCK, HOLDLOCK)
+        WHERE b.ResourceId = @ResourceId
+          AND b.Status IN ('Pending','Confirmed')
+          AND b.StartsAtUtc < @EndsAtUtc          -- half-open overlap, both sides
+          AND b.EndsAtUtc   > @StartsAtUtc
+    ),
+    Boundaries AS (
+        SELECT @StartsAtUtc AS T
+        UNION SELECT StartsAtUtc FROM Overlapping WHERE StartsAtUtc > @StartsAtUtc
+    )
+    SELECT @peak = ISNULL(MAX(u.Used), 0)
+    FROM Boundaries AS bd
+    CROSS APPLY (
+        SELECT SUM(o.Quantity) AS Used FROM Overlapping AS o
+        WHERE o.StartsAtUtc <= bd.T AND o.EndsAtUtc > bd.T
+    ) AS u;
+
+    IF @peak + @Quantity > @capacity ... RETURN 'SlotUnavailable' / 'CapacityExceeded';
+
+    INSERT INTO dbo.Bookings (...) VALUES (...);   -- @NowUtc, not SYSUTCDATETIME()
+    ... RETURN 'Created';
+END
+```
+
+Why this one:
+
+- **The lock is taken by the very query that does the checking.** There is no
+  separate step to forget. Any future write path that reads overlaps this way
+  gets the guarantee; a path that does not is visibly not using the procedure,
+  which §4.1 already forbids.
+- **`IX_Bookings_Resource_Start` makes the range narrow.** The seek is
+  `ResourceId = @r AND StartsAtUtc < @EndsAtUtc`, and the key-range lock covers
+  exactly that, per resource. The index also `INCLUDE`s `EndsAtUtc`, `Status` and
+  `Quantity`, so the whole check is covered and no base-table lookups widen the
+  lock. This is why §4.1 calls that index load-bearing.
+- **Hints, not `SET TRANSACTION ISOLATION LEVEL SERIALIZABLE`.** The hints raise
+  one statement to serializable behaviour; the session-level setting would raise
+  every read in the transaction, including the resource lookup, for nothing.
+- **Retry on 1205 is already configured.** `EnableRetryOnFailure(5, 10s,
+  errorNumbersToAdd: [1205])` has been in `DependencyInjection.cs` since WP-2.
+  Two transactions taking overlapping ranges in different orders deadlock; one is
+  chosen as victim and retried, and the retry sees the winner's committed row.
+  That is the design working, not a defect.
+
+**Honest cost, to be written into the record:** the lower bound of the seek is
+open — `StartsAtUtc < @EndsAtUtc` has no floor — so the range lock covers the
+resource's history as well as its future. In practice concurrent creates on one
+resource serialize against each other regardless of whether their times overlap.
+Two things make this acceptable: contention is per resource, not per table, and
+the alternative (bounding the range at `@StartsAtUtc − MaxDurationMinutes`) is a
+**correctness risk for a performance win** — a long booking made before the limit
+existed, or before it was lowered, would fall outside the bound and be missed
+entirely, silently overbooking. Deliberately not done.
+
+### The fail-open trap, and why the procedure reads `Resources` first
+
+`Security.TenantAccessPolicy` is a **filter** policy, so it filters the
+procedure's `SELECT`s but does not block its `INSERT`. If the session context is
+ever missing — an unset `TenantInit`, a connection that dodged
+`TenantSessionContextInterceptor` — the overlap query returns **zero rows** and
+the capacity check passes trivially. That is an overbooking that no lock can
+prevent, because the lock was correctly taken over an empty set.
+
+The guard is to read the resource through the same filtered table and refuse when
+it is invisible. No session context means no `Resources` row either, so the
+procedure fails closed with `ResourceNotFound` instead of quietly overbooking.
+It costs one seek and turns the worst failure mode in the design into a 404.
+
+### Rejected alternatives
+
+- **`sp_getapplock` keyed on the resource id.** Genuinely attractive: deadlock
+  free, independent of the query plan, and it gives exactly per-resource
+  serialization. Rejected because the guarantee moves *off the data and into a
+  string*. Nothing forces a future statement to take the lock first, and the
+  failure is silent; a range lock taken by the checking query cannot be skipped
+  without skipping the check. It also serializes a resource unconditionally,
+  including provably non-overlapping times, which the range lock at least
+  narrows by resource *and* by upper bound. Kept as the fallback if the range
+  lock proves to deadlock more than retry can absorb — a measurement, not a
+  guess.
+- **A filtered unique index.** Cannot express overlap. It solves "one booking per
+  exact start instant per resource", which is neither what capacity means
+  (`0005`) nor what FR-4.2 asks for. The work package says this too.
+- **Optimistic concurrency on `RowVersion`.** `Bookings.RowVersion` exists and
+  works, but it protects *updates to a row that already exists*. Two inserts
+  contend over no row at all, so there is nothing to be stale about.
+- **Application-level locking (a semaphore, a distributed lock).** Wrong layer,
+  and false the moment there are two API instances — which the Azure hosting
+  target makes likely.
+
+---
+
+## The write path, end to end
+
+Tiers per CLAUDE.md §6. The interesting question is which checks live where, and
+the answer is not "all of them in the procedure".
+
+| Check | Tier | Where |
+|---|---|---|
+| `EndsAtUtc > StartsAtUtc`, `Quantity > 0`, status domain | 1 | Existing `CHECK` constraints |
+| Request shape (required fields, UTC kind, whole seconds) | 0 | FluentValidator |
+| Resource exists / not archived | 4 | Handler — `ResourceNotFound`, `ResourceArchived` |
+| Duration against `Min/MaxDurationMinutes` | 4 | `Resource.AllowsBookingDuration` |
+| Interval already in the past | 4 | Handler |
+| Outside availability windows | 4 | Domain — new `BookingEligibility` |
+| Inside a blackout | 4 **and 2** | Domain, **and re-checked in the procedure** — see below |
+| Peak concurrent quantity vs capacity | 2 | `dbo.CreateBooking`, under the range lock |
+| Approval routing | 4 | Handler — `Pending` + `ApprovalRequest` |
+
+**Why availability and blackout are pre-checked outside the lock.** Neither input
+is written by bookers, so neither races with a booking. They are written by
+admins, rarely, and a concurrent admin write is not the scenario FR-4.2 is about.
+Putting them under the lock would widen it for no guarantee.
+
+**Why the blackout is nonetheless re-checked inside the procedure** (a small call
+needing a nod — see below). Decision `0001` gives a blackout *absolute* priority:
+a booking must never survive inside one. Between the handler's check and the
+procedure's insert there is a window in which an admin's blackout cascade can
+run, select the bookings to cancel, and miss this one because it does not exist
+yet. §6's own rule of thumb — "must never" belongs in tiers 1–3 — puts that check
+in the procedure. It also introduces a deliberate lock-order inversion with the
+cascade (the cascade writes the blackout then reads bookings; the procedure reads
+bookings then reads blackouts), so the two can deadlock — and the deadlock, with
+retry, *is* the serialization. Availability windows get no equivalent treatment,
+and the asymmetry is the justification: narrowing a window cancels nothing, so
+"inside a window" is not an invariant the system maintains after creation, while
+"outside every blackout" is.
+
+**Ordering of the rejections.** Fixed and asserted, so the reason a client gets
+is stable: resource → archived → duration → past → availability → blackout →
+capacity. Cheapest and most structural first; the one requiring a lock last.
+
+### The handler, in sequence
+
+1. Load the resource with its schedule (`IAvailabilityRepository.FindWithScheduleAsync`
+   already returns exactly this). 404 covers the cross-tenant id (AC-4).
+2. Reject archived, bad duration, wholly-past interval.
+3. Load blackouts and booked quantities over the requested span — the same two
+   repository calls the availability endpoint makes.
+4. `BookingEligibility.Evaluate(...)` — new pure Domain function, built on
+   `AvailabilityWindowExpansion` / `IntervalAlgebra` / `CapacitySweep`, returning
+   which of `OutsideAvailability` / `BlackoutPeriod` / `CapacityExceeded` applies,
+   or none. It must answer *which*, which is why it cannot simply call
+   `AvailabilityCalculator.BookableIntervals` — that collapses all three into a
+   gap on purpose (`0020`).
+5. Decide the status: `Pending` if `resource.RequiresApproval`, else `Confirmed`.
+6. Inside one transaction (`IUnitOfWork`, below): call `dbo.CreateBooking`; on
+   `Created`, add the `ApprovalRequest` (if pending) and the `Notifications` rows
+   and `SaveChangesAsync`. On a rejection code, throw the matching exception.
+
+Steps 3–4 are a real second query pass over the same data the procedure will
+lock, and that is accepted: it is what lets the API answer *why* in a way the
+procedure's single result code cannot, and it is three cheap indexed reads.
+
+### The new transactional boundary
+
+The booking insert goes through raw SQL and the derived rows go through EF, so
+the two must share a transaction or a crash between them leaves a booking whose
+notification never existed. §5 forbids calling `BeginTransaction` directly under
+`EnableRetryOnFailure`, so WP-4 adds one Application port:
+
+```csharp
+public interface IUnitOfWork
+{
+    Task<T> ExecuteAsync<T>(Func<CancellationToken, Task<T>> work, CancellationToken ct);
+}
+```
+
+implemented in Infrastructure over
+`Database.CreateExecutionStrategy().ExecuteAsync(...)` with a transaction inside
+it. The procedure detects `@@TRANCOUNT > 0` and joins the ambient transaction
+rather than opening its own. `@BookingId` is chosen by the caller before the
+delegate runs, so a retry re-inserts the same id rather than minting a second
+booking. WP-5's approval path needs the identical shape, which is why this is a
+port and not a private helper.
+
+---
+
+## API surface
+
+| Route | Policy | Notes |
+|---|---|---|
+| `POST /bookings` | `TenantMember` | 201 with the created booking; `Confirmed` or `Pending` |
+| `GET /bookings` | `TenantMember` | paged; caller's own by default; filters `from`/`to` (overlap), `status`, `resourceId`, and TenantAdmin-only `userId` |
+| `GET /bookings/{id}` | `TenantMember` | own; a TenantAdmin sees any in-tenant booking |
+| `POST /bookings/{id}/cancel` | `TenantMember` | optional `reason`; member = own only, TenantAdmin = any in tenant |
+
+- **`POST .../cancel`, not `DELETE`** — §4.5 deletes nothing, and cancellation
+  records an actor, a time and a reason. Same argument that made archive a POST.
+- **A booking id the caller may not see is `BookingNotFound`, not a 403.** Same
+  reasoning as `0018` and `0019`: a 403 confirms the id exists. Another member's
+  booking, another tenant's booking and a nonexistent id are byte-identical.
+- **Times on the wire are UTC instants**, not local wall clock. The availability
+  endpoint already answers in UTC instants, so a client picks an interval from
+  that response and echoes its bounds back. This is also why WP-4 cannot answer
+  the DST fall-back question (below): a one-off booking never names an ambiguous
+  local time.
+- **`quantity` defaults to 1**, matching the availability query's parameter
+  (`0020`'s amendment). On an exclusive resource it can only be 1.
+- **Sorting**: whitelist `startsAtUtc` (default), `createdAtUtc`, `status`, with
+  `Id` as the unique tiebreak — `ToPagedResultAsync` throws on a non-unique
+  ordering (`0015`).
+- DTOs per `0015`'s amendment: `…CommandRequest` / `…QueryRequest` naming, one
+  response record per endpoint in its own file, request records nested in the
+  controller.
+
+### Reason codes
+
+Four new, all needing a `sealed` `AppException` subclass (`0016`'s amendment):
+
+| Code | Kind | Status | Meaning |
+|---|---|---|---|
+| `BookingNotFound` | NotFound | 404 | No such booking visible to this caller |
+| `BookingNotCancellable` | RuleViolation | 422 | Already terminal, or already ended |
+| `BookingDurationOutOfRange` | RuleViolation | 422 | Violates `Min`/`MaxDurationMinutes` |
+| `BookingInThePast` | RuleViolation | 422 | The requested interval has already ended |
+
+Six existing codes get their first thrower: `SlotUnavailable`,
+`CapacityExceeded`, `OutsideAvailability`, `BlackoutPeriod` (all four declared by
+§6 and waiting since WP-3), plus `ResourceNotFound` and `ResourceArchived`
+reused. `ApprovalRequired` is the one that does **not** — see the smaller calls.
+
+---
+
+## Phasing
+
+Three phases. Each is a slice that can be reviewed and defended on its own;
+chunk boundaries inside a phase are settled at the start of that phase, per the
+delivery style WP-3 used.
+
+### Phase 1 — Creating a booking (tasks 1, 2, 3, and half of 5)
+
+The whole write path, in three chunks:
+
+- **1a — Domain and contract. Done 2026-09-07.** `BookingEligibility` + its
+  result type in `BookSpace.Domain/Availability/`; the four new reason codes and
+  their exception subclasses; the `IUnitOfWork` port. 722 unit tests pass (56
+  new), 279 integration tests re-run unchanged.
+  Three things the plan did not anticipate:
+  - **`IResourceTimeZone` needed a third method, `ToLocal`.** A booking arrives
+    as UTC instants and the weekly schedule is resource-local wall clock, so the
+    local dates to expand over have to be derived from the request — and the
+    interface only converted local→UTC. One method rather than a pair, and the
+    asymmetry is real: an instant always has exactly one offset, so this
+    direction can never be ambiguous the way the reverse trip can.
+  - **The two capacity refusals need two sweeps, not one number.** The runs
+    `CapacitySweep` returns can be wider than the request and each carries the
+    floor across its *own* span, so reading the remaining figure off the run
+    containing the request would report a number about the wrong interval — a
+    busy morning would make a free afternoon look full. Asking the containment
+    question twice (once at the requested quantity, once at 1) is the only
+    reading that stays true. Skipped entirely at quantity 1, which is also why
+    an exclusive resource can only ever report `SlotUnavailable`.
+  - **A guard test already mirrored §6's list in code** (`ReasonCodesTests
+    .SectionSixCodesAreAllPresent`), so deleting `ApprovalRequired` failed the
+    suite until CLAUDE.md §6 and the test moved with it. Working as intended.
+- **1b — The procedure.** `dbo.CreateBooking` and the
+  `AddCreateBookingProcedure` migration (with a `Down` that drops it, verified by
+  a real revert and re-apply, as every WP-3 migration was); `IBookingRepository`
+  and its implementation; **and the parallel-procedure test straight away** —
+  N connections calling the procedure directly, asserting exactly one insert.
+  Proving the lock before anything is built on it is worth more than saving the
+  test for Phase 3, and at this layer it needs no HTTP at all.
+  **Decision `0023` lands here too**, not in Phase 3 as first planned (revised
+  2026-09-07): the procedure *is* the strategy and this chunk already proves it,
+  so a record written two phases later would justify a choice rather than record
+  it. Phase 3 adds the measured end-to-end evidence to it.
+- **1c — The endpoint.** `POST /bookings`, the handler, validator and DTOs;
+  approval routing (`Pending` + `ApprovalRequest`); the `Confirmed` /
+  `ApprovalRequested` notification rows; unit tests for each rejection and
+  integration tests for the happy path and the reason-code table.
+
+### Phase 2 — Viewing and cancelling (task 4, rest of task 5)
+
+`GET /bookings`, `GET /bookings/{id}`, `POST /bookings/{id}/cancel` for both
+member and admin; the `Cancelled` notification row; the AC-4 sweep over the new
+routes (another member's id, another tenant's id, both 404); and the
+"slot is freed" test — cancel, then assert the availability endpoint offers the
+interval again and a new booking for it succeeds.
+
+### Phase 3 — Concurrency, proof and documentation (tasks 6–9)
+
+The end-to-end concurrency suite through the real HTTP pipeline; the measured
+results added to decision record `0023` (which itself landed in Phase 1b); the
+remaining CLAUDE.md corrections; and the final AC sweep. Also the two closures
+WP-4 makes possible and no earlier package could:
+
+- **Seed real bookings.** `SeedData` has stopped short of `Bookings` since WP-1
+  because there was no legitimate write path. There is one now, and it is
+  idempotent, so a handful of seeded bookings become possible.
+- **Make WP-2's `Bookings` isolation test real.** It has been a smoke check —
+  "the filter clause builds and returns empty" — with a note saying the real leak
+  test waits for a write path. Phase 3 supplies it.
+
+---
+
+## Testing, mapped to the acceptance criteria
+
+**AC-1 — exactly one of two simultaneous requests succeeds.** The most important
+test in the codebase (§8), at two levels:
+
+- Procedure level (Phase 1b): parallel `SqlConnection`s calling
+  `dbo.CreateBooking` for one slot on a capacity-1 resource. Exactly one
+  `Created`, exactly one row.
+- HTTP level (Phase 3): parallel `POST /bookings` through the real pipeline.
+  Exactly one 201, the rest 409 `SlotUnavailable`, exactly one row, and **no
+  500s** — a deadlock that escapes retry would surface here.
+- Pooled (Phase 3): capacity 4, eight concurrent quantity-1 requests → exactly
+  four succeed. This is the test that proves `0005`'s model rather than just
+  mutual exclusion.
+- Mixed quantities: capacity 4, one request for 3 and one for 2 → exactly one.
+
+**All rule violations rejected with clear reasons.** Extends the existing
+structured-error table (`ResourceWriteEndpointTests`' pattern): each new code
+against the status its `ErrorKind` promises, every body a `ProblemDetails`
+carrying the correlation id, and the exception message never on the wire.
+
+**A member can cancel their own booking; the slot is freed.** Phase 2, above.
+
+**Strategy documented and defended.** Decision `0023`.
+
+Plus, per §8's standing list: the approval re-check (AC-5) is **WP-5's**, not
+WP-4's, since `dbo.ApproveBooking` arrives with the approve endpoint.
+
+---
+
+## Smaller calls
+
+The first five are **settled (owner, 2026-09-07)**; the rest are still open and
+belong to the phase that hits them.
+
+1. **`SlotUnavailable` vs `CapacityExceeded` — settled.** Both are declared, both
+   are `Conflict`/409, and nothing said which applied when. The split is
+   **nothing free at all → `SlotUnavailable`; some free but fewer than asked →
+   `CapacityExceeded`.** On an exclusive resource only the first can occur, which
+   reads correctly; on a pool, "you asked for 3 and 2 are left" is genuinely
+   different information. Rejected: keying it off `Capacity == 1`, which would
+   make the code describe the resource rather than the failure.
+2. **`ApprovalRequired` is deleted — settled.** It has no thrower and, under the
+   settled design, never will: FR-7.1 makes an approval-gated booking `Pending`
+   rather than refusing it. `0016`'s own logic is that a code with no `sealed`
+   subclass cannot be thrown at all, so leaving it in the catalogue would be an
+   entry that lies about what the API can return. Removed from `ReasonCodes` and
+   from CLAUDE.md §6's list; `ReasonCodesTests` needs no change beyond the
+   deletion.
+3. **The blackout re-check inside the procedure — settled, yes** (argued above).
+   A deliberate move of one tier-4 rule into tier 2, justified by `0001`'s
+   absolute priority and by §6's own rule of thumb. The lock-order inversion with
+   the cascade is accepted: the two can deadlock, and with 1205 retry already
+   configured, that deadlock *is* the serialization. Availability windows
+   deliberately do not follow it — narrowing a window cancels nothing, so
+   "inside a window" is not an invariant maintained after creation.
+4. **Cancelling a booking that has already ended is refused**
+   (`BookingNotCancellable`), mirroring `0019`'s `BlackoutPeriodElapsed` exactly:
+   the test is on `EndsAtUtc`, so a meeting in progress is still cancellable.
+   The alternative is to allow it and let history be rewritten.
+5. **A booking whose interval is wholly in the past is refused — settled**
+   (`BookingInThePast`); one that merely *starts* in the past is allowed — "book
+   the room I am already sitting in". Taken without a separate question because
+   it reapplies `0019`'s `BlackoutPeriodElapsed` precedent exactly: the test is
+   on `EndsAtUtc`, deliberately not `StartsAtUtc`.
+6. **Self-cancellation enqueues no `Cancelled` notification.** Decision 0002's
+   requirement is that the *affected user* is told; emailing someone the news
+   they just made is noise. A cancellation by anyone else does enqueue one.
+7. **Reminder rows are not written by WP-4 — settled.** FR-8.3 needs a `Reminder` row per
+   confirmed booking at `StartsAtUtc − ReminderLeadMinutes`, and booking creation
+   is the only natural writer — but nothing dispatches them yet, and cancelling
+   would then have to void them. Proposed: defer to the notifications package and
+   record the dependency there rather than build half of it here.
+8. **A non-admin passing `userId` on `GET /bookings` gets `ValidationFailed`
+   400.** There is no `Forbidden` kind in `ErrorKind`, and inventing one for a
+   query-string filter is heavier than the problem. The alternative is to add
+   `ErrorKind.Forbidden → 403`, which is a one-arm change to `0016`'s map but a
+   real widening of the error contract.
+9. **Decision `0017`'s carve-out narrows rather than expires.** It says the
+   raw-SQL booking fixture exists "because `dbo.CreateBooking` does not". Once it
+   does, new tests use the real path, but the existing fixtures stay: they set up
+   states the endpoint cannot produce (a `NoShow` row) or 260 rows where 260
+   HTTP calls would dominate the run. Proposed as an amendment to `0017`, not a
+   deletion.
+
+---
+
+## Decision records WP-4 will produce
+
+- **`0023` — booking concurrency strategy**, written in Phase 1b beside the
+  procedure it describes. Required by the fourth acceptance
+  criterion. Contains the peak-vs-sum correction, the chosen range-lock design,
+  the open lower bound and why it is not narrowed, the fail-open trap and its
+  guard, and the four rejected alternatives with their reasons.
+- **An amendment to `0002`**, covering what implementation forced the original to
+  leave open: the cancellation window (`EndsAtUtc`), and the self-cancellation
+  notification suppression.
+- **An amendment to `0017`**, narrowing the test-fixture carve-out as above.
+
+---
+
+## Corrections to CLAUDE.md that WP-4 forces
+
+1. ~~**§4.1's "sum of overlapping `Quantity`" is wrong**~~ — **done 2026-09-07**,
+   before any code, as its own change so the hard rule could be reviewed on its
+   own rather than buried in a phase. It now reads *peak concurrent*, with the
+   counterexample recorded inline. The guarantee is unchanged; the arithmetic as
+   written would have refused legal bookings on any pooled resource. This is the
+   most consequential finding in the plan.
+2. ~~**§9's still-open DST fall-back item is assigned to WP-4**~~ — **done
+   2026-09-07**, reassigned to WP-5 with the reason: WP-4 creates one-off
+   bookings from explicit UTC instants, so no ambiguous local time ever arises in
+   it; the question is about a *recurring occurrence* resolving an ambiguous
+   wall-clock time, and recurrence is WP-5's first task.
+3. ~~**§12 gains WP-4 and WP-5 subsections**~~ — **done 2026-09-07**. WP-5 is
+   tracked as its own subsection even though this plan does not cover it.
+4. **§6's booking code list** gains the four new codes and loses
+   `ApprovalRequired` (smaller call 2, settled). Lands in Phase 1a with the codes
+   themselves.
+5. **§6's tier table** gains the blackout re-check as a tier-2 rule alongside its
+   tier-4 entry (smaller call 3, settled). Lands in Phase 1b with the procedure.
+
+---
+
+## What WP-4 deliberately does not touch
+
+- **Recurrence** — `RecurrenceRules` stays unwritten, `Bookings.RecurrenceRuleId`
+  stays null. WP-5.
+- **`dbo.ApproveBooking`, approve/reject endpoints, the approver queue, and the
+  AC-5 re-check.** WP-5. WP-4 creates the `Pending` booking and the
+  `ApprovalRequest` row those endpoints will decide.
+- **Sending anything.** No email provider, no dispatch job. Rows only.
+- **The three background jobs** (§7), including no-show release — so
+  `Booking.MarkNoShow`, `IsNoShow` and `CheckIn` keep their zero production
+  callers, and there is still **no writer for `BookingStatus.Completed`**. That
+  gap is now load-bearing in two places (`CanBeCancelledForBlackout`, and the
+  cancellation window above), which is worth raising even though fixing it is not
+  in any current work package.
+- **ICS feeds, utilization reporting, the frontend.**

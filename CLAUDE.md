@@ -75,10 +75,22 @@ These are not style preferences. Breaking one is a bug, not a refactor.
 Booking creation and approval **must** call `dbo.CreateBooking` /
 `dbo.ApproveBooking`. Never insert into `Bookings` from LINQ or `SaveChanges`.
 
-The procedure takes `UPDLOCK, HOLDLOCK` range locks and compares the sum of
-overlapping `Quantity` against `Resources.Capacity`. LINQ cannot express those
-hints, and SQL Server has no exclusion constraint, so this is the only place
-the guarantee exists (FR-4.2, FR-7.5, AC-1).
+The procedure takes `UPDLOCK, HOLDLOCK` range locks and compares the **peak
+concurrent** overlapping `Quantity` against `Resources.Capacity`. LINQ cannot
+express those hints, and SQL Server has no exclusion constraint, so this is the
+only place the guarantee exists (FR-4.2, FR-7.5, AC-1).
+
+**Peak, not sum — corrected 2026-09-07, while planning WP-4.** This paragraph
+used to say "the sum of overlapping `Quantity`", which over-counts and refuses
+legal bookings on any pooled resource. Capacity 2, existing bookings
+`09:00–10:00` (qty 1) and `10:00–11:00` (qty 1), a request for `09:30–10:30`
+(qty 1): the sum over both is 2, so `2 + 1 > 2` rejects — but the two never
+coexist, one unit is free at every instant of the request, and the booking is
+legal. `CapacitySweep` and `PeakConcurrentBookedQuantityAsync` already compute
+the peak, so the availability query would have offered that slot and the
+procedure would then have refused it — exactly the drift
+`AvailabilityCalculator`'s header exists to prevent. The guarantee is unchanged;
+only the arithmetic under the lock is. See `docs/wp4-plan.md`.
 
 `IX_Bookings_Resource_Start` is load-bearing — it is what keeps the range lock
 narrow instead of table-wide. Never drop it. If you change the overlap
@@ -196,7 +208,20 @@ at a throw site as a literal. Authentication's five codes stay in
 
 Bookings (declared by FR-4.5, first thrown in WP-4): `SlotUnavailable`,
 `CapacityExceeded`, `OutsideAvailability`, `BlackoutPeriod`,
-`ResourceArchived`, `ApprovalRequired`.
+`ResourceArchived`, plus WP-4's own `BookingNotFound`,
+`BookingNotCancellable`, `BookingDurationOutOfRange` and `BookingInThePast`.
+
+`SlotUnavailable` and `CapacityExceeded` are both `Conflict` and are split by
+what is left, not by the resource: **nothing free at any instant inside the
+requested interval** is `SlotUnavailable`, **something free throughout but less
+than was asked for** is `CapacityExceeded`. An exclusive resource can therefore
+only ever produce the first, since `Capacity = 1` admits no quantity but 1
+(owner's call, 2026-09-07).
+
+`ApprovalRequired` was on this list and was **deleted in WP-4 Phase 1a**. FR-7.1
+makes a booking on an approval-gated resource enter `Pending` rather than be
+refused, so nothing will ever throw it, and `0016`'s premise is that the
+catalogue describes what the API can actually return.
 
 Resources and availability (WP-3): `ResourceNotFound`, `InvalidTimeZone`,
 `CapacityBelowExistingBookings`, `OverlappingAvailabilityWindow`,
@@ -501,7 +526,13 @@ silently:
   from spring-forward. `0021` resolves it for availability *ranges* — a range
   absorbs a missing or repeated hour by being shorter or longer — and leaves
   the *occurrence* case, an instant which has to land somewhere, exactly as
-  open as it was. **WP-4 owns it.** This is now the only open item — the
+  open as it was. **WP-5 owns it** — reassigned from WP-4 on 2026-09-07: WP-4
+  creates one-off bookings from explicit UTC instants supplied by the client
+  (which is what the availability endpoint already answers in), so no ambiguous
+  local time arises anywhere in it, and nothing WP-4 builds can answer the
+  question. Recurrence — where a rule expands a *wall-clock* time and has to
+  resolve the one that occurs twice — is WP-5's first task.
+  This is now the only open item — the
   `ResourceType` question raised on 2026-09-03 was settled on 2026-09-04 and is
   recorded in `0005`'s amendment.
 
@@ -1406,3 +1437,80 @@ pass. Detail in `docs/wp3-plan.md`; the reasoning lives in the decision records.
 ### Future work packages
 Appended here as the mentor sends them — one subsection per WP, same
 checklist format as above, status kept current as work lands.
+
+### WP-4 — Core Booking Engine — **Planned, not started**
+Source doc: `docs/Work Packages - Week 4.pdf` (weeks 3–4, backend track), which
+carries WP-4 and WP-5 together. Plan: `docs/wp4-plan.md`, drafted 2026-09-07
+before any code, on four shape answers from the owner the same day.
+
+Tasks — Week 3 (correct for a single user):
+- [ ] Create a one-off booking for an available slot. FR-4.1.
+- [ ] Reject bookings outside availability, inside blackout, or over capacity. FR-4.3.
+- [ ] Return a clear, machine-readable reason on rejection. FR-4.5.
+- [ ] Let a member view and cancel their own bookings. FR-4.4.
+- [ ] Write tests for the single-user happy path and each rejection reason.
+
+Tasks — Week 4 (correct under concurrency):
+- [ ] Write a test that fires two bookings for the same slot simultaneously.
+- [ ] Choose and implement a concurrency strategy that makes a double-booking
+      impossible. FR-4.2.
+- [ ] Prove the fix with a concurrent test that passes.
+- [ ] Document which strategy was chosen and why.
+
+Acceptance criteria:
+- [ ] Given one remaining slot and two simultaneous requests, exactly one
+      succeeds and the other gets a clear rejection — never both. AC-1.
+- [ ] All rule violations (availability, blackout, capacity) are rejected with
+      clear reasons.
+- [ ] A member can cancel their own booking; the slot is freed.
+- [ ] The concurrency strategy is documented and defended.
+
+**Open decision (source doc): "Can a TenantAdmin cancel another user's booking,
+and if so, how is that user notified?"** — already answered by
+[`0002`](docs/decisions/0002-tenant-admin-cancellation.md) on 2026-08-19. WP-4
+implements it and raises the record with the mentor rather than re-deciding.
+
+Notes:
+- Planned in three phases (create → view/cancel → concurrency, proof and
+  documentation); `dbo.CreateBooking` is written **correct from its first
+  migration** rather than staged naive-then-fixed, since §4.1 leaves no
+  legitimate naive path to demonstrate (owner's call, 2026-09-07).
+- **§4.1's wording is wrong and this package corrects it**: the procedure must
+  compare the *peak concurrent* overlapping `Quantity` against `Capacity`, not
+  the **sum**, which would refuse legal bookings on any pooled resource. See
+  `docs/wp4-plan.md`.
+- §9's still-open DST **fall-back** item is assigned to WP-4 above and belongs to
+  **WP-5**: a one-off booking is created from explicit UTC instants, so no
+  ambiguous local time arises in anything WP-4 builds.
+
+### WP-5 — Recurrence, Approvals & Time Correctness — **Not started**
+Source doc: `docs/Work Packages - Week 4.pdf` (week 4, backend track). Listed
+here so it is tracked; no plan written yet.
+
+- [ ] Create recurring bookings (daily/weekly/monthly) with interval and end
+      condition. FR-5.1.
+- [ ] Make each occurrence independently viewable and cancellable. FR-5.2.
+- [ ] Support cancelling one occurrence or the whole remaining series. FR-5.3.
+- [ ] Surface collisions/blackout conflicts at creation — never drop them
+      silently. FR-5.4.
+- [ ] Implement the approval workflow: Pending → approve/reject → notify;
+      re-check availability at approval time. FR-7.1–FR-7.5.
+- [ ] Store all times as UTC; render in the correct local zone. FR-6.1.
+- [ ] Define and implement DST-transition behavior for recurring bookings. FR-6.2.
+
+Acceptance criteria:
+- [ ] A recurring series is created, and single occurrences and the whole series
+      can each be cancelled.
+- [ ] Conflicting occurrences are surfaced at creation.
+- [ ] Approval re-checks availability, so approving a since-taken slot fails
+      safely. AC-5.
+- [ ] The DST edge case resolves per the documented policy with no crash or
+      silent duplicate. AC-3.
+
+Notes: its two hard problems and both open decisions are **already settled** —
+materialization horizon [`0007`](docs/decisions/0007-recurrence-materialization-horizon.md),
+spring-forward policy [`0008`](docs/decisions/0008-dst-spring-forward-policy.md),
+blackout vs. series [`0001`](docs/decisions/0001-blackout-vs-recurring-series.md),
+availability timezone [`0003`](docs/decisions/0003-availability-timezone.md).
+The genuinely open one is §9's DST **fall-back** case for an occurrence, which
+this package owns.

@@ -42,6 +42,17 @@ public class AppExceptionCatalogueTests
             (ReasonCodes.BlackoutPeriodElapsed, ErrorKind.RuleViolation),
         [typeof(BlackoutPeriodNotFoundException)] =
             (ReasonCodes.BlackoutPeriodNotFound, ErrorKind.NotFound),
+
+        // WP-4 Phase 1a. The four codes WP-4 adds; the four it inherits from §6
+        // (SlotUnavailable, CapacityExceeded, OutsideAvailability,
+        // BlackoutPeriod) get their subclasses in Phase 1c, with the handler
+        // that throws them.
+        [typeof(BookingNotFoundException)] = (ReasonCodes.BookingNotFound, ErrorKind.NotFound),
+        [typeof(BookingNotCancellableException)] =
+            (ReasonCodes.BookingNotCancellable, ErrorKind.RuleViolation),
+        [typeof(BookingDurationOutOfRangeException)] =
+            (ReasonCodes.BookingDurationOutOfRange, ErrorKind.RuleViolation),
+        [typeof(BookingInThePastException)] = (ReasonCodes.BookingInThePast, ErrorKind.RuleViolation),
     };
 
     // AuthenticationException is excluded deliberately, and it is the one
