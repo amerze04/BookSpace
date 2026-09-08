@@ -1,6 +1,7 @@
 using BookSpace.Api.Authorization;
 using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.Bookings;
+using BookSpace.Application.Features.Bookings.CancelBooking;
 using BookSpace.Application.Features.Bookings.CreateBooking;
 using BookSpace.Application.Features.Bookings.GetBooking;
 using BookSpace.Application.Features.Bookings.ListBookings;
@@ -169,6 +170,55 @@ public sealed class BookingsController : ControllerBase
     public async Task<IActionResult> GetById(Guid id, CancellationToken cancellationToken)
     {
         var result = await _sender.Send(new GetBookingQueryRequest(id), cancellationToken);
+        return Ok(result);
+    }
+
+    // The body is optional in full: a cancellation with no reason is legal, so
+    // POSTing nothing at all has to work. Hence [FromBody] with a default rather
+    // than a required parameter, which would make an empty body a 400.
+    //
+    // No actor field, deliberately: who cancelled comes from the token, so an
+    // admin cannot attribute their own cancellation to the booking's owner by
+    // editing a body (decision 0002 records the actor distinctly on purpose).
+    public sealed record CancelBookingRequest(string? Reason = null);
+
+    // FR-4.4 and decision 0002, the "cancel" half. A member cancels their own; a
+    // TenantAdmin cancels any booking in their tenant.
+    //
+    // **POST .../cancel, not DELETE** — §4.5 deletes nothing, and a cancellation
+    // records an actor, a time and a reason, so a DELETE would misdescribe
+    // itself. Same argument that made archive a POST in WP-3.
+    //
+    // The statuses:
+    //
+    //   200 — cancelled, with the freed interval and who cancelled it
+    //   404 BookingNotFound — no such booking *for this caller*: another
+    //       member's, another tenant's, or nonexistent, all byte-identical
+    //   422 BookingNotCancellable — already terminal, or already ended
+    //   409 ConcurrencyConflict — two simultaneous cancels; RowVersion picks one
+    //   400 ValidationFailed — an over-long reason
+    //
+    // Deliberately **not idempotent**: a second call is 422, not 200. Unlike
+    // archive there is something to overwrite — CancelledByUserId, CancelledAtUtc
+    // and the reason — so a repeat would quietly rewrite who called the meeting
+    // off. See CancelBookingCommandRequest.
+    [HttpPost("{id:guid}/cancel")]
+    [ProducesResponseType<CancelBookingCommandResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
+    public async Task<IActionResult> Cancel(
+        Guid id,
+        [FromBody] CancelBookingRequest? request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(
+            new CancelBookingCommandRequest(id, request?.Reason),
+            cancellationToken);
+
         return Ok(result);
     }
 }

@@ -76,6 +76,32 @@ public interface IBookingRepository
         BookingOwnerFilter owner,
         CancellationToken cancellationToken);
 
+    // ---- The cancel (WP-4 Phase 2b, FR-4.4, decision 0002) ----
+
+    // The tracked booking, for cancellation. Null means the same three cases
+    // FindDetailAsync's null means, so the handler answers with one
+    // indistinguishable BookingNotFound — and the owner filter is part of the
+    // query for the stronger reason here: a booking loaded and then refused
+    // would be a booking the caller could have had cancelled.
+    //
+    // Separate from FindDetailAsync rather than a flag on it, matching how
+    // IResourceRepository keeps FindForUpdateAsync apart from its reads: that
+    // one projects and this one has to return the entity, because the caller
+    // mutates it through Booking.Cancel and the change has to be saved.
+    //
+    // **Not a §4.1 violation.** Cancelling is an EF write to Bookings, which
+    // dbo.CreateBooking otherwise owns — but §4.1 exists because only writes
+    // that *add* demand can breach Resources.Capacity, and a cancellation can
+    // only reduce the units held at an instant. That is BlackoutCascade's
+    // argument, which has been writing cancellations through EF since WP-3
+    // Phase 4. The lost-update case is covered separately: Bookings.RowVersion
+    // is a concurrency token, so two simultaneous cancels mean one gets
+    // DbUpdateConcurrencyException, already mapped to 409.
+    Task<Booking?> FindForCancellationAsync(
+        Guid bookingId,
+        BookingOwnerFilter owner,
+        CancellationToken cancellationToken);
+
     // ---- The rows derived from a booking (WP-4 Phase 1c) ----
     //
     // These go through EF, not the procedure: they carry no capacity claim and

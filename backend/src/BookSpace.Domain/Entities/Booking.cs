@@ -80,10 +80,18 @@ public class Booking : IAuditable, ITenantOwned
 
     // Decision #2: a TenantAdmin may cancel a booking they don't own —
     // actorUserId is recorded distinctly from UserId (the owner).
+    //
+    // The guard is CanBeCancelled's, which is stricter than this method's
+    // original status-only check: WP-4 Phase 2b added the elapsed test, because
+    // ReasonCodes.BookingNotCancellable had always promised the code covered
+    // "already ended" as well as "already terminal" and nothing enforced the
+    // first half. Nothing called this method before Phase 2b, so tightening it
+    // broke no caller.
     public void Cancel(Guid? actorUserId, string? reason, DateTime nowUtc)
     {
-        if (Status is BookingStatus.Cancelled or BookingStatus.Completed or BookingStatus.NoShow)
-            throw new InvalidOperationException($"Cannot cancel a booking in status {Status}.");
+        if (!CanBeCancelled(nowUtc))
+            throw new InvalidOperationException(
+                $"Booking {Id} in status {Status} ending {EndsAtUtc:o} cannot be cancelled.");
 
         Status = BookingStatus.Cancelled;
         CancelledByUserId = actorUserId;
@@ -92,6 +100,37 @@ public class Booking : IAuditable, ITenantOwned
         UpdatedAtUtc = nowUtc;
         UpdatedByUserId = actorUserId;
     }
+
+    // Which bookings a person may cancel (FR-4.4, decision #2), stated as a
+    // predicate so the handler can refuse with a reason code
+    // (BookingNotCancellable) instead of catching Cancel's exception.
+    //
+    // Two conditions, and they are the two halves ReasonCodes
+    // .BookingNotCancellable has always described:
+    //
+    // **Not already terminal.** Cancelled, Rejected, Completed and NoShow are
+    // all final. A second cancellation is deliberately *not* idempotent, unlike
+    // archiving a resource: it would overwrite CancelledByUserId, CancelledAtUtc
+    // and CancellationReason with a second actor's, so the record of who called
+    // the meeting off would quietly change. Archiving has nothing to overwrite,
+    // which is why the two transitions differ.
+    //
+    // **Not already ended.** The test is on EndsAtUtc, deliberately not
+    // StartsAtUtc, so a meeting *in progress* can still be called off — the room
+    // is free from now on, which is the whole point of cancelling. Cancelling
+    // something that already finished frees nothing and only rewrites history;
+    // it matters more here than it looks, because **nothing in this system
+    // writes BookingStatus.Completed**, so an attended meeting from last month
+    // is still Confirmed and status alone would let it be cancelled.
+    //
+    // Identical in shape to CanBeCancelledForBlackout, and the duplication is
+    // deliberate rather than shared: that one is a *rule's* reach (decision #1
+    // gives a blackout absolute priority over Pending and Confirmed alike) and
+    // this one is a *person's* permission. They agree today; a change to either
+    // should not silently move the other.
+    public bool CanBeCancelled(DateTime nowUtc) =>
+        Status is BookingStatus.Pending or BookingStatus.Confirmed
+        && EndsAtUtc > nowUtc;
 
     // Decision #1 (docs/decisions/0001-blackout-vs-recurring-series.md): a
     // blackout has absolute priority, so every occurrence it overlaps is

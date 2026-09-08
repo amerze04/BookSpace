@@ -631,36 +631,190 @@ rule under test is "a non-admin sees only their own bookings", and an Approver i
 a non-admin — if anything the stronger choice, since the `Approver` policy sits
 between Member and TenantAdmin.
 
-#### 2b — The cancel. Not started.
+#### 2b — The cancel. Done 2026-09-08.
 
-`POST /bookings/{id}/cancel` for member and admin; the `Cancelled` notification
-row (suppressed on self-cancel, per settled answer 4); the amendment to `0002`;
-and the slot-freed test. **Carries one domain change the plan did not name**:
-`Booking.Cancel` refuses only terminal statuses today, but
-`BookingNotCancellableException` promises the code also covers *already ended*,
-with the test on `EndsAtUtc`. So `Booking` needs a `CanBeCancelled(nowUtc)`
-predicate mirroring `CanBeCancelledForBlackout`, with `Cancel` re-checking it —
-free to tighten, since nothing calls `Cancel` in production yet.
+879 unit + 395 integration tests pass (30 unit, 22 integration new). Delivered as
+planned: `POST /bookings/{id}/cancel` on `TenantMember` for both actors;
+`Booking.CanBeCancelled` and the tightened `Cancel` guard;
+`IBookingRepository.FindForCancellationAsync`; the `Cancelled` notification row
+with self-cancel suppression; the amendment to
+[`0002`](decisions/0002-tenant-admin-cancellation.md); and the slot-freed test.
 
-It needs **no `IUnitOfWork`**: one `SaveChangesAsync` covers the status change
-and the notification row, and `SaveChanges` is already transactional. That is
-`IBlackoutPeriodRepository`'s argument, and §5's "wrap it in
-`CreateExecutionStrategy`" rule does not apply to a caller that never reaches for
-`BeginTransaction`.
+Both changes the plan named above landed as written — the domain guard, and no
+`IUnitOfWork`. The contrast with the create path is now the clearest statement in
+the codebase of what §5's rule is actually about: **mixing raw SQL with EF is
+what forces an execution strategy**, not "a write" in general. Cancel is one
+`SaveChangesAsync`, which is already a transaction, so it needs neither.
+
+Four things worth recording:
+
+- **The slot-freed criterion is asserted three ways, not one.** On an exclusive
+  resource the same interval is refused *before* the cancel (409
+  `SlotUnavailable`) and accepted after it — by a different member, so the second
+  create could only succeed if the first booking genuinely stopped holding its
+  unit. Separately, the availability endpoint goes back to offering one
+  continuous span; and on a pooled resource the *unit* comes back rather than the
+  time, which is decision `0005`'s model rather than mutual exclusion.
+- **The notification suppression keys off actor-vs-owner, not off the role**, and
+  that distinction is tested: an admin cancelling their *own* booking also gets
+  no row. A role-based check would have got that case wrong, and it is the kind
+  of thing that would only surface as an odd email months later.
+- **Both new behaviours were verified to be able to fail.** Disabling the owner
+  filter in `FindForCancellationAsync` made exactly the two member-isolation
+  tests fail — and `Cancel_RefusesAnAdminReachingIntoAnotherTenant` still passed,
+  the same independence result Phase 2a got. Forcing the notification
+  unconditionally made exactly the two suppression tests fail at *both* levels,
+  unit and integration. Neither weakened version was committed.
+- **Decision `0017`'s carve-out is genuinely still needed, exactly as the plan's
+  smaller call 9 predicted.** Two states this endpoint must refuse cannot be
+  reached through the API at all: a wholly-past booking (`POST /bookings` refuses
+  it with `BookingInThePast`) and one already in progress. Both are arranged with
+  the raw-SQL fixture, which is the carve-out narrowing rather than expiring —
+  new tests use the real path, and only states the endpoint cannot produce fall
+  back to SQL.
+
+One thing raised rather than decided, and it belongs to WP-5: **cancelling a
+`Pending` booking leaves its `ApprovalRequests` row at `Decision = 'Pending'`.**
+Nothing withdraws it. That is consistent with this plan's own scope statement
+("WP-4 creates the `Pending` booking and the `ApprovalRequest` row those
+endpoints will decide") and WP-5's approve path has to check the booking's status
+regardless, since AC-5 already requires re-checking at approval time. But it is a
+real loose end: today an approver in WP-5 could approve a cancelled booking
+unless that check is written. Recorded in `0002`'s amendment and flagged here so
+WP-5 inherits it explicitly rather than discovering it.
 
 ### Phase 3 — Concurrency, proof and documentation (tasks 6–9)
 
-The end-to-end concurrency suite through the real HTTP pipeline; the measured
-results added to decision record `0023` (which itself landed in Phase 1b); the
-remaining CLAUDE.md corrections; and the final AC sweep. Also the two closures
-WP-4 makes possible and no earlier package could:
+**Not started. This section is the handoff brief — written 2026-09-08, at the end
+of Phase 2, for a fresh session to start from.**
 
-- **Seed real bookings.** `SeedData` has stopped short of `Bookings` since WP-1
-  because there was no legitimate write path. There is one now, and it is
-  idempotent, so a handful of seeded bookings become possible.
-- **Make WP-2's `Bookings` isolation test real.** It has been a smoke check —
-  "the filter clause builds and returns empty" — with a note saying the real leak
-  test waits for a write path. Phase 3 supplies it.
+#### Where the build stands
+
+Phases 1 and 2 are complete. `dotnet build` is clean and `dotnet test` gives
+**879 unit + 395 integration, 0 failed** — that is the baseline to compare
+against, and every number below was measured on it. The working tree is clean as
+of commit `cf892c9` plus Phase 2b's changes.
+
+What exists and works:
+
+| Piece | Landed | Note |
+|---|---|---|
+| `dbo.CreateBooking` + `AddCreateBookingProcedure` | 1b | the guarantee; `0023` documents it |
+| `POST /bookings` | 1c | `Confirmed` or `Pending`, + `ApprovalRequest` and `Notifications` rows |
+| `GET /bookings`, `GET /bookings/{id}` | 2a | own by default; admin `userId` / `scope=tenant` |
+| `POST /bookings/{id}/cancel` | 2b | owner or TenantAdmin; `Cancelled` row, suppressed on self-cancel |
+| `IUnitOfWork` | 1a | the only transactional boundary; create only, not cancel |
+| `ICurrentUser.IsInRole(Role)` | 2a | first role read in `BookSpace.Application` |
+| Procedure-level concurrency tests | 1b | `CreateBookingProcedureTests`: 1-slot, 20-way, 2 pooled |
+
+Four of WP-4's nine tasks and three of its four acceptance criteria are met. What
+Phase 3 owes is **AC-1 at the HTTP level** — the one remaining criterion, and the
+single most important test in the codebase (§8).
+
+#### What Phase 3 has to do
+
+1. **The HTTP-level concurrency suite.** Parallel `POST /bookings` through the
+   real pipeline. Four cases, already specified in "Testing, mapped to the
+   acceptance criteria" below and unchanged:
+   - one slot, capacity 1, N simultaneous → exactly one 201, the rest 409
+     `SlotUnavailable`, exactly one row, **and no 500s** (a deadlock escaping
+     retry would surface here, and only here);
+   - pooled: capacity 4, eight quantity-1 requests → exactly four succeed;
+   - mixed quantities: capacity 4, one request for 3 and one for 2 → exactly one;
+   - and worth adding, since 2b made it possible: a **cancel racing a create**
+     for the freed slot, which the procedure-level tests could not express.
+2. **Append the measured end-to-end evidence to `0023`.** The record already
+   carries Phase 1b's numbers (lock hints removed → 3 bookings on a capacity-1
+   room, a pool of 4 filled 10 times). Phase 3 adds the HTTP figures and, if the
+   1205 retry fires, how often — `0023`'s claim is that the retry is *part of the
+   design*, and Phase 1c already softened "blocks" to "usually blocks" after
+   observing a deadlock at ten-way contention. More data is what makes that
+   honest rather than defensive.
+3. **Seed real bookings.** `SeedData` has stopped short of `Bookings` since WP-1
+   because there was no legitimate write path (§4.1). There is one now and it is
+   idempotent, so a handful become possible. **Read the seeding constraint first**:
+   `SeedData` runs with no `HttpContext`, so `ICurrentTenant.OrgId` is null and it
+   uses `TenantBypassScope` — but `dbo.CreateBooking` deliberately **fails closed
+   without a tenant session context** (`0023`'s fail-open guard), so seeding
+   through the procedure needs the session context set, not bypassed. That
+   tension is unresolved and is the first thing to work out.
+4. **Make WP-2's `Bookings` isolation test real.**
+   `TenantIsolationTests.BookingsQueryFilter_WithNoTenantContext_ReturnsEmptyWithoutThrowing`
+   is a smoke check with a comment saying so — it proves the filter clause builds,
+   not that a cross-tenant read returns nothing, because no `Bookings` rows
+   existed. Now they can. This is AC-4's last gap.
+5. **The final AC sweep** — confirm all four acceptance criteria and tick WP-4 in
+   CLAUDE.md §12.
+
+#### Outstanding CLAUDE.md corrections
+
+One is **overdue and currently makes CLAUDE.md wrong about the code**:
+
+- **§6's tier table still lists blackouts as tier 4 only.** Correction item 5
+  below said this lands "in Phase 1b with the procedure"; the procedure shipped
+  with the blackout re-check under the lock and the table was never updated. So
+  §6 currently understates where that rule lives. Smaller call 3 settled the
+  reasoning (decision `0001` gives a blackout absolute priority, and §6's own
+  rule of thumb puts a "must never" in tiers 1–3), so this is a documentation fix
+  with nothing left to decide — the tier-4 row keeps blackouts *and* tier 2 gains
+  them, because both checks genuinely exist.
+
+Everything else in "Corrections to CLAUDE.md that WP-4 forces" is done.
+
+#### Things a fresh session should know before touching this
+
+- **Decision `0023` is the reference for the concurrency design.** Read it before
+  writing the tests — particularly the open lower bound on the range lock (creates
+  on one resource serialize against each other whether or not their times
+  overlap), which is why a 20-way test is slow rather than broken.
+- **The 1205 retry is production behaviour, not a test workaround.** Phase 1c hit
+  a deadlock at ten-way contention because the *procedure-level* test called the
+  procedure over a raw connection with no execution strategy. Anything going
+  through `POST /bookings` gets the retry via `IUnitOfWork`; anything calling the
+  procedure directly must retry the way production does.
+- **`member2@acme.test` is unusable in integration tests** —
+  `AuthenticationEndpointTests.Refresh_UserDeactivatedSinceLogin` deactivates it
+  permanently. Use `approver@acme.test` as a second Acme account. A test using
+  member2 passes alone and fails only in a full run, with a 401 on *login*.
+- **The concurrency tests will need their own state hygiene.** Every booking test
+  file creates its own resource and deletes it in a `finally`, in the order
+  Notifications → ApprovalRequests → Bookings → Resources (§4.5's `NoAction`
+  FKs), with an explicit RLS bypass on the fixture connection (decision `0017`'s
+  gotcha). Copy that shape; a leaked resource breaks other files' counts.
+- **Verify the tests can fail.** Every WP-4 chunk so far has: 1b removed the lock
+  hints, 2a disabled the owner filter, 2b did both the owner filter and the
+  notification suppression. For Phase 3 the equivalent is removing the hints again
+  and confirming the *HTTP* suite fails, which is the end-to-end counterpart to
+  1b's evidence. Never commit the weakened version.
+
+#### Known loose ends Phase 3 does not own
+
+Listed so they are not mistaken for Phase 3 work:
+
+- **A cancelled `Pending` booking keeps its `ApprovalRequests` row at
+  `Pending`.** Nothing withdraws it. **WP-5's** approve path must check the
+  booking's status or an approver could approve a cancelled booking. Recorded in
+  `0002`'s amendment.
+- **The owner's name is not on the booking read DTOs**, only `UserId`. For
+  `scope=tenant` an admin sees opaque GUIDs. Deliberately not built in 2a — the
+  owner's call, and `ApproverDetail`'s id-and-name-no-email shape is the
+  precedent if it is wanted.
+- **`GET /bookings/{id}` carries no approval detail** for a `Pending` booking.
+  WP-5 owns approvals and the wire shape belongs with its approver queue.
+- **Reminder rows (FR-8.3) are not written by any booking path** — smaller call 7,
+  deferred to the notifications package.
+- **Nothing writes `BookingStatus.Completed`**, and that gap is now load-bearing
+  in three places (`CanBeCancelledForBlackout`, `CanBeCancelled`, and the
+  blackout cascade's reach). Worth raising with the mentor; it is in no current
+  work package.
+- **§9's DST fall-back question** belongs to WP-5, reassigned 2026-09-07.
+
+#### Suggested chunking
+
+Two chunks, matching the delivery style: **3a** the concurrency suite plus the
+`0023` evidence — the acceptance-criterion work, defensible on its own; **3b**
+the seeding, the real isolation test, the tier-table correction and the AC sweep,
+which is closing-out work with no shared risk.
 
 ---
 

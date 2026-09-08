@@ -156,6 +156,28 @@ internal sealed class FakeBookingRepository : IBookingRepository
 
         return Task.FromResult(Detail);
     }
+
+    // ---- The cancel (Phase 2b) ----
+
+    // The tracked booking the cancel handler will mutate. A real Booking rather
+    // than a DTO, because the handler calls Cancel on it and a test then asserts
+    // the transition actually landed on the entity.
+    public Booking? Cancellable { get; set; }
+
+    public Guid? RequestedCancellationId { get; private set; }
+
+    public BookingOwnerFilter? CancellationOwner { get; private set; }
+
+    public Task<Booking?> FindForCancellationAsync(
+        Guid bookingId,
+        BookingOwnerFilter owner,
+        CancellationToken cancellationToken)
+    {
+        RequestedCancellationId = bookingId;
+        CancellationOwner = owner;
+
+        return Task.FromResult(Cancellable);
+    }
 }
 
 // Runs the delegate straight through. The real implementation's job — a

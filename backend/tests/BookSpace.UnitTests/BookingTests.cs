@@ -194,6 +194,93 @@ public class BookingTests
         Assert.Throws<InvalidOperationException>(() => booking.CancelForBlackout("Blackout", NowUtc));
     }
 
+    // ---- The cancellation window (WP-4 Phase 2b, FR-4.4) -------------------
+    //
+    // ReasonCodes.BookingNotCancellable has always described two halves —
+    // already terminal, and already ended — and until Phase 2b only the first
+    // was enforced. These cover the second.
+
+    // The same guard CancelForBlackout has, for the same reason: nothing in this
+    // system writes BookingStatus.Completed, so a meeting that happened and was
+    // checked into is still Confirmed, and status alone would let a member
+    // "cancel" last month's meeting and rewrite history. Cancelling something
+    // that already finished frees no slot.
+    [Fact]
+    public void Cancel_RefusesABookingThatHasAlreadyEnded()
+    {
+        var booking = CreateValid();
+        var afterItEnded = Ends.AddMinutes(1);
+
+        Assert.False(booking.CanBeCancelled(afterItEnded));
+        Assert.Throws<InvalidOperationException>(
+            () => booking.Cancel(ActorId, "Too late", afterItEnded));
+    }
+
+    // The test is on EndsAtUtc and deliberately not StartsAtUtc: the room is
+    // free from now on, which is the whole point of cancelling. Decision 0019's
+    // BlackoutPeriodElapsed rule, reapplied.
+    [Fact]
+    public void Cancel_AllowsABookingAlreadyUnderWay()
+    {
+        var booking = CreateValid();
+        var midway = Starts.AddMinutes(30);
+
+        Assert.True(booking.CanBeCancelled(midway));
+
+        booking.Cancel(ActorId, "Ending early", midway);
+
+        Assert.Equal(BookingStatus.Cancelled, booking.Status);
+    }
+
+    // The instant the booking ends is already too late — the interval is
+    // half-open, so EndsAtUtc is the first instant it no longer holds.
+    [Fact]
+    public void Cancel_RefusesABookingAtTheExactInstantItEnds()
+    {
+        var booking = CreateValid();
+
+        Assert.False(booking.CanBeCancelled(Ends));
+    }
+
+    [Theory]
+    [InlineData(BookingStatus.Pending)]
+    [InlineData(BookingStatus.Confirmed)]
+    public void CanBeCancelled_AcceptsALiveClaimOnTheResource(BookingStatus status)
+    {
+        Assert.True(CreateValid(status).CanBeCancelled(NowUtc));
+    }
+
+    [Theory]
+    [InlineData(BookingStatus.Cancelled)]
+    [InlineData(BookingStatus.Rejected)]
+    [InlineData(BookingStatus.Completed)]
+    [InlineData(BookingStatus.NoShow)]
+    public void CanBeCancelled_RefusesATerminalStatus(BookingStatus status)
+    {
+        Assert.False(CreateValid(status).CanBeCancelled(NowUtc));
+    }
+
+    // Not idempotent, deliberately, and this is the difference from archiving a
+    // resource: a second cancellation would overwrite CancelledByUserId,
+    // CancelledAtUtc and the reason with a second actor's, so the record of who
+    // called the meeting off would quietly change. Archive has nothing to
+    // overwrite, which is why that transition can safely no-op.
+    [Fact]
+    public void Cancel_RefusesASecondCancellationRatherThanOverwritingTheFirst()
+    {
+        var booking = CreateValid();
+        var firstActor = Guid.NewGuid();
+
+        booking.Cancel(firstActor, "First reason", NowUtc);
+
+        Assert.Throws<InvalidOperationException>(
+            () => booking.Cancel(Guid.NewGuid(), "Second reason", NowUtc.AddMinutes(1)));
+
+        Assert.Equal(firstActor, booking.CancelledByUserId);
+        Assert.Equal("First reason", booking.CancellationReason);
+        Assert.Equal(NowUtc, booking.CancelledAtUtc);
+    }
+
     // The guard that protects history, and the reason it cannot be left to the
     // status alone: nothing in this system writes BookingStatus.Completed, so a
     // meeting that happened and was checked into is still Confirmed. Without

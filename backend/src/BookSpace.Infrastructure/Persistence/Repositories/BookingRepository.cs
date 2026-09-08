@@ -255,6 +255,39 @@ internal sealed class BookingRepository : IBookingRepository
             .FirstOrDefaultAsync(cancellationToken);
     }
 
+    // ---- The cancel (WP-4 Phase 2b, FR-4.4) ----
+
+    // Tracked, unlike the two reads above: the caller mutates the entity through
+    // Booking.Cancel and the change has to be saved. No AsNoTracking, and no
+    // projection — the same split IResourceRepository keeps between its reads
+    // and FindForUpdateAsync.
+    //
+    // The owner filter is in the WHERE clause for a stronger reason here than on
+    // the reads: a booking loaded and then refused would be a booking the caller
+    // could have had cancelled. Filtered out, it is simply not there, and the
+    // handler's only branch is null → BookingNotFound (AC-4).
+    //
+    // FirstOrDefaultAsync, never DbSet.Find(): Find can return a tracked entity
+    // without querying, which would skip both the query filter (CLAUDE.md §4.2)
+    // and the owner filter — and on this path the create handler may well have
+    // the booking tracked already.
+    public Task<Booking?> FindForCancellationAsync(
+        Guid bookingId,
+        BookingOwnerFilter owner,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+
+        var bookings = _context.Bookings.Where(b => b.Id == bookingId);
+
+        if (owner.UserId is { } ownerUserId)
+        {
+            bookings = bookings.Where(b => b.UserId == ownerUserId);
+        }
+
+        return bookings.FirstOrDefaultAsync(cancellationToken);
+    }
+
     // ---- The rows derived from a booking (WP-4 Phase 1c) ----
     //
     // Plain EF adds. They carry no capacity claim, so none of the procedure's
