@@ -38,6 +38,23 @@ internal sealed class SystemResourceTimeZone : IResourceTimeZone
 
     public DateTime ToUtcLatest(DateTime resourceLocal) => Resolve(resourceLocal, earliest: false);
 
+    // The easy direction: TimeZoneInfo needs no help here, because an instant
+    // has exactly one offset and therefore exactly one wall clock. The only
+    // thing worth guarding is the input's Kind — a Local-Kind value would be
+    // converted from the *host's* zone, which on a server in another region is
+    // a silently wrong answer rather than an error.
+    public DateTime ToLocal(DateTime utc)
+    {
+        if (utc.Kind != DateTimeKind.Utc)
+        {
+            throw new ArgumentException("An instant must have DateTimeKind.Utc.", nameof(utc));
+        }
+
+        // ConvertTimeFromUtc returns Unspecified, which is what a wall clock is
+        // and what ToUtcEarliest/ToUtcLatest require back.
+        return TimeZoneInfo.ConvertTimeFromUtc(utc, _zone);
+    }
+
     private DateTime Resolve(DateTime resourceLocal, bool earliest)
     {
         // A wall clock is not an instant, and Unspecified is how .NET spells

@@ -4,6 +4,7 @@ using BookSpace.Application.Features.Resources.GetResource;
 using BookSpace.Application.Features.Resources.ListResources;
 using BookSpace.Domain.Availability;
 using BookSpace.Domain.Entities;
+using BookSpace.Domain.Enums;
 
 namespace BookSpace.UnitTests.Resources;
 
@@ -117,6 +118,9 @@ internal sealed class FixedOffsetResourceTimeZone : IResourceTimeZone
 
     public DateTime ToUtcLatest(DateTime resourceLocal) => ToUtc(resourceLocal);
 
+    public DateTime ToLocal(DateTime utc) =>
+        DateTime.SpecifyKind(utc + _offset, DateTimeKind.Unspecified);
+
     private DateTime ToUtc(DateTime resourceLocal) =>
         DateTime.SpecifyKind(resourceLocal - _offset, DateTimeKind.Utc);
 }
@@ -125,9 +129,21 @@ internal sealed class FixedOffsetResourceTimeZone : IResourceTimeZone
 // already is one, and these tests use it.
 internal sealed class FixedCurrentUser : ICurrentUser
 {
-    public FixedCurrentUser(Guid? userId) => UserId = userId;
+    private readonly HashSet<Role> _roles;
+
+    public FixedCurrentUser(Guid? userId, params Role[] roles)
+    {
+        UserId = userId;
+        _roles = [.. roles];
+    }
 
     public Guid? UserId { get; }
+
+    // Roles are stated explicitly, and the default is *none* — so a test that
+    // does not mention roles gets the least-privileged caller. That matters for
+    // the booking reads (WP-4 Phase 2a): a fake that answered true by default
+    // would make the admin-widening tests pass without proving anything.
+    public bool IsInRole(Role role) => _roles.Contains(role);
 }
 
 // Hand-written, like the rest of this file. Eligibility is stated as a fixed set

@@ -49,16 +49,25 @@ public class ReasonCodesTests
         Assert.Equal(values.Count, values.Distinct(StringComparer.Ordinal).Count());
     }
 
-    // The six codes CLAUDE.md §6 names are the ones FR-4.5 committed to; four
-    // are booking codes with no thrower until WP-4, which is exactly why they
-    // are easy to lose track of.
+    // The booking codes CLAUDE.md §6 names — the ones FR-4.5 committed to, plus
+    // the four WP-4 added. They are the easiest to lose track of, since several
+    // had no thrower for a whole work package.
+    //
+    // ApprovalRequired was on this list until WP-4 Phase 1a and is deliberately
+    // gone: FR-7.1 makes an approval-gated booking Pending rather than refusing
+    // it, so nothing will ever throw it (owner's call, 2026-09-07). This test
+    // failing for it is the check working — the code and §6's list have to move
+    // together.
     [Theory]
     [InlineData("SlotUnavailable")]
     [InlineData("CapacityExceeded")]
     [InlineData("OutsideAvailability")]
     [InlineData("BlackoutPeriod")]
     [InlineData("ResourceArchived")]
-    [InlineData("ApprovalRequired")]
+    [InlineData("BookingNotFound")]
+    [InlineData("BookingNotCancellable")]
+    [InlineData("BookingDurationOutOfRange")]
+    [InlineData("BookingInThePast")]
     public void SectionSixCodesAreAllPresent(string expectedCode)
     {
         var values = Constants(typeof(ReasonCodes))

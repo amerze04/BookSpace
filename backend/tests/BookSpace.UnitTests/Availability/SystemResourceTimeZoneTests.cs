@@ -142,4 +142,65 @@ public class SystemResourceTimeZoneTests
         Assert.Equal(Utc(2026, 3, 8, 2, 30), utc.ToUtcEarliest(Local(2026, 3, 8, 2, 30)));
         Assert.Equal(Utc(2026, 3, 8, 2, 30), utc.ToUtcLatest(Local(2026, 3, 8, 2, 30)));
     }
+
+    // ---- ToLocal (WP-4 Phase 1a) -------------------------------------------
+
+    // The offset actually in force at that instant, either side of the same
+    // transitions the methods above have to reason about — EDT in September,
+    // EST in January.
+    [Theory]
+    [InlineData(2026, 9, 7, 13, 0, 9, 0)]   // 13:00Z -> 09:00 EDT (UTC-4)
+    [InlineData(2026, 1, 7, 13, 0, 8, 0)]   // 13:00Z -> 08:00 EST (UTC-5)
+    public void ToLocalAppliesTheOffsetInForceAtThatInstant(
+        int year, int month, int day, int utcHour, int utcMinute, int localHour, int localMinute)
+    {
+        var local = NewYork.ToLocal(Utc(year, month, day, utcHour, utcMinute));
+
+        Assert.Equal(Local(year, month, day, localHour, localMinute), local);
+    }
+
+    // A wall clock is Unspecified, and this is the direction that has to produce
+    // one — ToUtcEarliest/ToUtcLatest refuse anything else.
+    [Fact]
+    public void ToLocalReturnsAWallClock()
+    {
+        Assert.Equal(DateTimeKind.Unspecified, NewYork.ToLocal(Utc(2026, 9, 7, 13, 0)).Kind);
+    }
+
+    // The repeated hour is the case worth stating: 05:30Z and 06:30Z on
+    // clocks-back day are two different instants that name the *same* wall
+    // clock, 01:30. That is not an ambiguity in this direction — each instant
+    // still has exactly one answer — which is why ToLocal needs no
+    // earliest/latest pair.
+    [Fact]
+    public void TwoInstantsInTheRepeatedHourNameTheSameWallClock()
+    {
+        var earlier = NewYork.ToLocal(Utc(2026, 11, 1, 5, 30));
+        var later = NewYork.ToLocal(Utc(2026, 11, 1, 6, 30));
+
+        Assert.Equal(Local(2026, 11, 1, 1, 30), earlier);
+        Assert.Equal(Local(2026, 11, 1, 1, 30), later);
+    }
+
+    // Round trip through the gap: no local time of 02:30 exists on
+    // clocks-forward day, and ToUtcEarliest resolves it to the transition
+    // instant, whose wall clock is 03:00. Asserted so the two directions are
+    // known to be consistent rather than assumed to be.
+    [Fact]
+    public void AnInstantResolvedOutOfTheGapNamesTheTransitionWallClock()
+    {
+        var transition = NewYork.ToUtcEarliest(Local(2026, 3, 8, 2, 30));
+
+        Assert.Equal(Local(2026, 3, 8, 3, 0), NewYork.ToLocal(transition));
+    }
+
+    [Theory]
+    [InlineData(DateTimeKind.Unspecified)]
+    [InlineData(DateTimeKind.Local)]
+    public void ToLocalRefusesAnythingThatIsNotAnInstant(DateTimeKind kind)
+    {
+        var notAnInstant = DateTime.SpecifyKind(new DateTime(2026, 9, 7, 13, 0, 0), kind);
+
+        Assert.Throws<ArgumentException>(() => NewYork.ToLocal(notAnInstant));
+    }
 }

@@ -1,6 +1,8 @@
 # 0017 — Integration tests insert Bookings rows with raw SQL
 
-**Status:** Decided (2026-08-28), implemented (2026-08-31)
+**Status:** Decided (2026-08-28), implemented (2026-08-31), **amended 2026-09-08**
+(WP-4 — the carve-out narrows now that `dbo.CreateBooking` exists; see the
+amendment section)
 **Requirements:** FR-3.1, FR-4.2, and WP-3's AC "the availability query
 correctly excludes blackout periods and existing bookings"
 **Raised by:** WP-3 planning (`docs/wp3-plan.md`, decision D4), before any WP-3
@@ -80,6 +82,46 @@ not the procedure AC-1 needs.
   reconsidering then whether the fixtures should switch to calling the
   procedure — probably yes for anything asserting booking behavior, and
   probably not for a fixture that just needs a row to exist.
+
+
+## Amendment (2026-09-08) — the carve-out narrows, it does not expire
+
+Made in WP-4, which is the package this record anticipated: `dbo.CreateBooking`
+now exists, so the premise above — "the procedure does not exist, therefore
+nothing legitimate can insert a booking" — no longer holds. The Consequences
+section already asked for exactly this reconsideration, and the answer it
+guessed at turned out to be the right one.
+
+**New tests use the real path.** Every booking a WP-4 test needs as *arrangement*
+is created through `POST /bookings`, and the concurrency suite races that
+endpoint rather than an insert. `SeedData` goes through
+`IBookingRepository.CreateAsync` too, so the seed is not an exception either.
+
+**The existing fixtures stay**, for two reasons that the procedure's arrival does
+not change:
+
+- **They set up states the endpoint cannot produce.** A wholly-past booking is
+  the clearest case: `POST /bookings` refuses one with `BookingInThePast`, and a
+  booking that has already ended is precisely what
+  `BookingCancelEndpointTests` has to arrange in order to assert
+  `BookingNotCancellable`. Same for an in-progress booking, and for a row in a
+  terminal status like `NoShow`, which nothing in the system writes at all.
+- **Volume.** `AvailabilityEndpointTests` asserts the PRD's performance NFR over
+  260 bookings on one resource. As 260 HTTP round trips that setup would
+  dominate the test's own measurement, which is the opposite of what it is
+  there to measure.
+
+So the rule becomes: **raw SQL in a fixture is for a state the API cannot reach,
+or for bulk.** Anything a caller could legitimately do, a test now does the way a
+caller would. Raw SQL specifically — never LINQ, never `SaveChanges` — remains
+the point, so a fixture can never be mistaken for a production path.
+
+One thing WP-4 added to the gotcha already recorded above: the fixture's
+instants must be **truncated to whole seconds**. `datetime2(0)` *rounds* on
+write, so an untruncated `DateTime.UtcNow` in a fixture moved a stored boundary
+by up to half a second and turned a blackout adjacency test intermittent (WP-3
+Phase 4). The same trap is why `IClock.UtcNow` is truncated and why `SeedData`
+truncates its clock (CLAUDE.md §4.3).
 
 ## Notes
 

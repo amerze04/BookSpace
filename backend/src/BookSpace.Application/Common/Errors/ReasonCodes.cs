@@ -69,10 +69,18 @@ public static class ReasonCodes
     // and why it is separate from ResourceNotFound despite both being 404s.
     public const string BlackoutPeriodNotFound = "BlackoutPeriodNotFound";
 
-    // ---- Bookings (declared by CLAUDE.md §6; first thrown in WP-4) ----
-    // Listed here so the catalogue is the one place to look, and so WP-4 adds
-    // throwers rather than inventing strings. No thrower exists yet: booking
-    // writes go through dbo.CreateBooking, which is WP-4 work (§4.1).
+    // ---- Bookings (FR-4.x, WP-4) ----
+    //
+    // The first four were declared by CLAUDE.md §6 in WP-3 and waited for a
+    // thrower; the four after them are WP-4's own. Their exception subclasses
+    // arrive with the code paths that raise them (Phase 1c), per §6: a code with
+    // no subclass cannot be thrown at all.
+    //
+    // ApprovalRequired used to sit here and was **deleted in WP-4 Phase 1a**.
+    // FR-7.1 makes a booking on an approval-gated resource enter Pending rather
+    // than be refused, so nothing in the design will ever raise it, and decision
+    // 0016's whole point is that the catalogue describes what the API can
+    // actually return. Owner's call, 2026-09-07.
 
     // ErrorKind.RuleViolation. A requested interval a blackout covers.
     // Decision 0001 gives a blackout absolute priority.
@@ -84,18 +92,46 @@ public static class ReasonCodes
     // dbo.CreateBooking in WP-4.
     public const string BlackoutPeriod = "BlackoutPeriod";
 
-    // ErrorKind.Conflict. The slot is taken — the stored procedure's overlap
-    // check refused it (FR-4.2, AC-1).
+    // ErrorKind.Conflict. **Nothing** is free at some instant inside the
+    // requested interval — the peak concurrent Quantity already equals
+    // Resources.Capacity (FR-4.2, AC-1). Raised by the application pre-check and,
+    // authoritatively, by dbo.CreateBooking's check under the range lock.
     public const string SlotUnavailable = "SlotUnavailable";
 
-    // ErrorKind.Conflict. Overlapping bookings' Quantity would exceed
-    // Resources.Capacity (decision 0005's concurrent-units model).
+    // ErrorKind.Conflict. Something is free throughout, but fewer units than
+    // were asked for (decision 0005's concurrent-units model).
+    //
+    // The split from SlotUnavailable is the owner's call of 2026-09-07: on a
+    // pooled resource "you asked for 3 and 2 are left" is genuinely different
+    // information, and on an exclusive resource only SlotUnavailable can occur,
+    // since Capacity 1 admits no quantity but 1.
     public const string CapacityExceeded = "CapacityExceeded";
 
-    // ErrorKind.RuleViolation. Outside the resource's availability windows.
+    // ErrorKind.RuleViolation. Not wholly inside the resource's availability
+    // windows (FR-3.2). Partly open is not open — a booking running past closing
+    // is refused, never truncated.
     public const string OutsideAvailability = "OutsideAvailability";
 
-    // ErrorKind.RuleViolation. The resource requires approval, so the booking
-    // cannot be confirmed directly (FR-7.x).
-    public const string ApprovalRequired = "ApprovalRequired";
+    // ErrorKind.NotFound. No such booking visible to this caller. One code for
+    // three cases, on the same reasoning as BlackoutPeriodNotFound: the id does
+    // not exist, it belongs to another tenant, or it belongs to another member
+    // of this tenant and the caller is not a TenantAdmin. Reporting the third
+    // separately would confirm the booking exists and leak who is using what.
+    public const string BookingNotFound = "BookingNotFound";
+
+    // ErrorKind.RuleViolation. The booking is already in a terminal status, or
+    // it has already ended. The second half mirrors BlackoutPeriodElapsed: the
+    // test is on EndsAtUtc, so a meeting in progress can still be called off.
+    public const string BookingNotCancellable = "BookingNotCancellable";
+
+    // ErrorKind.RuleViolation. The requested length violates the resource's
+    // MinDurationMinutes or MaxDurationMinutes. Judged by
+    // Resource.AllowsBookingDuration, which is the only place that rule lives.
+    public const string BookingDurationOutOfRange = "BookingDurationOutOfRange";
+
+    // ErrorKind.RuleViolation. The requested interval has **entirely** elapsed,
+    // so the booking could reserve nothing. Deliberately about the end and not
+    // the start, exactly as BlackoutPeriodElapsed is (decision 0019) — booking
+    // the room you are already sitting in is the ordinary case.
+    public const string BookingInThePast = "BookingInThePast";
 }

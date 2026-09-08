@@ -106,13 +106,67 @@ public class TenantIsolationTests
         Assert.All(windows, w => Assert.Equal(acmeOrgId, w.OrgId));
     }
 
-    // No Bookings are seeded yet (CLAUDE.md §4.1 — dbo.CreateBooking doesn't
-    // exist yet, so there's nothing legitimate to seed), so a real
-    // cross-tenant Bookings leak test would be vacuous. This is a smoke check
-    // only: the filter clause builds and returns cleanly with no tenant
-    // context. Add the real leak test once a Bookings write path exists.
+    // ---- Bookings (WP-4 Phase 3) -------------------------------------------
+    //
+    // **This group used to be a single smoke check**, from WP-2 until
+    // 2026-09-08: no Bookings existed to leak, because dbo.CreateBooking did not
+    // exist and CLAUDE.md §4.1 admits no other way to write one, so all that
+    // could be asserted was that the filter clause built without throwing. The
+    // seed writes six bookings now, so the same questions the other five tables
+    // answer here can finally be asked of Bookings — which closes AC-4's last
+    // gap.
+    //
+    // Note that a *cross-tenant read through the real endpoints* was already
+    // covered by BookingReadEndpointTests and BookingCancelEndpointTests. What
+    // was missing, and is here, is the database half: the leak a handler that
+    // forgot its OrgId would produce, and the rows a raw connection sees.
+
     [Fact]
-    public async Task BookingsQueryFilter_WithNoTenantContext_ReturnsEmptyWithoutThrowing()
+    public async Task BookingById_WithOtherTenantsRealId_ReturnsNotFound()
+    {
+        var globexBookingId = await GetAnyBookingIdAsync("globex");
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var response = await client.GetAsync($"/test-probe-tenant/bookings/{globexBookingId}");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    // The other half of the pair, and the reason the test above means anything:
+    // an id of the same shape from the caller's own tenant is reachable through
+    // the identical probe, so "not found" is isolation rather than a broken
+    // route.
+    [Fact]
+    public async Task BookingById_WithOwnTenantsId_IsStillReachable()
+    {
+        var acmeBookingId = await GetAnyBookingIdAsync("acme");
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var response = await client.GetAsync($"/test-probe-tenant/bookings/{acmeBookingId}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task BookingList_NeverContainsOtherTenantRows()
+    {
+        var acmeOrgId = await GetOrgIdAsync("acme");
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var bookings = await client.GetFromJsonAsync<List<BookingDto>>("/test-probe-tenant/bookings");
+
+        // Seed: 3 bookings per tenant. The other 3 belong to Globex. Asserted as
+        // an exact count rather than "all mine", so a filter that accidentally
+        // matched nothing would fail here too.
+        Assert.Equal(3, bookings!.Count);
+        Assert.All(bookings, b => Assert.Equal(acmeOrgId, b.OrgId));
+    }
+
+    // The EF half on its own: no tenant context at all, so the query filter
+    // compares OrgId against null and matches nothing. Rows plainly exist now —
+    // this is the test that was a smoke check while the table was empty.
+    [Fact]
+    public async Task BookingsQueryFilter_WithNoTenantContext_ReturnsEmpty()
     {
         await using var scope = _host.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<BookSpaceDbContext>();
@@ -120,6 +174,11 @@ public class TenantIsolationTests
         var bookings = await context.Bookings.ToListAsync();
 
         Assert.Empty(bookings);
+
+        // And they are there to be missed, which is what makes the assertion
+        // above evidence rather than a tautology.
+        using var _ = TenantBypassScope.Enter();
+        Assert.Equal(6, await context.Bookings.IgnoreQueryFilters().CountAsync());
     }
 
     [Fact]
@@ -144,6 +203,20 @@ public class TenantIsolationTests
 
         Assert.Equal(0, await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.AvailabilityWindows;"));
         Assert.Equal(0, await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.BlackoutPeriods;"));
+    }
+
+    // Bookings, with no EF anywhere: the rows exist and an uninitialized
+    // connection sees none of them. This is also the failure mode decision 0023
+    // calls fail-open — a connection in exactly this state would count zero
+    // overlapping bookings inside dbo.CreateBooking and overbook, which is why
+    // the procedure reads Resources first and refuses.
+    [Fact]
+    public async Task RawConnection_WithNoSessionContext_SeesZeroBookingRows()
+    {
+        await using var connection = new SqlConnection(ConnectionString);
+        await connection.OpenAsync();
+
+        Assert.Equal(0, await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.Bookings;"));
     }
 
     // Regression test for the TenantInit gap specifically: a predicate that
@@ -177,12 +250,15 @@ public class TenantIsolationTests
         var userCount = await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.Users;");
         var windowCount = await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.AvailabilityWindows;");
         var blackoutCount = await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.BlackoutPeriods;");
+        var bookingCount = await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.Bookings;");
 
         Assert.Equal(2, resourceCount);
         Assert.Equal(4, userCount);
         // Acme's half of the seeded 20 windows and 2 blackouts.
         Assert.Equal(10, windowCount);
         Assert.Equal(1, blackoutCount);
+        // And of the seeded 6 bookings (WP-4 Phase 3).
+        Assert.Equal(3, bookingCount);
     }
 
     private async Task<HttpClient> AuthenticatedClientAsync(string email)
@@ -244,6 +320,20 @@ public class TenantIsolationTests
         return blackout.Id;
     }
 
+    // Both layers bypassed, same reasoning as GetAnyResourceIdAsync — which now
+    // applies to Bookings too, since the seed finally writes some (WP-4 Phase 3).
+    private async Task<Guid> GetAnyBookingIdAsync(string orgSlug)
+    {
+        await using var scope = _host.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<BookSpaceDbContext>();
+
+        var orgId = await context.Organizations.Where(o => o.Slug == orgSlug).Select(o => o.Id).SingleAsync();
+
+        using var _ = TenantBypassScope.Enter();
+        var booking = await context.Bookings.IgnoreQueryFilters().FirstAsync(b => b.OrgId == orgId);
+        return booking.Id;
+    }
+
     private static async Task ExecuteAsync(SqlConnection connection, string commandText)
     {
         await using var command = connection.CreateCommand();
@@ -261,4 +351,5 @@ public class TenantIsolationTests
     private sealed record ResourceDto(Guid Id, Guid OrgId, string Name);
     private sealed record UserDto(Guid Id, Guid? OrgId, string Email);
     private sealed record AvailabilityWindowDto(Guid Id, Guid OrgId, Guid ResourceId);
+    private sealed record BookingDto(Guid Id, Guid OrgId, Guid ResourceId, Guid UserId);
 }

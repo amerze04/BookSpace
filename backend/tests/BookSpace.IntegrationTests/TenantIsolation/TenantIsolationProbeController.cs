@@ -54,6 +54,35 @@ public sealed class TenantIsolationProbeController : ControllerBase
         return blackout is null ? NotFound() : Ok(blackout);
     }
 
+    // WP-4 Phase 3. Written the same deliberately naive way as the blackout
+    // probe above — filter by Id alone, no OrgId and no owner check anywhere —
+    // because that is the shape a handler takes before anyone thinks about
+    // isolation. It is safe only because the query filter and RLS make it so,
+    // which is precisely what the tests over it assert. The real GET
+    // /bookings/{id} additionally applies an owner filter (decision 0002); this
+    // probe deliberately does not, so a failure here can only be a *tenant*
+    // leak.
+    [HttpGet("bookings/{id:guid}")]
+    [Authorize(Policy = AuthorizationPolicies.TenantMember)]
+    public async Task<IActionResult> BookingById(Guid id, [FromServices] BookSpaceDbContext db, CancellationToken cancellationToken)
+    {
+        var booking = await db.Bookings
+            .Where(b => b.Id == id)
+            .Select(b => new { b.Id, b.OrgId, b.ResourceId, b.UserId })
+            .FirstOrDefaultAsync(cancellationToken);
+        return booking is null ? NotFound() : Ok(booking);
+    }
+
+    [HttpGet("bookings")]
+    [Authorize(Policy = AuthorizationPolicies.TenantMember)]
+    public async Task<IActionResult> Bookings([FromServices] BookSpaceDbContext db, CancellationToken cancellationToken)
+    {
+        var bookings = await db.Bookings
+            .Select(b => new { b.Id, b.OrgId, b.ResourceId, b.UserId })
+            .ToListAsync(cancellationToken);
+        return Ok(bookings);
+    }
+
     [HttpGet("availability-windows")]
     [Authorize(Policy = AuthorizationPolicies.TenantMember)]
     public async Task<IActionResult> AvailabilityWindows([FromServices] BookSpaceDbContext db, CancellationToken cancellationToken)

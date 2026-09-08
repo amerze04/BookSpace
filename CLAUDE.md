@@ -75,10 +75,22 @@ These are not style preferences. Breaking one is a bug, not a refactor.
 Booking creation and approval **must** call `dbo.CreateBooking` /
 `dbo.ApproveBooking`. Never insert into `Bookings` from LINQ or `SaveChanges`.
 
-The procedure takes `UPDLOCK, HOLDLOCK` range locks and compares the sum of
-overlapping `Quantity` against `Resources.Capacity`. LINQ cannot express those
-hints, and SQL Server has no exclusion constraint, so this is the only place
-the guarantee exists (FR-4.2, FR-7.5, AC-1).
+The procedure takes `UPDLOCK, HOLDLOCK` range locks and compares the **peak
+concurrent** overlapping `Quantity` against `Resources.Capacity`. LINQ cannot
+express those hints, and SQL Server has no exclusion constraint, so this is the
+only place the guarantee exists (FR-4.2, FR-7.5, AC-1).
+
+**Peak, not sum — corrected 2026-09-07, while planning WP-4.** This paragraph
+used to say "the sum of overlapping `Quantity`", which over-counts and refuses
+legal bookings on any pooled resource. Capacity 2, existing bookings
+`09:00–10:00` (qty 1) and `10:00–11:00` (qty 1), a request for `09:30–10:30`
+(qty 1): the sum over both is 2, so `2 + 1 > 2` rejects — but the two never
+coexist, one unit is free at every instant of the request, and the booking is
+legal. `CapacitySweep` and `PeakConcurrentBookedQuantityAsync` already compute
+the peak, so the availability query would have offered that slot and the
+procedure would then have refused it — exactly the drift
+`AvailabilityCalculator`'s header exists to prevent. The guarantee is unchanged;
+only the arithmetic under the lock is. See `docs/wp4-plan.md`.
 
 `IX_Bookings_Resource_Start` is load-bearing — it is what keeps the range lock
 narrow instead of table-wide. Never drop it. If you change the overlap
@@ -180,9 +192,20 @@ never" in tier 4.
 | Tier | Enforced by | Contains |
 |---|---|---|
 | 1 | Database constraints | Interval sanity (a booking's, and a resource's duration bounds), status domains, uniqueness, composite tenant FK |
-| 2 | Locking protocol | No overbooking beyond capacity, approval re-check |
+| 2 | Locking protocol | No overbooking beyond capacity, the blackout re-check inside `dbo.CreateBooking`, approval re-check |
 | 3 | RLS + query filters | Tenant isolation |
 | 4 | Application code | Availability windows, blackouts, a booking's length against the resource's duration limits, approval routing |
+
+**Blackouts are deliberately in two tiers**, and the duplication is the design
+rather than drift (WP-4 Phase 1b, `0023`). The handler checks them so a client
+gets a specific reason, and `dbo.CreateBooking` re-checks them **under the same
+lock as capacity** so the rule cannot be lost to a race: between the handler's
+check and the insert, an admin's cascade (`0001`) can select the bookings to
+cancel and miss this one, because it does not exist yet. Decision `0001` gives a
+blackout absolute priority — a live booking inside one must never exist — and
+this table's own rule of thumb puts a "must never" in tiers 1–3. Availability
+windows deliberately do **not** follow: narrowing a window cancels nothing, so
+"inside a window" is not an invariant this system maintains after creation.
 
 Rule of thumb: PRD wording of "must never" belongs in tier 1–3. "Should"
 belongs in tier 4.
@@ -196,7 +219,20 @@ at a throw site as a literal. Authentication's five codes stay in
 
 Bookings (declared by FR-4.5, first thrown in WP-4): `SlotUnavailable`,
 `CapacityExceeded`, `OutsideAvailability`, `BlackoutPeriod`,
-`ResourceArchived`, `ApprovalRequired`.
+`ResourceArchived`, plus WP-4's own `BookingNotFound`,
+`BookingNotCancellable`, `BookingDurationOutOfRange` and `BookingInThePast`.
+
+`SlotUnavailable` and `CapacityExceeded` are both `Conflict` and are split by
+what is left, not by the resource: **nothing free at any instant inside the
+requested interval** is `SlotUnavailable`, **something free throughout but less
+than was asked for** is `CapacityExceeded`. An exclusive resource can therefore
+only ever produce the first, since `Capacity = 1` admits no quantity but 1
+(owner's call, 2026-09-07).
+
+`ApprovalRequired` was on this list and was **deleted in WP-4 Phase 1a**. FR-7.1
+makes a booking on an approval-gated resource enter `Pending` rather than be
+refused, so nothing will ever throw it, and `0016`'s premise is that the
+catalogue describes what the API can actually return.
 
 Resources and availability (WP-3): `ResourceNotFound`, `InvalidTimeZone`,
 `CapacityBelowExistingBookings`, `OverlappingAvailabilityWindow`,
@@ -283,6 +319,17 @@ index; when a new decision doc is added, add its one-liner here too.
    cancel any booking in their tenant, not just their own. Every
    `Notifications` row, regardless of `Kind`, is delivered by email — no
    other channel exists.
+   **Amended 2026-09-08** with the four mechanics implementation forced (WP-4
+   Phase 2b): the admin's reach is the **same owner filter the reads use**, so
+   "may I see it" and "may I cancel it" cannot disagree and an unreachable
+   booking is an absent row rather than a comparison — hence one 404, never a
+   403; the cancellation window is **`EndsAtUtc`**, so a meeting in progress is
+   still cancellable and an ended one is not (`0019`'s rule reapplied, and
+   load-bearing because nothing writes `Completed`); a **second cancellation is
+   refused**, unlike archiving, because there is an actor and a reason to
+   overwrite; and **self-cancellation enqueues no notification**, keyed off
+   actor-vs-owner rather than role. It also required `ICurrentUser.IsInRole` —
+   the first role read in `BookSpace.Application`.
 3. [`0003`](docs/decisions/0003-availability-timezone.md) — Availability is
    expressed in the resource's timezone, not the booker's.
 4. [`0004`](docs/decisions/0004-no-show-definition.md) — No-show = `Confirmed`,
@@ -410,6 +457,13 @@ index; when a new decision doc is added, add its one-liner here too.
    **Gotcha recorded there**: the fixture connection needs an explicit RLS
    bypass, or the `INSERT`'s own `SELECT` (and the cleanup `DELETE`) silently
    affects zero rows. **Promoted from WP-3's D4** when Phase 2 step 3 landed.
+   **Amended 2026-09-08** (WP-4): now that the procedure exists the carve-out
+   **narrows rather than expires** — new tests and `SeedData` use the real path,
+   and raw SQL in a fixture is for a state the API *cannot* reach (a wholly-past
+   or `NoShow` booking) or for bulk (260 rows where 260 HTTP calls would
+   dominate the measurement). Second gotcha added there: a fixture's instants
+   must be truncated to whole seconds, or `datetime2(0)`'s rounding moves a
+   stored boundary and turns an adjacency test intermittent.
 18. [`0018`](docs/decisions/0018-approver-eligibility.md) — a resource approver
    must be **in the caller's own tenant, active, and hold `Approver` or
    `TenantAdmin`** — the same set `AuthorizationPolicies.Approver` admits, so
@@ -484,6 +538,32 @@ index; when a new decision doc is added, add its one-liner here too.
    second granted on an end-of-day window with nothing after it. `23:59:00` is a
    minute short and is taken literally. **Decided 2026-09-03** during Phase 5
    step 1.
+23. [`0023`](docs/decisions/0023-booking-concurrency-strategy.md) — the booking
+    concurrency strategy (WP-4's hard problem, FR-4.2, AC-1):
+    `dbo.CreateBooking` takes **`UPDLOCK, HOLDLOCK` key-range locks** on the
+    overlapping rows and compares the **peak concurrent** quantity — not the
+    sum — against capacity. `HOLDLOCK` locks the gaps, so a row that does not
+    exist yet cannot appear in a range already counted; `UPDLOCK` makes the
+    locks U-mode so contenders *block* rather than deadlock on their inserts;
+    `IX_Bookings_Resource_Start` keeps the range to one resource; 1205 retry is
+    part of the design, because the blackout re-check inverts lock order against
+    decision `0001`'s cascade. Two things it records beyond the choice: §4.1's
+    "sum" was **wrong** and would have refused legal bookings on a pooled
+    resource, and the RLS filter policy creates a **fail-open** hole (no session
+    context → zero overlapping rows → overbooking) that the procedure closes by
+    reading `Resources` first. `sp_getapplock` was the main rejected
+    alternative — deadlock-free, but it moves the guarantee off the data into a
+    string nothing forces a caller to take. Measured: without the hints, 20
+    simultaneous requests for one slot produced **3** bookings and a pool of 4
+    was filled **10** times. **Decided 2026-09-07**, implemented in WP-4
+    Phase 1b.
+    **Evidence extended 2026-09-08** (Phase 3) with the HTTP-level figures —
+    without the hints, **ten** confirmed bookings on a room that holds one — and
+    with the measured deadlock data, which is the more interesting half:
+    **1205 fires routinely** at ten-way contention (+0, +5, +1, +10 across four
+    runs of six tests, no blackout write involved), every one absorbed by the
+    retry, visible only as wall clock. That is the record's point 4 measured
+    rather than argued, and why its "usually blocks" wording is the honest one.
 
 **All four of WP-3's up-front decisions are now numbered records**: D1 →
 [`0014`](docs/decisions/0014-child-table-tenant-scoping.md) (Phase 1),
@@ -501,7 +581,13 @@ silently:
   from spring-forward. `0021` resolves it for availability *ranges* — a range
   absorbs a missing or repeated hour by being shorter or longer — and leaves
   the *occurrence* case, an instant which has to land somewhere, exactly as
-  open as it was. **WP-4 owns it.** This is now the only open item — the
+  open as it was. **WP-5 owns it** — reassigned from WP-4 on 2026-09-07: WP-4
+  creates one-off bookings from explicit UTC instants supplied by the client
+  (which is what the availability endpoint already answers in), so no ambiguous
+  local time arises anywhere in it, and nothing WP-4 builds can answer the
+  question. Recurrence — where a rule expands a *wall-clock* time and has to
+  resolve the one that occurs twice — is WP-5's first task.
+  This is now the only open item — the
   `ResourceType` question raised on 2026-09-03 was settled on 2026-09-04 and is
   recorded in `0005`'s amendment.
 
@@ -654,11 +740,18 @@ Notes:
   `docs/bookspace-schema-v2.sql` was built directly on it. `docs/Amer-ERD-
   Feedback.docx` / `-Response.docx` are the review that followed. No separate
   ERD image/file lives in this repo; the schema doc is its record.
-- Seed data stops short of `Bookings`, `ApprovalRequests`, `Notifications`,
-  and `RefreshTokens` — the first three because CLAUDE.md §4.1 requires
-  Booking writes to go through `dbo.CreateBooking`/`dbo.ApproveBooking`, which
-  don't exist yet; the last because refresh tokens are issued at login, not
-  meaningful as static data.
+- Seed data stopped short of `Bookings`, `ApprovalRequests`, `Notifications`,
+  and `RefreshTokens` — the first three because §4.1 requires Booking writes to
+  go through `dbo.CreateBooking`/`dbo.ApproveBooking`, which didn't exist yet;
+  the last because refresh tokens are issued at login, not meaningful as static
+  data. **Updated 2026-09-08 (WP-4 Phase 3)**: the seed now writes three
+  bookings per tenant *through the procedure* — two `Confirmed` on Conference
+  Room A and one `Pending` on the 3D Printer with its `ApprovalRequest` row —
+  anchored to the next weekday at 10:00/11:00/14:00 **local** so the dataset
+  never becomes historical, and skipping the seeded Christmas blackout, which
+  the procedure would otherwise refuse. `Notifications` and `RefreshTokens`
+  are still deliberately empty: nothing dispatches notifications yet (§7), so
+  seeded rows would be permanently unsent mail.
 - `ResourceApprovers`' forced EF owned-collection cascade (vs. the schema's
   `NoAction`) is a known, accepted, documented deviation — see the comment in
   `ResourceConfiguration.cs`.
@@ -771,11 +864,16 @@ Notes:
       Globex's. Manually re-confirmed against the dev database via `sqlcmd`
       (2026-08-27): no session context → 0 `Resources` rows; `TenantBypass=1`
       → all 4; a real Acme `OrgId` with `TenantBypass=0` → exactly 2
-      resources and 4 users. **Known gap, not silently skipped**: no
-      `Bookings` rows are seeded yet (§4.1 — `dbo.CreateBooking` doesn't
-      exist), so the `Bookings` cross-tenant test is a smoke check only (the
-      filter clause builds and returns empty without throwing); the real leak
-      test is deferred to whatever work adds a Bookings write/read path.
+      resources and 4 users. **The one gap this left is now closed**: no
+      `Bookings` rows were seeded (§4.1 — `dbo.CreateBooking` didn't exist), so
+      the `Bookings` cross-tenant test was a smoke check only — the filter
+      clause built and returned empty without throwing, which proves nothing
+      about a leak. **WP-4 Phase 3 (2026-09-08)** seeds six bookings and
+      replaced it with the real thing: the cross-tenant 404 / own-tenant 200
+      pair over an `Id`-only probe, an exact-count list test, and a raw
+      connection seeing zero `Bookings` rows with no session context and
+      exactly Acme's three with it. Confirmed able to fail — bypassing *both*
+      mechanisms in the probe makes the cross-tenant test return 200.
 - [x] Serilog structured logging, correlation ID per request —
       `Serilog.AspNetCore` + `Serilog.Settings.Configuration` wired in
       `Program.cs` (bootstrap logger, `appsettings`-driven sinks/levels);
@@ -1406,3 +1504,221 @@ pass. Detail in `docs/wp3-plan.md`; the reasoning lives in the decision records.
 ### Future work packages
 Appended here as the mentor sends them — one subsection per WP, same
 checklist format as above, status kept current as work lands.
+
+### WP-4 — Core Booking Engine — **Done** (2026-09-08)
+
+**All three phases complete, all four acceptance criteria met.** Phase 1
+(create), Phase 2 (view/cancel) and Phase 3 (the HTTP-level concurrency proof,
+seeded bookings, AC-4's last gap) all landed on 2026-09-07/08. Final test
+baseline: **879 unit + 406 integration, 0 failed**.
+
+Phase 3's own outcomes, beyond ticking AC-1:
+- `BookingConcurrencyEndpointTests` — six races through the real pipeline. Its
+  distinctive assertion is **every response is 201 or 409**, which is how a 1205
+  escaping `IUnitOfWork`'s retry would be caught; the procedure-level suite
+  cannot see that, because it runs its own retry over a raw connection.
+- **`0023` gained measured HTTP figures**, including the discovery that
+  **deadlocks are routine rather than exotic** at ten-way contention — sixteen
+  across four runs, with no blackout write involved, every one absorbed by the
+  retry, visible only as wall clock (17s against 3s). That is the record's
+  point 4 measured rather than argued, and the reason its "usually blocks"
+  wording is the honest one.
+- **`SeedData` finally writes `Bookings`**, through `dbo.CreateBooking` like
+  every other write path, so the demo dataset contains what the engine produces.
+  The tension the plan flagged resolved rather than needing a workaround: a
+  `TenantBypassScope` sets `TenantInit = 1`, so `0023`'s fail-closed guard is
+  satisfied honestly — that guard fires on **no** session context, not on a
+  bypass.
+- §6's tier table is corrected: blackouts sit in **both** tier 2 and tier 4, and
+  the paragraph under the table says why the duplication is the design.
+- Decision `0017` gained the amendment WP-4 promised: the raw-SQL test-fixture
+  carve-out **narrows rather than expires**.
+
+**[`docs/wp4-defense.md`](docs/wp4-defense.md)** explains the whole package in
+plain language for the mentor review — the race and why the obvious fixes fail,
+the four parts of the lock, the two bugs found in this file, where each rule
+lives, the measured evidence with its caveats, and the questions likely to be
+asked with their answers. Written 2026-09-08.
+
+Source doc: `docs/Work Packages - Week 4.pdf` (weeks 3–4, backend track), which
+carries WP-4 and WP-5 together. Plan: `docs/wp4-plan.md`, drafted 2026-09-07
+before any code, on four shape answers from the owner the same day.
+
+Tasks — Week 3 (correct for a single user):
+- [x] Create a one-off booking for an available slot. FR-4.1. **Done 2026-09-07**
+      (Phase 1): POST /bookings on TenantMember, Confirmed or Pending.
+- [x] Reject bookings outside availability, inside blackout, or over capacity.
+      FR-4.3. **Done 2026-09-07** (Phase 1).
+- [x] Return a clear, machine-readable reason on rejection. FR-4.5.
+      **Done 2026-09-07** (Phase 1).
+- [x] Let a member view and cancel their own bookings. FR-4.4. **Done
+      2026-09-08** (Phase 2). Reads (2a): `GET /bookings` (paged; own by default,
+      with an admin-only `userId` filter and tenant-wide `scope`) and
+      `GET /bookings/{id}`. Cancel (2b): `POST /bookings/{id}/cancel`, for the
+      owner and — per [`0002`](docs/decisions/0002-tenant-admin-cancellation.md)
+      — for a TenantAdmin over any booking in their tenant. All three on
+      `TenantMember`; a booking the caller may not reach is one
+      indistinguishable 404, never a 403.
+- [x] Write tests for the single-user happy path and each rejection reason.
+      **Done 2026-09-08.** Every booking reason code has a row on the structured
+      -error table, at the status its `ErrorKind` promises.
+
+Tasks — Week 4 (correct under concurrency):
+- [x] Write a test that fires two bookings for the same slot simultaneously.
+      **Done 2026-09-07** (Phase 1b), at the procedure level over parallel raw
+      connections, plus a 20-way and two pooled variants.
+- [x] Choose and implement a concurrency strategy that makes a double-booking
+      impossible. FR-4.2. **Done 2026-09-07** (Phase 1b): `dbo.CreateBooking`
+      takes UPDLOCK/HOLDLOCK key-range locks and compares the peak concurrent
+      quantity against capacity. Documented and defended in
+      [`0023`](docs/decisions/0023-booking-concurrency-strategy.md); the
+      remaining Week-4 tasks are the HTTP-level proof and the AC sweep.
+- [x] Prove the fix with a concurrent test that passes. **Done 2026-09-08**
+      (Phase 3), at both levels and both shown able to fail. Procedure level
+      (1b): parallel raw connections; removing the lock hints gave three
+      bookings on a capacity-1 room and a pool of four filled ten times. HTTP
+      level (3): `BookingConcurrencyEndpointTests`, six races through the real
+      pipeline; removing the same hints gave **ten** confirmed bookings on a
+      room that holds one, twice over two more runs (8 and 9), a pool of four
+      sold five and six times, and both of two unequal claims accepted. Figures
+      in [`0023`](docs/decisions/0023-booking-concurrency-strategy.md).
+- [x] Document which strategy was chosen and why. **Done 2026-09-07**:
+      [`0023`](docs/decisions/0023-booking-concurrency-strategy.md).
+
+Acceptance criteria:
+- [x] Given one remaining slot and two simultaneous requests, exactly one
+      succeeds and the other gets a clear rejection — never both. AC-1.
+      **Met 2026-09-08** (Phase 3), at the procedure level and through the real
+      HTTP pipeline. The criterion's literal case — two different members, one
+      slot — is `TwoSimultaneousRequestsForOneSlot_ExactlyOneSucceeds` in both
+      suites; the HTTP file also widens it to ten contenders, fills a pool of
+      four to exactly four, refuses the loser of two unequal claims with
+      `CapacityExceeded` rather than `SlotUnavailable`, confirms twelve
+      non-overlapping bookings all succeed (the lock queues, it does not
+      over-refuse), and races a cancel against a create for the freed slot.
+      **Every response must be 201 or 409** in all six, which is what would
+      catch a 1205 escaping the retry as a 500.
+- [x] All rule violations (availability, blackout, capacity) are rejected with
+      clear reasons. **Met 2026-09-07** (Phase 1c): every code this endpoint can
+      raise is asserted against the status its `ErrorKind` promises, alongside
+      the correlation id and the message never reaching the wire.
+- [x] A member can cancel their own booking; the slot is freed. **Met
+      2026-09-08** (Phase 2b), asserted three ways: on an exclusive resource the
+      same interval is refused before the cancel and accepted after it by a
+      *different* member; the availability query goes back to one continuous
+      span; and on a pooled resource one unit returns rather than the time.
+- [x] The concurrency strategy is documented and defended. **Met 2026-09-07**:
+      [`0023`](docs/decisions/0023-booking-concurrency-strategy.md), including
+      the four rejected alternatives, the peak-vs-sum correction to §4.1, the
+      RLS fail-open guard, and measured evidence from removing the lock hints.
+
+**Open decision (source doc): "Can a TenantAdmin cancel another user's booking,
+and if so, how is that user notified?"** — already answered by
+[`0002`](docs/decisions/0002-tenant-admin-cancellation.md) on 2026-08-19. WP-4
+implements it and raises the record with the mentor rather than re-deciding.
+
+Notes:
+- Planned in three phases (create → view/cancel → concurrency, proof and
+  documentation); `dbo.CreateBooking` is written **correct from its first
+  migration** rather than staged naive-then-fixed, since §4.1 leaves no
+  legitimate naive path to demonstrate (owner's call, 2026-09-07).
+- **Phase 2 is complete** (2026-09-08), in two chunks: 2a the two reads, 2b the
+  cancel. Six shape questions were settled before 2a and are written up
+  in `docs/wp4-plan.md` — the two that reach beyond WP-4 are
+  **`ICurrentUser.IsInRole(Role)`**, the first time anything in
+  `BookSpace.Application` can read a role (decision `0002` requires it: the same
+  route serves a member and an admin, so the difference cannot be a policy on
+  the action), and an **admin-only tenant-wide scope** on `GET /bookings`, which
+  WP-5's approver queue will build on. Own-bookings stays the default for every
+  role, a TenantAdmin included.
+- **A booking read's visibility filter goes in the query, never in a comparison
+  after the read.** `BookingReadRules` resolves a `BookingOwnerFilter` and the
+  repository applies it as a `WHERE` clause, so a booking the caller may not see
+  is never materialized and the handler's only branch is `BookingNotFound`. The
+  filter is a named type rather than a `Guid?` precisely so the widened case
+  cannot be reached by an omitted argument — §4.2's fail-open objection applied
+  to *member* isolation rather than tenant isolation.
+- **`member2@acme.test` cannot be used in an integration test.**
+  `AuthenticationEndpointTests.Refresh_UserDeactivatedSinceLogin` deactivates it
+  permanently by design; a test using it passes alone and fails only in a full
+  run, with a 401 on *login*. Use `approver@acme.test` as a second Acme account.
+- **Cancelling is not a §4.1 write path, and neither is a booking read.** §4.1
+  governs writes that *add* demand against `Resources.Capacity`, because only
+  those can breach it; a cancellation can only reduce the units held at an
+  instant. So the cancel goes through EF and one `SaveChangesAsync` — no
+  procedure, no lock, no capacity check, and **no `IUnitOfWork`**, since
+  `SaveChanges` is already a transaction. That contrast is what §5's
+  `CreateExecutionStrategy` rule is actually about: mixing raw SQL with EF forces
+  it (the create path), a pure EF unit of work does not. Concurrent cancels are
+  covered by `Bookings.RowVersion` → `DbUpdateConcurrencyException` → 409.
+- **`Booking.CanBeCancelled(nowUtc)` is the cancellation window**, and the test
+  is on `EndsAtUtc`: a booking in progress can still be called off, one that has
+  ended cannot. Load-bearing because **nothing writes
+  `BookingStatus.Completed`**, so an attended meeting is still `Confirmed` and
+  status alone would let a member rewrite history. A second cancellation is
+  refused, deliberately unlike archiving a resource — there is an actor, a time
+  and a reason to overwrite.
+- **A `Pending` booking that is cancelled keeps its `ApprovalRequests` row at
+  `Pending`.** Nothing withdraws it; WP-5's approve path must check the booking's
+  status, or an approver could approve a cancelled booking. Flagged in
+  `docs/wp4-plan.md` and `0002`'s amendment rather than fixed here.
+- **§4.1's wording is wrong and this package corrects it**: the procedure must
+  compare the *peak concurrent* overlapping `Quantity` against `Capacity`, not
+  the **sum**, which would refuse legal bookings on any pooled resource. See
+  `docs/wp4-plan.md`.
+- §9's still-open DST **fall-back** item is assigned to WP-4 above and belongs to
+  **WP-5**: a one-off booking is created from explicit UTC instants, so no
+  ambiguous local time arises in anything WP-4 builds.
+
+### WP-5 — Recurrence, Approvals & Time Correctness — **Not started**
+Source doc: `docs/Work Packages - Week 4.pdf` (week 4, backend track).
+**Start here: [`docs/wp5-plan.md`](docs/wp5-plan.md)** — written 2026-09-08 at
+the close of WP-4 as a handoff brief, deliberately **not yet a plan**. It carries
+what already exists that WP-5 builds on, the five settled decisions it inherits,
+the one genuinely open decision it owns, the five loose ends WP-4 handed it
+(one of which is a live correctness bug if ignored), the traps that have each
+already cost time once, and the shape questions to settle with the owner before
+any code. The phasing gets written into that file and approved first, as WP-3's
+and WP-4's were.
+
+Test baseline at handoff: **879 unit + 406 integration, 0 failed**.
+
+- [ ] Create recurring bookings (daily/weekly/monthly) with interval and end
+      condition. FR-5.1.
+- [ ] Make each occurrence independently viewable and cancellable. FR-5.2.
+- [ ] Support cancelling one occurrence or the whole remaining series. FR-5.3.
+- [ ] Surface collisions/blackout conflicts at creation — never drop them
+      silently. FR-5.4.
+- [ ] Implement the approval workflow: Pending → approve/reject → notify;
+      re-check availability at approval time. FR-7.1–FR-7.5.
+- [ ] Store all times as UTC; render in the correct local zone. FR-6.1.
+- [ ] Define and implement DST-transition behavior for recurring bookings. FR-6.2.
+
+Acceptance criteria:
+- [ ] A recurring series is created, and single occurrences and the whole series
+      can each be cancelled.
+- [ ] Conflicting occurrences are surfaced at creation.
+- [ ] Approval re-checks availability, so approving a since-taken slot fails
+      safely. AC-5.
+- [ ] The DST edge case resolves per the documented policy with no crash or
+      silent duplicate. AC-3.
+
+Notes: its two hard problems and both open decisions are **already settled** —
+materialization horizon [`0007`](docs/decisions/0007-recurrence-materialization-horizon.md),
+spring-forward policy [`0008`](docs/decisions/0008-dst-spring-forward-policy.md),
+blackout vs. series [`0001`](docs/decisions/0001-blackout-vs-recurring-series.md),
+availability timezone [`0003`](docs/decisions/0003-availability-timezone.md).
+Two more it inherits from WP-4: [`0002`](docs/decisions/0002-tenant-admin-cancellation.md)'s
+amendment fixes the four cancellation mechanics FR-5.3 has to reapply per
+occurrence, and [`0023`](docs/decisions/0023-booking-concurrency-strategy.md) is
+**inherited whole** — `dbo.ApproveBooking` needs the same capacity check under
+the same locks over the same index for FR-7.5/AC-5, so it is not a second
+strategy to invent.
+**What does not exist yet and WP-5 must build**: `dbo.ApproveBooking`, any
+approval transition on `Booking` (it has `Cancel`, `CancelForBlackout`,
+`CheckIn` and `MarkNoShow`, and nothing for approve or reject), the recurrence
+expansion, and the approver queue read. `RecurrenceRule` and
+`Bookings.RecurrenceRuleId` already exist and are unused —
+`dbo.CreateBooking` already takes `@RecurrenceRuleId`.
+The genuinely open one is §9's DST **fall-back** case for an occurrence, which
+this package owns.

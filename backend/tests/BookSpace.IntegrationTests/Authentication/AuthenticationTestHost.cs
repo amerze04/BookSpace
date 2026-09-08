@@ -51,9 +51,14 @@ public sealed class AuthenticationTestHost : WebApplicationFactory<Program>, IAs
         var context = scope.ServiceProvider.GetRequiredService<BookSpaceDbContext>();
         var passwordHasher = scope.ServiceProvider.GetRequiredService<IPasswordHasher>();
 
+        // WP-4 Phase 3: the seed writes Bookings now, through dbo.CreateBooking
+        // like every other write path (CLAUDE.md §4.1).
+        var bookings = scope.ServiceProvider.GetRequiredService<IBookingRepository>();
+        var timeZones = scope.ServiceProvider.GetRequiredService<ITimeZoneCatalog>();
+
         await context.Database.EnsureDeletedAsync();
         await context.Database.MigrateAsync();
-        await SeedData.SeedAsync(context, passwordHasher);
+        await SeedData.SeedAsync(context, passwordHasher, bookings, timeZones);
     }
 
     public new async Task DisposeAsync()

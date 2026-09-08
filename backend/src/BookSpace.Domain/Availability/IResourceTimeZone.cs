@@ -37,4 +37,19 @@ public interface IResourceTimeZone
     // The latest instant that can be called this local time — the end of an
     // interval.
     DateTime ToUtcLatest(DateTime resourceLocal);
+
+    // The resource-local wall clock at a given instant. Added in WP-4 Phase 1a
+    // for BookingEligibility, which is handed a booking as UTC instants and has
+    // to know which local dates to expand the weekly schedule over.
+    //
+    // One method, not a pair, and the asymmetry with the two above is real
+    // rather than an oversight: this direction is always single-valued. Every
+    // instant has exactly one offset in a zone, so it names exactly one wall
+    // clock — it is only the reverse trip that can name none (the gap) or two
+    // (the repeated hour). Nothing here needs an earliest/latest choice because
+    // there is never anything to choose between.
+    //
+    // Returns DateTimeKind.Unspecified, which is what a wall clock is in .NET
+    // and what the two methods above demand back (CLAUDE.md §4.3).
+    DateTime ToLocal(DateTime utc);
 }
