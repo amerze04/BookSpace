@@ -457,6 +457,13 @@ index; when a new decision doc is added, add its one-liner here too.
    **Gotcha recorded there**: the fixture connection needs an explicit RLS
    bypass, or the `INSERT`'s own `SELECT` (and the cleanup `DELETE`) silently
    affects zero rows. **Promoted from WP-3's D4** when Phase 2 step 3 landed.
+   **Amended 2026-09-08** (WP-4): now that the procedure exists the carve-out
+   **narrows rather than expires** — new tests and `SeedData` use the real path,
+   and raw SQL in a fixture is for a state the API *cannot* reach (a wholly-past
+   or `NoShow` booking) or for bulk (260 rows where 260 HTTP calls would
+   dominate the measurement). Second gotcha added there: a fixture's instants
+   must be truncated to whole seconds, or `datetime2(0)`'s rounding moves a
+   stored boundary and turns an adjacency test intermittent.
 18. [`0018`](docs/decisions/0018-approver-eligibility.md) — a resource approver
    must be **in the caller's own tenant, active, and hold `Approver` or
    `TenantAdmin`** — the same set `AuthorizationPolicies.Approver` admits, so
@@ -550,6 +557,13 @@ index; when a new decision doc is added, add its one-liner here too.
     simultaneous requests for one slot produced **3** bookings and a pool of 4
     was filled **10** times. **Decided 2026-09-07**, implemented in WP-4
     Phase 1b.
+    **Evidence extended 2026-09-08** (Phase 3) with the HTTP-level figures —
+    without the hints, **ten** confirmed bookings on a room that holds one — and
+    with the measured deadlock data, which is the more interesting half:
+    **1205 fires routinely** at ten-way contention (+0, +5, +1, +10 across four
+    runs of six tests, no blackout write involved), every one absorbed by the
+    retry, visible only as wall clock. That is the record's point 4 measured
+    rather than argued, and why its "usually blocks" wording is the honest one.
 
 **All four of WP-3's up-front decisions are now numbered records**: D1 →
 [`0014`](docs/decisions/0014-child-table-tenant-scoping.md) (Phase 1),
@@ -1517,6 +1531,14 @@ Phase 3's own outcomes, beyond ticking AC-1:
   bypass.
 - §6's tier table is corrected: blackouts sit in **both** tier 2 and tier 4, and
   the paragraph under the table says why the duplication is the design.
+- Decision `0017` gained the amendment WP-4 promised: the raw-SQL test-fixture
+  carve-out **narrows rather than expires**.
+
+**[`docs/wp4-defense.md`](docs/wp4-defense.md)** explains the whole package in
+plain language for the mentor review — the race and why the obvious fixes fail,
+the four parts of the lock, the two bugs found in this file, where each rule
+lives, the measured evidence with its caveats, and the questions likely to be
+asked with their answers. Written 2026-09-08.
 
 Source doc: `docs/Work Packages - Week 4.pdf` (weeks 3–4, backend track), which
 carries WP-4 and WP-5 together. Plan: `docs/wp4-plan.md`, drafted 2026-09-07
@@ -1649,8 +1671,17 @@ Notes:
   ambiguous local time arises in anything WP-4 builds.
 
 ### WP-5 — Recurrence, Approvals & Time Correctness — **Not started**
-Source doc: `docs/Work Packages - Week 4.pdf` (week 4, backend track). Listed
-here so it is tracked; no plan written yet.
+Source doc: `docs/Work Packages - Week 4.pdf` (week 4, backend track).
+**Start here: [`docs/wp5-plan.md`](docs/wp5-plan.md)** — written 2026-09-08 at
+the close of WP-4 as a handoff brief, deliberately **not yet a plan**. It carries
+what already exists that WP-5 builds on, the five settled decisions it inherits,
+the one genuinely open decision it owns, the five loose ends WP-4 handed it
+(one of which is a live correctness bug if ignored), the traps that have each
+already cost time once, and the shape questions to settle with the owner before
+any code. The phasing gets written into that file and approved first, as WP-3's
+and WP-4's were.
+
+Test baseline at handoff: **879 unit + 406 integration, 0 failed**.
 
 - [ ] Create recurring bookings (daily/weekly/monthly) with interval and end
       condition. FR-5.1.
@@ -1677,5 +1708,17 @@ materialization horizon [`0007`](docs/decisions/0007-recurrence-materialization-
 spring-forward policy [`0008`](docs/decisions/0008-dst-spring-forward-policy.md),
 blackout vs. series [`0001`](docs/decisions/0001-blackout-vs-recurring-series.md),
 availability timezone [`0003`](docs/decisions/0003-availability-timezone.md).
+Two more it inherits from WP-4: [`0002`](docs/decisions/0002-tenant-admin-cancellation.md)'s
+amendment fixes the four cancellation mechanics FR-5.3 has to reapply per
+occurrence, and [`0023`](docs/decisions/0023-booking-concurrency-strategy.md) is
+**inherited whole** — `dbo.ApproveBooking` needs the same capacity check under
+the same locks over the same index for FR-7.5/AC-5, so it is not a second
+strategy to invent.
+**What does not exist yet and WP-5 must build**: `dbo.ApproveBooking`, any
+approval transition on `Booking` (it has `Cancel`, `CancelForBlackout`,
+`CheckIn` and `MarkNoShow`, and nothing for approve or reject), the recurrence
+expansion, and the approver queue read. `RecurrenceRule` and
+`Bookings.RecurrenceRuleId` already exist and are unused —
+`dbo.CreateBooking` already takes `@RecurrenceRuleId`.
 The genuinely open one is §9's DST **fall-back** case for an occurrence, which
 this package owns.
