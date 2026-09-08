@@ -1,5 +1,10 @@
 # Postman — manual verification for WP-3
 
+**WP-4's booking endpoints are in [`WP4-walkthrough.md`](WP4-walkthrough.md)**,
+a separate hand walkthrough in the same style — create, read, cancel, every
+rejection reason, the blackout cascade seen from a client for the first time, and
+what a client structurally cannot show (AC-1's concurrency race).
+
 Two files, both committed:
 
 - `BookSpace.postman_collection.json` — 38 requests in five folders (`00`–`05`),
