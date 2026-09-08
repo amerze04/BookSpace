@@ -1,4 +1,8 @@
 using BookSpace.Application.Abstractions;
+using BookSpace.Application.Common.Pagination;
+using BookSpace.Application.Features.Bookings;
+using BookSpace.Application.Features.Bookings.GetBooking;
+using BookSpace.Application.Features.Bookings.ListBookings;
 using BookSpace.Domain.Availability;
 using BookSpace.Domain.Entities;
 
@@ -104,6 +108,53 @@ internal sealed class FakeBookingRepository : IBookingRepository
         SaveChangesCount++;
         SavedAfterCreate = Created is not null;
         return Task.CompletedTask;
+    }
+
+    // ---- The reads (Phase 2a) ----
+    //
+    // These record the arguments rather than simulating a query, because what a
+    // read *handler* is responsible for is the owner filter it resolves — the
+    // filtering itself is a WHERE clause, which only a database can exercise
+    // (BookingReadEndpointTests does). So the fake's job is to let a test assert
+    // exactly which BookingOwnerFilter the handler decided on.
+
+    public ListBookingsQueryRequest? ListedQuery { get; private set; }
+
+    public BookingOwnerFilter? ListedOwner { get; private set; }
+
+    public SortOption? ListedSort { get; private set; }
+
+    public Guid? RequestedDetailId { get; private set; }
+
+    public BookingOwnerFilter? DetailOwner { get; private set; }
+
+    // What FindDetailAsync hands back. Null is the "not visible to this caller"
+    // answer the handler has to turn into BookingNotFound.
+    public GetBookingQueryResponse? Detail { get; set; }
+
+    public Task<PagedResult<ListBookingsQueryResponse>> ListAsync(
+        ListBookingsQueryRequest query,
+        BookingOwnerFilter owner,
+        SortOption? sort,
+        CancellationToken cancellationToken)
+    {
+        ListedQuery = query;
+        ListedOwner = owner;
+        ListedSort = sort;
+
+        return Task.FromResult(
+            PagedResult<ListBookingsQueryResponse>.Empty(query.Page, query.PageSize));
+    }
+
+    public Task<GetBookingQueryResponse?> FindDetailAsync(
+        Guid bookingId,
+        BookingOwnerFilter owner,
+        CancellationToken cancellationToken)
+    {
+        RequestedDetailId = bookingId;
+        DetailOwner = owner;
+
+        return Task.FromResult(Detail);
     }
 }
 

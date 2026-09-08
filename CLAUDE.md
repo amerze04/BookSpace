@@ -1469,7 +1469,10 @@ Tasks — Week 3 (correct for a single user):
       FR-4.3. **Done 2026-09-07** (Phase 1).
 - [x] Return a clear, machine-readable reason on rejection. FR-4.5.
       **Done 2026-09-07** (Phase 1).
-- [ ] Let a member view and cancel their own bookings. FR-4.4.
+- [ ] Let a member view and cancel their own bookings. FR-4.4. **View done
+      2026-09-08** (Phase 2a): `GET /bookings` (paged; own by default, with an
+      admin-only `userId` filter and tenant-wide `scope`) and
+      `GET /bookings/{id}`, both on `TenantMember`. Cancel is Phase 2b.
 - [ ] Write tests for the single-user happy path and each rejection reason.
 
 Tasks — Week 4 (correct under concurrency):
@@ -1512,6 +1515,26 @@ Notes:
   documentation); `dbo.CreateBooking` is written **correct from its first
   migration** rather than staged naive-then-fixed, since §4.1 leaves no
   legitimate naive path to demonstrate (owner's call, 2026-09-07).
+- **Phase 2 is two chunks** (owner, 2026-09-08): 2a the two reads (**done**),
+  2b the cancel. Six shape questions were settled before 2a and are written up
+  in `docs/wp4-plan.md` — the two that reach beyond WP-4 are
+  **`ICurrentUser.IsInRole(Role)`**, the first time anything in
+  `BookSpace.Application` can read a role (decision `0002` requires it: the same
+  route serves a member and an admin, so the difference cannot be a policy on
+  the action), and an **admin-only tenant-wide scope** on `GET /bookings`, which
+  WP-5's approver queue will build on. Own-bookings stays the default for every
+  role, a TenantAdmin included.
+- **A booking read's visibility filter goes in the query, never in a comparison
+  after the read.** `BookingReadRules` resolves a `BookingOwnerFilter` and the
+  repository applies it as a `WHERE` clause, so a booking the caller may not see
+  is never materialized and the handler's only branch is `BookingNotFound`. The
+  filter is a named type rather than a `Guid?` precisely so the widened case
+  cannot be reached by an omitted argument — §4.2's fail-open objection applied
+  to *member* isolation rather than tenant isolation.
+- **`member2@acme.test` cannot be used in an integration test.**
+  `AuthenticationEndpointTests.Refresh_UserDeactivatedSinceLogin` deactivates it
+  permanently by design; a test using it passes alone and fails only in a full
+  run, with a 401 on *login*. Use `approver@acme.test` as a second Acme account.
 - **§4.1's wording is wrong and this package corrects it**: the procedure must
   compare the *peak concurrent* overlapping `Quantity` against `Capacity`, not
   the **sum**, which would refuse legal bookings on any pooled resource. See

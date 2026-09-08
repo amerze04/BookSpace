@@ -1,5 +1,9 @@
 using System.Data;
 using BookSpace.Application.Abstractions;
+using BookSpace.Application.Common.Pagination;
+using BookSpace.Application.Features.Bookings;
+using BookSpace.Application.Features.Bookings.GetBooking;
+using BookSpace.Application.Features.Bookings.ListBookings;
 using BookSpace.Domain.Entities;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
@@ -101,6 +105,156 @@ internal sealed class BookingRepository : IBookingRepository
         }
     }
 
+    // ---- The reads (WP-4 Phase 2a, FR-4.4) ----
+    //
+    // Plain EF projections, and CLAUDE.md §4.1 does not reach them: it governs
+    // writes that add demand against Resources.Capacity, and a read adds none.
+    // See IBookingRepository's header.
+    //
+    // **The owner filter is applied here as a WHERE clause**, from the
+    // BookingOwnerFilter the handler resolved (decision 0002, BookingReadRules).
+    // Nothing in this file decides who may see what — it applies the decision,
+    // which is why AnyOwner reads as an absent predicate rather than as a
+    // privilege being granted.
+    //
+    // Tenant isolation is untouched: both queries go through the tenant-filtered
+    // DbSet, so the owner filter narrows *within* a tenant and can never reach
+    // across one (§4.2, AC-4).
+
+    public Task<PagedResult<ListBookingsQueryResponse>> ListAsync(
+        ListBookingsQueryRequest query,
+        BookingOwnerFilter owner,
+        SortOption? sort,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(owner);
+
+        var bookings = _context.Bookings.AsNoTracking();
+
+        if (owner.UserId is { } ownerUserId)
+        {
+            bookings = bookings.Where(b => b.UserId == ownerUserId);
+        }
+
+        // Overlap, not containment, exactly as the blackout list does it: a
+        // booking that started before the window and runs into it is part of
+        // what "next week" contains. Each bound is applied independently so
+        // either can be omitted, and both omitted means the whole history
+        // (owner's call, 2026-09-08).
+        if (query.From is { } from)
+        {
+            bookings = bookings.Where(b => b.EndsAtUtc > from);
+        }
+
+        if (query.To is { } to)
+        {
+            bookings = bookings.Where(b => b.StartsAtUtc < to);
+        }
+
+        // Compared as an enum, not a string: the column stores names
+        // (CLAUDE.md §5) and EF's value converter translates the comparison, so
+        // no spelling ever enters the expression tree. A local rather than
+        // query.Status inside the lambda, matching the overlap predicates
+        // elsewhere in this project.
+        if (query.Status is { } status)
+        {
+            bookings = bookings.Where(b => b.Status == status);
+        }
+
+        // No 404 when the resource id is unknown, deliberately unlike the
+        // blackout list: there the resource is in the *route*, so an unknown id
+        // has to be distinguished from "this resource has no blackouts". Here it
+        // is one filter among five on a collection that belongs to the member,
+        // and "no bookings match" is the honest answer to every combination of
+        // them. It also avoids leaking that a resource id exists.
+        if (query.ResourceId is { } resourceId)
+        {
+            bookings = bookings.Where(b => b.ResourceId == resourceId);
+        }
+
+        // Projection after ordering, so ToPagedResultAsync still sees the
+        // OrderBy in the expression tree and COUNT(*) runs over the filtered set
+        // rather than a materialized list.
+        //
+        // **The resource name comes from a correlated subquery, not a join.**
+        // Booking has no navigation property (BookingConfiguration configures
+        // every relationship with HasOne<T>().WithMany() and no navigation), and
+        // a Join here would sit between the OrderBy and the projection, where EF
+        // can push the ordering into a subquery that SQL Server is then free to
+        // ignore. A scalar subquery keeps the OrderBy at the top level, which is
+        // the shape ToPagedResultAsync's contract depends on.
+        //
+        // First(), not FirstOrDefault(), and it cannot throw: Bookings.ResourceId
+        // is a real FK, and FK_Bookings_Resources_SameOrg forces the two rows to
+        // share an OrgId (decision 0006), so a booking visible through the
+        // tenant filter always has a resource visible through it too. Archived
+        // resources are deliberately not excluded — FR-3.5 keeps them readable,
+        // and filtering them here would erase a member's own booking history.
+        return ApplyOrder(bookings, sort)
+            .Select(b => new ListBookingsQueryResponse(
+                b.Id,
+                b.ResourceId,
+                _context.Resources.Where(r => r.Id == b.ResourceId).Select(r => r.Name).First(),
+                b.UserId,
+                b.StartsAtUtc,
+                b.EndsAtUtc,
+                b.Quantity,
+                b.Title,
+                b.Status))
+            .ToPagedResultAsync(query, cancellationToken);
+    }
+
+    // Null means "not visible to this caller", which folds three cases into one
+    // — no such id, another tenant's id (the query filter), another member's
+    // booking (the owner filter) — so the handler can answer with a single
+    // indistinguishable BookingNotFound (AC-4).
+    //
+    // FirstOrDefaultAsync, never DbSet.Find(): Find can return a tracked entity
+    // without querying at all, which would skip the query filter (CLAUDE.md
+    // §4.2) — and here it would skip the owner filter too, which is the more
+    // immediate hazard since the write path tracks the booking it just created.
+    //
+    // AsNoTracking because nothing here mutates. Phase 2b's cancel needs a
+    // tracked booking and gets its own loader, exactly as the resource reads and
+    // FindForUpdateAsync are kept separate.
+    public Task<GetBookingQueryResponse?> FindDetailAsync(
+        Guid bookingId,
+        BookingOwnerFilter owner,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+
+        var bookings = _context.Bookings
+            .AsNoTracking()
+            .Where(b => b.Id == bookingId);
+
+        if (owner.UserId is { } ownerUserId)
+        {
+            bookings = bookings.Where(b => b.UserId == ownerUserId);
+        }
+
+        return bookings
+            .Select(b => new GetBookingQueryResponse(
+                b.Id,
+                b.ResourceId,
+                _context.Resources.Where(r => r.Id == b.ResourceId).Select(r => r.Name).First(),
+                b.UserId,
+                b.RecurrenceRuleId,
+                b.StartsAtUtc,
+                b.EndsAtUtc,
+                b.Quantity,
+                b.Title,
+                b.Status,
+                b.CheckedInAtUtc,
+                b.CancelledByUserId,
+                b.CancelledAtUtc,
+                b.CancellationReason,
+                b.CreatedAtUtc,
+                b.UpdatedAtUtc))
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
     // ---- The rows derived from a booking (WP-4 Phase 1c) ----
     //
     // Plain EF adds. They carry no capacity claim, so none of the procedure's
@@ -127,6 +281,49 @@ internal sealed class BookingRepository : IBookingRepository
 
     public Task SaveChangesAsync(CancellationToken cancellationToken) =>
         _context.SaveChangesAsync(cancellationToken);
+
+    // Maps a canonical whitelist name (BookingSortFields) onto a typed OrderBy —
+    // the Infrastructure half of the split described on IResourceRepository: the
+    // sort string never enters the expression.
+    //
+    // The default arm covers both "no sort supplied" and sort=startsAtUtc, which
+    // is this endpoint's own default order: a booking list is read as a schedule,
+    // so chronological needs no explanation.
+    //
+    // **Ordering by Status orders by the stored *name*, not the enum's
+    // declaration order**, because the column is a string (CLAUDE.md §5). So
+    // ascending gives Cancelled, Completed, Confirmed, NoShow, Pending, Rejected
+    // rather than the lifecycle order the enum declares. That is worth knowing
+    // and not worth fixing: the point of the sort is to *group* statuses so an
+    // admin can find the Pending ones together, and alphabetical is stable and
+    // predictable, whereas ordering by lifecycle would need a CASE expression
+    // that changes meaning every time a status is added.
+    //
+    // Always finishes with ThenBy(Id). Offset paging over a non-unique order has
+    // undefined boundaries among tied rows, and ties are the norm here rather
+    // than the exception — every booking of a pooled resource for the same slot
+    // shares a StartsAtUtc, and a whole page could share a Status.
+    // ToPagedResultAsync can only detect a *missing* order, not a non-unique one
+    // (docs/decisions/0015).
+    private static IOrderedQueryable<Booking> ApplyOrder(IQueryable<Booking> source, SortOption? sort)
+    {
+        var descending = sort?.Descending ?? false;
+
+        IOrderedQueryable<Booking> ordered = sort?.Field switch
+        {
+            BookingSortFields.CreatedAtUtc => descending
+                ? source.OrderByDescending(b => b.CreatedAtUtc)
+                : source.OrderBy(b => b.CreatedAtUtc),
+            BookingSortFields.Status => descending
+                ? source.OrderByDescending(b => b.Status)
+                : source.OrderBy(b => b.Status),
+            _ => descending
+                ? source.OrderByDescending(b => b.StartsAtUtc)
+                : source.OrderBy(b => b.StartsAtUtc),
+        };
+
+        return ordered.ThenBy(b => b.Id);
+    }
 
     private static void AddParameters(System.Data.Common.DbCommand command, NewBooking booking)
     {

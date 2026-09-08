@@ -1,3 +1,5 @@
+using BookSpace.Domain.Enums;
+
 namespace BookSpace.Application.Abstractions;
 
 // The acting user's id, read from the `sub` claim
@@ -16,4 +18,27 @@ namespace BookSpace.Application.Abstractions;
 public interface ICurrentUser
 {
     Guid? UserId { get; }
+
+    // Whether the caller holds a role, for the handful of rules that depend on
+    // *which* member is asking rather than merely that one is (WP-4 Phase 2a).
+    //
+    // **Why the Application layer needs this at all**, when RBAC has otherwise
+    // been entirely declarative on the controllers: decision 0002 gives a
+    // TenantAdmin the right to see and cancel bookings they do not own, and
+    // records explicitly that the check "belongs in the Application layer, not
+    // the Domain entity". It cannot be a policy on the action, because the same
+    // route serves both actors and the difference is in *which rows* are
+    // visible, not in whether the route may be called. A separate admin route
+    // would give one booking two URLs and split the 404-not-403 rule across
+    // them (see BookingNotFoundException).
+    //
+    // Takes the Domain enum rather than a string, so a handler cannot mistype a
+    // role name and silently never match. The implementation converts to the
+    // claim spelling in one place, which is the same value
+    // JwtAccessTokenService emits and AuthorizationPolicies requires.
+    //
+    // False when there is no authenticated user, matching UserId's null: a
+    // caller with no principal holds no roles. Handlers therefore never get a
+    // "privileged by default" answer out of this.
+    bool IsInRole(Role role);
 }

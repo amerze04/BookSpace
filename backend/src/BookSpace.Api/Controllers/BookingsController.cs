@@ -1,6 +1,11 @@
 using BookSpace.Api.Authorization;
+using BookSpace.Application.Common.Pagination;
+using BookSpace.Application.Features.Bookings;
 using BookSpace.Application.Features.Bookings.CreateBooking;
+using BookSpace.Application.Features.Bookings.GetBooking;
+using BookSpace.Application.Features.Bookings.ListBookings;
 using BookSpace.Application.Messaging;
+using BookSpace.Domain.Enums;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -84,11 +89,86 @@ public sealed class BookingsController : ControllerBase
                 request.Title),
             cancellationToken);
 
-        // Location is left to Phase 2's GET /bookings/{id}, which does not exist
-        // yet. Created(string?, object?) with a null location emits the 201 and
-        // the body without a Location header rather than pointing at an action
-        // that would 404 — the alternative, inventing a read endpoint now purely
-        // to satisfy a header, is API surface built for a header's sake.
-        return Created((string?)null, result);
+        // Phase 2a supplied the read endpoint the 201 had nothing to point at,
+        // so this is now a proper CreatedAtAction. Named by nameof(GetById)
+        // rather than a hand-written path, so a route rename cannot leave the
+        // header pointing at nothing.
+        //
+        // The header is honest for both statuses: a Pending booking exists and
+        // is readable at that URL just as a Confirmed one is.
+        return CreatedAtAction(nameof(GetById), new { id = result.Id }, result);
+    }
+
+    // Wire shape, per docs/decisions/0015. Defaults are repeated here rather
+    // than inherited from the query so an omitted parameter binds to the
+    // documented default instead of 0/null/false.
+    //
+    // `?status=Confirmed` and `?scope=tenant` bind by name, case-insensitively:
+    // ASP.NET Core parses an enum query value with Enum.TryParse, which accepts
+    // the name *and* the underlying number, so `status=1` is also accepted. The
+    // validator rejects a number that is not a defined member, which
+    // Enum.TryParse would otherwise let through as an undefined value matching
+    // no row (see ListBookingsQueryRequestValidator).
+    //
+    // UserId and Scope are TenantAdmin-only (decision 0002); a plain member
+    // sending either gets 400 ValidationFailed naming the field, not a quietly
+    // narrowed 200.
+    public sealed record ListBookingsRequest(
+        DateTime? From = null,
+        DateTime? To = null,
+        BookingStatus? Status = null,
+        Guid? ResourceId = null,
+        Guid? UserId = null,
+        BookingScope Scope = BookingScope.Own,
+        int Page = PagingDefaults.Page,
+        int PageSize = PagingDefaults.PageSize,
+        string? Sort = null);
+
+    // FR-4.4, the "view" half. The caller's own bookings by default, whoever
+    // they are; a TenantAdmin can widen with `userId` or `scope`.
+    //
+    // Paging/sorting/filter failures come back as 400 from ValidationBehavior
+    // with per-field errors — not silently clamped (PagingDefaults.MaxPageSize).
+    [HttpGet]
+    [ProducesResponseType<PagedResult<ListBookingsQueryResponse>>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<IActionResult> List(
+        [FromQuery] ListBookingsRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(
+            new ListBookingsQueryRequest(
+                request.From,
+                request.To,
+                request.Status,
+                request.ResourceId,
+                request.UserId,
+                request.Scope,
+                request.Page,
+                request.PageSize,
+                request.Sort),
+            cancellationToken);
+
+        return Ok(result);
+    }
+
+    // FR-4.4. One booking, if this caller may see it.
+    //
+    // **404 for a booking the caller may not see, never 403** — another member's
+    // booking, another tenant's booking and an id that exists nowhere are
+    // byte-identical. A 403 would confirm the booking exists and leak who is
+    // holding which resource, which is the disclosure AC-4 rules out across
+    // tenants, applied within one (see BookingNotFoundException).
+    [HttpGet("{id:guid}")]
+    [ProducesResponseType<GetBookingQueryResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetById(Guid id, CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(new GetBookingQueryRequest(id), cancellationToken);
+        return Ok(result);
     }
 }

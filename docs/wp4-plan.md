@@ -508,6 +508,146 @@ routes (another member's id, another tenant's id, both 404); and the
 "slot is freed" test — cancel, then assert the availability endpoint offers the
 interval again and a new booking for it succeeds.
 
+Two chunks, agreed with the owner on 2026-09-08: **2a** the two reads, **2b**
+the cancel plus the AC sweep and the slot-freed test.
+
+#### Settled before Phase 2 (owner, 2026-09-08)
+
+Six questions, four of which the plan had left to whichever phase hit them.
+
+1. **A handler learns the caller's role through `ICurrentUser.IsInRole(Role)`.**
+   Nothing in `BookSpace.Application` could read a role before this — RBAC had
+   been entirely declarative on the controllers — but decision `0002` puts the
+   TenantAdmin check "in the Application layer, not the Domain entity", and it
+   cannot be a policy on the action: the same route serves a member and an admin,
+   and the difference is in *which rows* are visible rather than in whether the
+   route may be called. Takes the Domain enum rather than a string, so a handler
+   cannot mistype a role name and silently never match. Rejected: a bare
+   `IsTenantAdmin` flag (WP-5 needs `Approver` too), a separate roles port, and
+   separate admin-only routes — the last would give one booking two URLs and
+   split the 404-not-403 rule across them.
+2. **`GET /bookings` gains an admin-only tenant-wide scope**, alongside the
+   per-member `userId` filter the plan already had. "What is booked next week" is
+   the admin's real question and `userId` can only answer it one member at a
+   time, and WP-5's approver queue needs the same widening. Own-bookings stays
+   the default **for everyone including a TenantAdmin**, who is a member of their
+   tenant before they are its admin.
+3. **The booking read DTOs carry `resourceName`** beside `resourceId`, on both
+   the list row and the detail. A member's list spans resources by definition, so
+   ids alone force a fetch per row to render anything a person could read.
+   Rejected: also carrying the resource's `TimeZoneId` (not needed while every
+   instant on the wire is UTC), and ids only.
+4. **Self-cancellation enqueues no `Cancelled` notification** (smaller call 6,
+   closed). Decision `0002`'s requirement is that the *affected user* is told;
+   emailing someone the news they just made is noise. A cancellation by anyone
+   else does enqueue one. Lands in 2b.
+5. **A non-admin sending an admin-only parameter gets `ValidationFailed` 400**
+   with a per-field error (smaller call 8, closed, now covering `scope` as well
+   as `userId`). `ErrorKind` has no `Forbidden` and inventing one for a
+   query-string filter is heavier than the problem, so `0016`'s map is unchanged.
+   Rejected: adding `ErrorKind.Forbidden → 403`, and silently ignoring the
+   parameter — which would answer a different question than was asked.
+6. **`from`/`to` default to the whole history**, not to "upcoming", following
+   `GET /resources/{id}/blackout-periods`. Paging and the default chronological
+   sort bound the response either way, and defaulting to now would leave "what
+   did I book last month" unanswerable through the only endpoint that asks it.
+
+Also settled, and **beyond what the plan recorded**: the amendment to `0002` that
+2b writes should cover the *read* widening too, not only the cancellation window
+and the notification suppression. It is the same principle — how far a
+TenantAdmin's reach extends inside their own tenant — and `0002` currently
+describes only the cancel.
+
+#### 2a — The two reads. Done 2026-09-08.
+
+849 unit + 373 integration tests pass (70 unit, 47 integration new). Delivered:
+`GET /bookings` (paged, `from`/`to` overlap, `status`, `resourceId`, admin
+`userId`/`scope`) and `GET /bookings/{id}`, both on `TenantMember`;
+`ICurrentUser.IsInRole`; `BookingReadRules`, `BookingOwnerFilter`,
+`BookingScope`, `BookingSortFields`; the two reads on `IBookingRepository`; and
+`POST /bookings`'s `Location` header, which Phase 1c deliberately left off
+because there was nothing to point at.
+
+Five things worth recording:
+
+- **The visibility rule is pushed into the query, not applied after the read.**
+  The handler resolves a `BookingOwnerFilter` and the repository applies it as a
+  `WHERE` clause, so a booking the caller may not see never materializes — which
+  leaves the handler exactly one branch, null → `BookingNotFound`. A
+  load-then-compare would leave a moment where someone else's booking exists in
+  memory one early return away from the wire, and would make the 404 a thing a
+  handler remembers to do rather than a thing the query cannot avoid.
+- **`BookingOwnerFilter` is a type rather than a `Guid?`**, and the reason is
+  fail-open. The repository needs "this user" or "anyone in the tenant", and a
+  bare nullable spells the second as `null` — so a handler that forgot to set it,
+  or a new caller that defaulted the argument, would silently widen a member's
+  list to the whole tenant. `AnyOwner` has to be asked for by name and there is
+  no public constructor, so the widened state is unreachable by accident. This is
+  CLAUDE.md §4.2's objection one scope down: tenant isolation would still hold,
+  *member* isolation would not.
+- **The privilege is checked twice, deliberately** — once in the validator, which
+  is what produces the client-facing 400, and again in `BookingReadRules`, which
+  is the gate. Same shape as capacity being checked twice on the create path: a
+  future caller that dispatches the query without the pipeline, or a validator
+  someone forgets to type against a new query record (CLAUDE.md §12's discovery
+  gotcha), still cannot widen a member's view.
+- **The validator injects `ICurrentUser`, which is a first in this codebase.**
+  It works because `AddApplication` registers each `IValidator<T>` by type
+  through DI rather than as an instance, so constructor injection is activated
+  normally. Worth knowing before the next validator needs a dependency.
+- **The tests were verified to be able to fail.** Disabling the owner filter in
+  the repository and changing nothing else made **exactly the five**
+  member-isolation tests fail and left the other 42 passing — and notably
+  `AdminScope_NeverReachesAnotherTenant` still passed, which is the evidence that
+  the tenant filter is independent of the owner filter rather than being
+  accidentally load-bearing for it. Same technique Phase 1b used on the lock
+  hints; the weakened version was never committed.
+
+Three smaller calls taken inside the chunk, none needing a question:
+
+- **`userId` and `scope=tenant` together are refused**, rather than given a
+  precedence rule. Together one of the two has to be ignored, and an
+  accepted-then-ignored parameter is the shape settled answer 5 rejects
+  everywhere else. `userId` alone already searches the whole tenant for that
+  member, so nothing is lost.
+- **An unknown `resourceId` is an empty page, not a 404**, deliberately unlike
+  `GET /resources/{id}/blackout-periods`. There the resource is in the *route*,
+  so "no such room" has to be distinguishable from "no blackouts"; here it is one
+  filter among five on a collection that belongs to the member, and "no bookings
+  match" is honest for every combination of them. It also avoids confirming that
+  a resource id exists.
+- **`RecurrenceRuleId` is on the detail but not the list row.** WP-4 never writes
+  it, so on the list it would be a column null on every row; WP-5 makes
+  occurrences independently viewable (FR-5.2) and can add it then, additively.
+
+One gotcha found the hard way, and it is a **fixture trap rather than a bug**:
+`member2@acme.test` is unusable as a second Acme account.
+`AuthenticationEndpointTests.Refresh_UserDeactivatedSinceLogin` deactivates it
+permanently and never restores it — its sibling's comment says so outright. Using
+it here passed in isolation and failed only in a full run, with a 401 on *login*,
+which is precisely the from-a-distance failure that comment warns shared fixtures
+produce. These tests use `approver@acme.test` instead, which costs nothing: the
+rule under test is "a non-admin sees only their own bookings", and an Approver is
+a non-admin — if anything the stronger choice, since the `Approver` policy sits
+between Member and TenantAdmin.
+
+#### 2b — The cancel. Not started.
+
+`POST /bookings/{id}/cancel` for member and admin; the `Cancelled` notification
+row (suppressed on self-cancel, per settled answer 4); the amendment to `0002`;
+and the slot-freed test. **Carries one domain change the plan did not name**:
+`Booking.Cancel` refuses only terminal statuses today, but
+`BookingNotCancellableException` promises the code also covers *already ended*,
+with the test on `EndsAtUtc`. So `Booking` needs a `CanBeCancelled(nowUtc)`
+predicate mirroring `CanBeCancelledForBlackout`, with `Cancel` re-checking it —
+free to tighten, since nothing calls `Cancel` in production yet.
+
+It needs **no `IUnitOfWork`**: one `SaveChangesAsync` covers the status change
+and the notification row, and `SaveChanges` is already transactional. That is
+`IBlackoutPeriodRepository`'s argument, and §5's "wrap it in
+`CreateExecutionStrategy`" rule does not apply to a caller that never reaches for
+`BeginTransaction`.
+
 ### Phase 3 — Concurrency, proof and documentation (tasks 6–9)
 
 The end-to-end concurrency suite through the real HTTP pipeline; the measured

@@ -1,3 +1,7 @@
+using BookSpace.Application.Common.Pagination;
+using BookSpace.Application.Features.Bookings;
+using BookSpace.Application.Features.Bookings.GetBooking;
+using BookSpace.Application.Features.Bookings.ListBookings;
 using BookSpace.Domain.Entities;
 using BookSpace.Domain.Enums;
 
@@ -10,10 +14,19 @@ namespace BookSpace.Application.Abstractions;
 // **It has no Add(Booking) and never will.** CLAUDE.md §4.1: booking creation
 // goes through dbo.CreateBooking, because the capacity guarantee is a
 // UPDLOCK/HOLDLOCK range lock that LINQ cannot express and SQL Server has no
-// exclusion constraint to fall back on. So the one method here hands the
+// exclusion constraint to fall back on. So the create method here hands the
 // procedure its arguments and returns what it decided — the shape of this
 // interface is the §4.1 rule made structural, rather than a comment asking
 // people to remember it.
+//
+// **The reads added in Phase 2a are not an exception to that**, and neither is
+// the cancel that follows in 2b. §4.1 governs writes that *add* demand against
+// Resources.Capacity, because only those can breach it; a read adds none, and a
+// cancellation can only ever reduce the units held at an instant, so there is
+// nothing for the locking protocol to protect. That is BlackoutCascade's
+// argument, which already writes to Bookings through EF for the same reason.
+// Stated here so the next reader does not take a projection in this file as
+// precedent for a LINQ *insert*, which none of the above permits.
 public interface IBookingRepository
 {
     // Calls dbo.CreateBooking and reports the outcome. Never throws for a
@@ -25,6 +38,43 @@ public interface IBookingRepository
     // the booking or not at all. The procedure joins an ambient transaction
     // rather than opening its own.
     Task<BookingCreationOutcome> CreateAsync(NewBooking booking, CancellationToken cancellationToken);
+
+    // ---- The reads (WP-4 Phase 2a, FR-4.4) ----
+    //
+    // Both take a BookingOwnerFilter the *caller* resolved, rather than reading
+    // ICurrentUser here. Decision 0002 puts the "may this actor see another
+    // member's booking" question in the Application layer, and BookingReadRules
+    // is where it is answered; this port only applies the answer as a predicate.
+    // Passing it explicitly is also what makes the widened case auditable — the
+    // filter has to be constructed as AnyOwner by name (see BookingOwnerFilter),
+    // so a member's list cannot be widened by an omitted argument.
+    //
+    // Neither read bypasses tenant isolation. Both go through the tenant-filtered
+    // DbSet, so §4.2's query filter and RLS are what make another tenant's ids
+    // invisible — the owner filter narrows *within* a tenant and never across
+    // one (AC-4).
+
+    // One page of GET /bookings, projected. The owner filter is applied as a
+    // WHERE clause alongside the query's own from/to/status/resourceId filters.
+    Task<PagedResult<ListBookingsQueryResponse>> ListAsync(
+        ListBookingsQueryRequest query,
+        BookingOwnerFilter owner,
+        SortOption? sort,
+        CancellationToken cancellationToken);
+
+    // One booking by id, projected, or null if it is not visible to this caller.
+    //
+    // Null covers all three not-found cases at once — no such id, another
+    // tenant's id, another member's booking — which is what lets the handler
+    // answer with a single indistinguishable BookingNotFound (AC-4, and
+    // BookingNotFoundException for why the third is a 404 rather than a 403).
+    // The owner filter is part of the query for that reason: a row the caller
+    // may not see is never materialized, so there is no path on which it could
+    // reach the wire.
+    Task<GetBookingQueryResponse?> FindDetailAsync(
+        Guid bookingId,
+        BookingOwnerFilter owner,
+        CancellationToken cancellationToken);
 
     // ---- The rows derived from a booking (WP-4 Phase 1c) ----
     //
