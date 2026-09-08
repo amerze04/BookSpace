@@ -685,8 +685,11 @@ WP-5 inherits it explicitly rather than discovering it.
 
 ### Phase 3 — Concurrency, proof and documentation (tasks 6–9)
 
-**Not started. This section is the handoff brief — written 2026-09-08, at the end
-of Phase 2, for a fresh session to start from.**
+**Done 2026-09-08. This completes WP-4.** 879 unit + 406 integration tests pass.
+The handoff brief and the build plan below are kept as written — the brief was
+the input to this phase and the plan is what was agreed before any code — and
+the outcome is recorded at the end of the section, under "What Phase 3 actually
+produced".
 
 #### Where the build stands
 
@@ -747,6 +750,9 @@ single most important test in the codebase (§8).
    CLAUDE.md §12.
 
 #### Outstanding CLAUDE.md corrections
+
+**Done in 3b, 2026-09-08** — kept below as the brief wrote it, since it is the
+input this phase worked from. Nothing here is still outstanding.
 
 One is **overdue and currently makes CLAUDE.md wrong about the code**:
 
@@ -815,6 +821,235 @@ Two chunks, matching the delivery style: **3a** the concurrency suite plus the
 `0023` evidence — the acceptance-criterion work, defensible on its own; **3b**
 the seeding, the real isolation test, the tier-table correction and the AC sweep,
 which is closing-out work with no shared risk.
+
+#### The build plan, as agreed 2026-09-08
+
+Written from the brief above after reading `0023`, the procedure, the create
+handler, `UnitOfWork`, the RLS predicate and interceptor, `SeedData` and the four
+existing booking/isolation test files. Confirmed with the owner the same day.
+**Nothing in production code changes in 3a**; 3b touches `SeedData` only.
+
+Three findings the brief did not have:
+
+1. **The seeding tension resolves — a bypass is not the fail-closed case.** The
+   brief calls this unresolved. `Security.fn_TenantAccessPredicate` returns
+   *allow* whenever `TenantBypass = 1`, and `TenantBypassScope` sets
+   `TenantInit = 1` alongside it, so the procedure's `Resources` read succeeds
+   inside a bypass scope; `0023`'s guard fires only on a connection with **no**
+   session context at all. The counting `SELECT` is still correct under bypass
+   because it filters by `ResourceId`, and `FK_Bookings_Resources_SameOrg`
+   (decision `0006`) forces every booking of a resource into that resource's org,
+   so there is nothing cross-tenant for it to over-count. One gotcha:
+   `TenantSessionContextInterceptor` reads the flag at `ConnectionOpened` and
+   sets its keys `@read_only = 1`, so the scope has to be entered *before* the
+   connection opens.
+2. **The handler's capacity pre-check is a confound the race must be designed
+   around.** `CreateBookingCommandRequestHandler` checks capacity before the unit
+   of work opens, so contenders that arrive *after* a winner has committed are
+   refused by the pre-check and the lock is never contended — a trickling race
+   would pass with the lock hints removed. The gate is what makes it a real race,
+   and the weakened run is what proves so.
+3. **Reason codes in a race are deterministic**, so the assertions can be exact
+   rather than "one of". Capacity 1, N-way: losers get `SlotUnavailable`.
+   Capacity 4 with 3 + 2: the loser always gets `CapacityExceeded`, whichever
+   wins, since the remainder is 1 or 2 — both above zero and below the ask.
+   Capacity 4 with eight 1-unit requests: losers get `SlotUnavailable`. And
+   `CapacityExceededException.RemainingCapacity` is log-only, never on the wire
+   (`0016`), so the two throw sites are indistinguishable to a client and no
+   assertion can flake on which one answered.
+
+##### 3a — the HTTP concurrency suite and `0023`'s end-to-end evidence
+
+A new file, `Bookings/BookingConcurrencyEndpointTests.cs`, in
+`AuthenticationTestCollection`, with the sibling files' state hygiene: its own
+resource per test, removed in a `finally` in the order Notifications →
+ApprovalRequests → Bookings → Resources with an explicit RLS bypass on the
+fixture connection (decision `0017`'s gotcha). Its own file rather than an
+addition to `CreateBookingEndpointTests`, whose header says the concurrency
+criterion is deliberately not there; that comment is updated to point here.
+
+`RaceAsync` mirrors `CreateBookingProcedureTests.RaceAsync`: **every access token
+is minted before the gate**, then a `TaskCompletionSource` releases all racers at
+once. Login is PBKDF2 at 100k iterations, so a login inside the race would
+stagger the arrivals and hand the win to the pre-check rather than to the lock.
+
+| Test | Setup | Asserts |
+|---|---|---|
+| `TwoSimultaneousRequestsForOneSlot…` | capacity 1, 2 requests | one 201, one 409 `SlotUnavailable`, one row |
+| `TenSimultaneousRequestsForOneSlot…` | capacity 1, 10 requests | one 201, nine 409, one row |
+| `ConcurrentRequestsFillAPoolExactly…` | capacity 4, eight 1-unit | four 201, four 409 `SlotUnavailable`, `SUM(Quantity) = 4` |
+| `ConcurrentRequestsForMostOfAPool…` | capacity 4, one 3-unit + one 2-unit | one 201, loser 409 `CapacityExceeded` |
+| `ConcurrentRequestsForDifferentHours…` | capacity 1, twelve hours | all 201 — the lock queues, never over-refuses |
+| `CancelRacingACreate…` | capacity 1, cancel against create | the invariant, below |
+
+Ten at HTTP level rather than the procedure suite's twenty: each request here is
+a whole pipeline plus a transaction that serializes against the others, so twenty
+would double the runtime to re-prove what `CreateBookingProcedureTests` already
+proves at twenty. This file's subject is the pipeline, not the lock.
+
+Two assertions exist only at this level:
+
+- **No 500s, in every test** — every status must be 201 or 409. A deadlock that
+  escapes the 1205 retry surfaces here and nowhere else, which is the one thing
+  the procedure-level suite structurally cannot see.
+- **The cancel/create race asserts an invariant, not an outcome.** The cancel is
+  always 200; the create is 201 *or* 409 and both are correct, since the freed
+  unit may or may not be visible yet. So what is asserted is: at most one live
+  (`Pending`/`Confirmed`) booking overlapping the interval afterwards, the
+  cancelled row still present, and no 500. It is also the most likely case to
+  genuinely produce a 1205 — the cancel's EF `UPDATE` inverts lock order against
+  the create's `RangeS-U` — which makes it the best available evidence for
+  `0023`'s point 4.
+
+Then an **Evidence (HTTP level)** subsection is appended to `0023`: the figures
+with the hints and with them removed, and whether 1205 fired and how often. The
+weakened procedure is produced by temporarily editing the
+`AddCreateBookingProcedure` body — the test host drops and re-migrates its
+database on every run, so editing the migration is the only way to get a weakened
+procedure into it — reverted immediately and **never committed**, exactly as 1b
+did it.
+
+##### 3b — seeding, the real isolation test, the tier fix, the AC sweep
+
+**Seed bookings.** `SeedData.SeedAsync` gains an `IBookingRepository` and calls
+`CreateAsync` after the existing `SaveChangesAsync`, since the resources must
+exist first, inside a `TenantBypassScope` per finding 1. Callers to update:
+`Program.cs` and `AuthenticationTestHost.InitializeAsync`. Three things go stale
+and are fixed in the same chunk: `SeedDataTests` asserts zero bookings,
+`SeedData`'s header says it stops short of `Bookings` because the procedure does
+not exist, and CLAUDE.md §12's WP-1 Notes say the same.
+
+Shape, settled by the owner 2026-09-08: a **small mixed set anchored relative to
+`now`** — per tenant, two `Confirmed` bookings on Conference Room A and one
+`Pending` on the 3D Printer, the last carrying its `ApprovalRequest` row so WP-5's
+approver queue has something to read on day one. Anchored to the next weekday at
+10:00/11:00 **local**, so the dataset stays plausible however long after the seed
+run it is demoed; a fixed absolute date was rejected for becoming silently
+historical. The rows must satisfy the handler's rules **by construction** —
+inside the seeded 09:00–17:00 weekday windows, within the 30–240 minute limits,
+and in the future — because `SeedData` calls the repository rather than the
+handler, so nothing checks availability, duration or elapsed-ness on its behalf.
+
+**Make the `Bookings` isolation test real (AC-4's last gap).** Endpoint-level
+cross-tenant booking reads are *already* covered — `BookingReadEndpointTests`'
+`AdminScope_NeverReachesAnotherTenant` and its siblings, and
+`BookingCancelEndpointTests.Cancel_RefusesAnAdminReachingIntoAnotherTenant`. What
+is missing is only the **database/RLS half**, which is why this depends on the
+seeding above rather than creating its own rows: it lets the new assertions look
+exactly like the resources/users/windows/blackouts ones already in that file. Add
+a `bookings/{id}` arm to `TenantIsolationProbeController`, filtered by `Id`
+alone — the deliberately naive pre-D1 shape its blackout probe uses, safe only
+because the query filter and RLS make it so — then in `TenantIsolationTests`: the
+cross-tenant 404 / own-tenant 200 pair, a list test asserting Acme's seeded count
+and every `OrgId`, `dbo.Bookings` added to the raw-connection zero-rows test and
+to `RawConnection_WithFullSessionContext_SeesOnlyItsTenant`, and the smoke-check
+comment deleted from `BookingsQueryFilter_WithNoTenantContext…`.
+
+**CLAUDE.md §6's tier table** gains the blackout re-check on row 2 while row 4
+keeps blackouts, because both checks genuinely exist (smaller call 3, `0023`).
+This is the overdue correction the brief flags.
+
+**The AC sweep**: tick WP-4's last task and AC-1, flip the WP-4 heading to Done,
+and replace the handoff brief above with what actually happened, in the style
+Phases 1 and 2 use.
+
+##### Out of scope, flagged rather than done
+
+- `docs/postman/README.md` is WP-3 only and a race is not hand-verifiable, so a
+  WP-4 walkthrough is a separate ask.
+- Drift spotted while reading: `ResourceReadEndpointTests`' header still
+  describes Conference Room A as capacity 8, which decision `0005`'s amendment
+  made 1. Comment only, no assertion depends on it; folded into 3b.
+- The loose ends the brief lists — the cancelled `Pending` booking's approval
+  row, owner names on the read DTOs, nothing writing `Completed`, the DST
+  fall-back — stay with WP-5 and the mentor.
+
+#### What Phase 3 actually produced
+
+Delivered 2026-09-08 in two chunks, 3a then 3b, as planned. **879 unit + 406
+integration tests pass** (from 395 at the end of Phase 2: +6 in 3a, +5 in 3b).
+Every acceptance criterion is met and WP-4 is complete.
+
+**3a — the concurrency suite.** `BookingConcurrencyEndpointTests`, six races,
+exactly as tabulated in the plan. All six passed first time and were then shown
+able to fail. The figures went into `0023`'s new HTTP-level Evidence section;
+the headline is **ten confirmed bookings on a room that holds one** once the
+lock hints come off, through the API a client actually calls.
+
+Three things the plan did not anticipate:
+
+- **Deadlocks are routine at this contention, not exotic.** Reading SQL Server's
+  `_Total` deadlock counter either side of four runs *with* the lock in place
+  gave **+0, +5, +1, +10** — sixteen across four runs of six tests, with no
+  blackout written anywhere, so they are not the blackout/cascade inversion
+  `0023`'s point 4 names. Every one was absorbed by the retry: all six tests
+  passed in every run, and the only visible trace is wall clock, **17 seconds
+  against 3**. That is the strongest evidence in the record for the retry being
+  part of the design, and it is why "usually blocks" is the honest wording.
+- **Two of the six tests cannot detect a missing lock**, and saying so in `0023`
+  is what keeps the other four meaningful. Twelve requests at twelve different
+  hours never contend for capacity — that test exists to show the range lock
+  *queues* rather than refuses. The cancel/create race is the same: without the
+  lock the challenger simply always wins, and the cancelled row plus the new one
+  still leave exactly one live booking, so its invariant survives the weakening.
+  Its value is the no-500 assertion and the lock-order inversion it exercises.
+- **Ten contenders was the right number and for a reason the plan only guessed
+  at.** It is past where `0023` first observed a 1205, which turns out to be
+  where deadlocks become common rather than rare — so a smaller race would have
+  measured the lock without ever measuring the retry.
+
+**3b — seeding, isolation, and the corrections.**
+
+- **`SeedData` writes `Bookings`**, through `dbo.CreateBooking` like every other
+  write path. **The tension the brief flagged resolved rather than needing a
+  workaround**: `TenantBypassScope` sets `TenantInit = 1` as well as
+  `TenantBypass = 1`, and `fn_TenantAccessPredicate` allows every row on the
+  bypass, so `0023`'s fail-closed guard is satisfied honestly — it fires on
+  **no** session context, which a bypass is not. Two consequences worth
+  recording: the connection is opened *inside* the scope, because the
+  interceptor reads the flag at `ConnectionOpened` and sets its keys
+  `@read_only = 1`; and the seed **throws** if the procedure refuses, because a
+  refusal means the dataset contradicts the rules it is seeded through and a
+  half-seeded database is harder to diagnose than none.
+- **The seeded dates skip the seeded blackout**, which the plan missed. The
+  procedure re-checks blackouts under the lock, so a booking on Christmas Day
+  would be refused outright — the seed would have thrown for two days a year and
+  worked for the other 363. `NextBookableLocalDate` skips weekends *and* any day
+  the tenant's blackout covers, using the `BlackoutPeriod` already in hand
+  rather than a query.
+- **`SeedData` now truncates its clock to whole seconds**, the convention §4.3
+  records for `IClock`. Not in the plan; noticed while writing the booking
+  stamps, and it applies to every seeded row rather than just the new ones,
+  since every instant column is `datetime2(0)` and *rounds* on write.
+- **`SeedData.SeedAsync` gained two parameters** (`IBookingRepository`,
+  `ITimeZoneCatalog`) rather than resolving them internally, so all three call
+  sites — `Program.cs`, `AuthenticationTestHost`, `SeedDataTests` — say plainly
+  that seeding now writes bookings through the §4.1 path. `SeedDataTests`
+  constructs the real `BookingRepository` over its hand-built context for the
+  same reason: a stub there would test nothing.
+- **AC-4's last gap is closed.** `TenantIsolationTests`' single smoke check
+  became four real tests over an `Id`-only probe arm, and the new tests were
+  confirmed able to fail: bypassing *both* mechanisms in the probe makes the
+  cross-tenant read return 200 while the own-tenant pair still passes, which is
+  what makes the 404 isolation rather than a broken route.
+- **§6's overdue tier-table correction landed**, with a paragraph under the table
+  explaining why blackouts sit in two tiers and availability windows deliberately
+  do not.
+- One piece of drift fixed in passing: `ResourceReadEndpointTests`' header still
+  described Conference Room A as capacity 8, from before decision `0005`'s
+  amendment.
+
+**What the seeded bookings do *not* include**, each for its own reason:
+`Notifications` (nothing dispatches them yet, so rows would be permanently
+unsent mail rather than realism), `RefreshTokens` (issued at login), and
+occurrences for the seeded recurrence rule (materializing a series is WP-5's).
+
+**Not done, and not Phase 3's**: the loose ends the brief lists are unchanged and
+carry into WP-5 — the cancelled `Pending` booking that keeps its `ApprovalRequest`
+at `Pending`, owner names absent from the read DTOs, no approval detail on
+`GET /bookings/{id}`, no reminder rows, and nothing writing
+`BookingStatus.Completed`. A WP-4 Postman walkthrough was also not written;
+`docs/postman/README.md` remains WP-3's, and a race is not hand-verifiable.
 
 ---
 
@@ -937,8 +1172,12 @@ belong to the phase that hits them.
 4. **§6's booking code list** gains the four new codes and loses
    `ApprovalRequired` (smaller call 2, settled). Lands in Phase 1a with the codes
    themselves.
-5. **§6's tier table** gains the blackout re-check as a tier-2 rule alongside its
-   tier-4 entry (smaller call 3, settled). Lands in Phase 1b with the procedure.
+5. ~~**§6's tier table** gains the blackout re-check as a tier-2 rule alongside
+   its tier-4 entry~~ (smaller call 3, settled). Was to land in Phase 1b with the
+   procedure and did not — **done 2026-09-08 in Phase 3b**, which is why the
+   Phase 3 brief above flags it as overdue. The table now carries blackouts in
+   both tiers, with a paragraph beneath it explaining why the duplication is the
+   design and why availability windows deliberately do not follow.
 
 ---
 

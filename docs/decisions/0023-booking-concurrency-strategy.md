@@ -2,7 +2,8 @@
 
 ## Status
 Decided (2026-09-07), implemented the same day in WP-4 Phase 1b
-(`AddCreateBookingProcedure`).
+(`AddCreateBookingProcedure`). **Evidence extended 2026-09-08** (WP-4 Phase 3)
+with the HTTP-level figures and the measured deadlock/retry data.
 
 ## Context
 
@@ -133,6 +134,8 @@ blackout" is.
 
 ## Evidence
 
+### At the procedure level (2026-09-07, Phase 1b)
+
 Measured on 2026-09-07 by removing `WITH (UPDLOCK, HOLDLOCK)` from the procedure
 and running the same suite against the weakened version. **Nothing else
 changed**, and the naive procedure was never committed or shipped — the point
@@ -158,6 +161,63 @@ through `IUnitOfWork`; the procedure-level test now retries the same way and for
 the same reason, since a raw connection with no execution strategy is a
 configuration the application never runs in.
 
+### At the HTTP level (2026-09-08, Phase 3)
+
+The same method one layer up, and the end-to-end half of AC-1:
+`BookingConcurrencyEndpointTests` fires parallel `POST /bookings` through the
+real pipeline — test host, JwtBearer handler, mediator, EF transaction and
+execution strategy — against a resource it creates itself. The weakened
+procedure was produced the same way and reverted immediately; because the test
+host drops and re-migrates its database on every run, editing
+`AddCreateBookingProcedure`'s body is the only way to get a weakened procedure
+into it. Three weakened runs rather than one, since every figure below is a
+race and a single sample would understate the spread.
+
+| Test | With the lock | Without it (three runs) |
+|---|---|---|
+| 2 simultaneous requests, capacity 1 | 1 created | **2, 2, 2** |
+| 10 simultaneous requests, capacity 1 | 1 created | **10, 8, 9** |
+| 8 concurrent 1-unit requests, capacity 4 | 4 created | **5, 5, 6** |
+| one 3-unit + one 2-unit request, capacity 4 | 1 created | **both**, 5 units against a capacity of 4 |
+| 12 concurrent requests at 12 different hours | all 12 created | all 12 created |
+| a cancel racing a create for the freed slot | invariant holds | invariant holds |
+
+Ten confirmed bookings on a room that holds one, through the API a client
+actually calls. Every run with the lock in place was 6 of 6 green.
+
+**Two rows deliberately do not measure the lock**, and saying so is what keeps
+the other four meaningful. Twelve requests at twelve different hours never
+contend for capacity at all — that row exists to show the range lock *queues*
+rather than refuses (the open lower bound under "Alternatives considered"), and
+it would pass either way. The cancel/create race is the same: without the lock
+the challenger simply always wins, and the cancelled row plus the new one still
+leave exactly one live booking, so its invariant survives the weakening. Its
+value is the no-500 assertion and the lock-order inversion it exercises, not
+detection of a missing lock.
+
+**1205 fires in the production configuration, and the retry absorbs it.** Four
+runs with the lock in place, reading SQL Server's `_Total` deadlock counter
+either side of each:
+
+| Run | Deadlocks | Result | Wall clock |
+|---|---|---|---|
+| 1 | 0 | 6 of 6 passed | 3 s |
+| 2 | +5 | 6 of 6 passed | 17 s |
+| 3 | +1 | 6 of 6 passed | 4 s |
+| 4 | +10 | 6 of 6 passed | 17 s |
+
+This is point 4 measured rather than argued, and it sharpens the correction this
+record already made to its own first draft. Three things follow. **Deadlocks are
+routine at this contention, not exotic** — sixteen across four runs of six
+tests. **They are not confined to the blackout/cascade inversion point 4
+names**: no blackout was written during any of these runs, so ten- and
+twelve-way contention finds cycles of its own, which is why "usually blocks" is
+the honest wording rather than "blocks". And **the retry is the whole
+difference**: every deadlock was absorbed, no test failed, and the only place a
+1205 is visible at all is the wall clock — 17 seconds against 3, the execution
+strategy's backoff and nothing else. The suite's own guard is that every
+response must be 201 or 409, so a 1205 that escaped the retry would fail a test
+rather than slow one down.
 ## Alternatives considered
 
 **`sp_getapplock` keyed on the resource id.** The work package names it first,

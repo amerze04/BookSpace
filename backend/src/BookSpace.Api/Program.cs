@@ -124,7 +124,15 @@ try
         using var scope = app.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<BookSpaceDbContext>();
         var passwordHasher = scope.ServiceProvider.GetRequiredService<IPasswordHasher>();
-        await SeedData.SeedAsync(db, passwordHasher);
+
+        // The seed writes Bookings as of WP-4 Phase 3, and CLAUDE.md §4.1 leaves
+        // one way to do that: dbo.CreateBooking, behind IBookingRepository. The
+        // timezone catalog comes with it because the seeded intervals are
+        // resource-local wall clocks (decision 0003).
+        var bookings = scope.ServiceProvider.GetRequiredService<IBookingRepository>();
+        var timeZones = scope.ServiceProvider.GetRequiredService<ITimeZoneCatalog>();
+
+        await SeedData.SeedAsync(db, passwordHasher, bookings, timeZones);
     }
 
     app.UseHttpsRedirection();

@@ -23,8 +23,8 @@ namespace BookSpace.IntegrationTests.Bookings;
 //
 // The concurrency criterion (AC-1) is **not** here. It is proved in
 // CreateBookingProcedureTests, at the layer where the lock actually is; the
-// HTTP-level race arrives in Phase 3, where what it adds is the pipeline rather
-// than the guarantee.
+// HTTP-level race is BookingConcurrencyEndpointTests (Phase 3), where what it
+// adds is the pipeline rather than the guarantee.
 //
 // **Resources are in the UTC zone** unless a test is about zones, for the reason
 // the availability tests give: the conversion rules have their own thorough

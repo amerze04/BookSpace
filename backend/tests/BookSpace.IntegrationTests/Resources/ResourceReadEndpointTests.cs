@@ -23,8 +23,10 @@ namespace BookSpace.IntegrationTests.Resources;
 // against something other than synthetic input.
 //
 // The seeded dataset (SeedData) gives each tenant exactly two resources:
-// "Conference Room A" (Room, capacity 8) and "3D Printer" (Equipment,
-// capacity 1, RequiresApproval).
+// "Conference Room A" (Room, capacity 1) and "3D Printer" (Equipment,
+// capacity 1, RequiresApproval). The room was capacity 8 until decision 0005's
+// amendment: capacity counts concurrent units, not seats, so 8 meant "eight
+// simultaneous bookings of one room".
 [Collection(nameof(AuthenticationTestCollection))]
 public class ResourceReadEndpointTests
 {

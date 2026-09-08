@@ -192,9 +192,20 @@ never" in tier 4.
 | Tier | Enforced by | Contains |
 |---|---|---|
 | 1 | Database constraints | Interval sanity (a booking's, and a resource's duration bounds), status domains, uniqueness, composite tenant FK |
-| 2 | Locking protocol | No overbooking beyond capacity, approval re-check |
+| 2 | Locking protocol | No overbooking beyond capacity, the blackout re-check inside `dbo.CreateBooking`, approval re-check |
 | 3 | RLS + query filters | Tenant isolation |
 | 4 | Application code | Availability windows, blackouts, a booking's length against the resource's duration limits, approval routing |
+
+**Blackouts are deliberately in two tiers**, and the duplication is the design
+rather than drift (WP-4 Phase 1b, `0023`). The handler checks them so a client
+gets a specific reason, and `dbo.CreateBooking` re-checks them **under the same
+lock as capacity** so the rule cannot be lost to a race: between the handler's
+check and the insert, an admin's cascade (`0001`) can select the bookings to
+cancel and miss this one, because it does not exist yet. Decision `0001` gives a
+blackout absolute priority — a live booking inside one must never exist — and
+this table's own rule of thumb puts a "must never" in tiers 1–3. Availability
+windows deliberately do **not** follow: narrowing a window cancels nothing, so
+"inside a window" is not an invariant this system maintains after creation.
 
 Rule of thumb: PRD wording of "must never" belongs in tier 1–3. "Should"
 belongs in tier 4.
@@ -715,11 +726,18 @@ Notes:
   `docs/bookspace-schema-v2.sql` was built directly on it. `docs/Amer-ERD-
   Feedback.docx` / `-Response.docx` are the review that followed. No separate
   ERD image/file lives in this repo; the schema doc is its record.
-- Seed data stops short of `Bookings`, `ApprovalRequests`, `Notifications`,
-  and `RefreshTokens` — the first three because CLAUDE.md §4.1 requires
-  Booking writes to go through `dbo.CreateBooking`/`dbo.ApproveBooking`, which
-  don't exist yet; the last because refresh tokens are issued at login, not
-  meaningful as static data.
+- Seed data stopped short of `Bookings`, `ApprovalRequests`, `Notifications`,
+  and `RefreshTokens` — the first three because §4.1 requires Booking writes to
+  go through `dbo.CreateBooking`/`dbo.ApproveBooking`, which didn't exist yet;
+  the last because refresh tokens are issued at login, not meaningful as static
+  data. **Updated 2026-09-08 (WP-4 Phase 3)**: the seed now writes three
+  bookings per tenant *through the procedure* — two `Confirmed` on Conference
+  Room A and one `Pending` on the 3D Printer with its `ApprovalRequest` row —
+  anchored to the next weekday at 10:00/11:00/14:00 **local** so the dataset
+  never becomes historical, and skipping the seeded Christmas blackout, which
+  the procedure would otherwise refuse. `Notifications` and `RefreshTokens`
+  are still deliberately empty: nothing dispatches notifications yet (§7), so
+  seeded rows would be permanently unsent mail.
 - `ResourceApprovers`' forced EF owned-collection cascade (vs. the schema's
   `NoAction`) is a known, accepted, documented deviation — see the comment in
   `ResourceConfiguration.cs`.
@@ -832,11 +850,16 @@ Notes:
       Globex's. Manually re-confirmed against the dev database via `sqlcmd`
       (2026-08-27): no session context → 0 `Resources` rows; `TenantBypass=1`
       → all 4; a real Acme `OrgId` with `TenantBypass=0` → exactly 2
-      resources and 4 users. **Known gap, not silently skipped**: no
-      `Bookings` rows are seeded yet (§4.1 — `dbo.CreateBooking` doesn't
-      exist), so the `Bookings` cross-tenant test is a smoke check only (the
-      filter clause builds and returns empty without throwing); the real leak
-      test is deferred to whatever work adds a Bookings write/read path.
+      resources and 4 users. **The one gap this left is now closed**: no
+      `Bookings` rows were seeded (§4.1 — `dbo.CreateBooking` didn't exist), so
+      the `Bookings` cross-tenant test was a smoke check only — the filter
+      clause built and returned empty without throwing, which proves nothing
+      about a leak. **WP-4 Phase 3 (2026-09-08)** seeds six bookings and
+      replaced it with the real thing: the cross-tenant 404 / own-tenant 200
+      pair over an `Id`-only probe, an exact-count list test, and a raw
+      connection seeing zero `Bookings` rows with no session context and
+      exactly Acme's three with it. Confirmed able to fail — bypassing *both*
+      mechanisms in the probe makes the cross-tenant test return 200.
 - [x] Serilog structured logging, correlation ID per request —
       `Serilog.AspNetCore` + `Serilog.Settings.Configuration` wired in
       `Program.cs` (bootstrap logger, `appsettings`-driven sinks/levels);
@@ -1468,15 +1491,32 @@ pass. Detail in `docs/wp3-plan.md`; the reasoning lives in the decision records.
 Appended here as the mentor sends them — one subsection per WP, same
 checklist format as above, status kept current as work lands.
 
-### WP-4 — Core Booking Engine — **In progress (Phase 3 of 3 remaining)**
+### WP-4 — Core Booking Engine — **Done** (2026-09-08)
 
-**State as of 2026-09-08.** Phases 1 (create) and 2 (view/cancel) are done;
-**Phase 3 — the HTTP-level concurrency suite, AC-1's last mile — is all that is
-left**, and its handoff brief is the Phase 3 section of `docs/wp4-plan.md`. Test
-baseline to compare against: **879 unit + 395 integration, 0 failed**.
-One CLAUDE.md correction is **overdue**: §6's tier table still lists blackouts as
-tier 4 only, though `dbo.CreateBooking` has re-checked them under the lock since
-Phase 1b (settled reasoning, documentation fix only — see the brief).
+**All three phases complete, all four acceptance criteria met.** Phase 1
+(create), Phase 2 (view/cancel) and Phase 3 (the HTTP-level concurrency proof,
+seeded bookings, AC-4's last gap) all landed on 2026-09-07/08. Final test
+baseline: **879 unit + 406 integration, 0 failed**.
+
+Phase 3's own outcomes, beyond ticking AC-1:
+- `BookingConcurrencyEndpointTests` — six races through the real pipeline. Its
+  distinctive assertion is **every response is 201 or 409**, which is how a 1205
+  escaping `IUnitOfWork`'s retry would be caught; the procedure-level suite
+  cannot see that, because it runs its own retry over a raw connection.
+- **`0023` gained measured HTTP figures**, including the discovery that
+  **deadlocks are routine rather than exotic** at ten-way contention — sixteen
+  across four runs, with no blackout write involved, every one absorbed by the
+  retry, visible only as wall clock (17s against 3s). That is the record's
+  point 4 measured rather than argued, and the reason its "usually blocks"
+  wording is the honest one.
+- **`SeedData` finally writes `Bookings`**, through `dbo.CreateBooking` like
+  every other write path, so the demo dataset contains what the engine produces.
+  The tension the plan flagged resolved rather than needing a workaround: a
+  `TenantBypassScope` sets `TenantInit = 1`, so `0023`'s fail-closed guard is
+  satisfied honestly — that guard fires on **no** session context, not on a
+  bypass.
+- §6's tier table is corrected: blackouts sit in **both** tier 2 and tier 4, and
+  the paragraph under the table says why the duplication is the design.
 
 Source doc: `docs/Work Packages - Week 4.pdf` (weeks 3–4, backend track), which
 carries WP-4 and WP-5 together. Plan: `docs/wp4-plan.md`, drafted 2026-09-07
@@ -1511,19 +1551,31 @@ Tasks — Week 4 (correct under concurrency):
       quantity against capacity. Documented and defended in
       [`0023`](docs/decisions/0023-booking-concurrency-strategy.md); the
       remaining Week-4 tasks are the HTTP-level proof and the AC sweep.
-- [ ] Prove the fix with a concurrent test that passes. **Partly done** (Phase
-      1b): the procedure-level races pass, and the same tests were confirmed to
-      *fail* with the lock hints removed (three bookings on a capacity-1 room,
-      a pool of four filled ten times). **Phase 3 adds the HTTP-level suite and
-      is the only work left in WP-4** — its handoff brief is the Phase 3 section
-      of `docs/wp4-plan.md`, written at the end of Phase 2 and the right place to
-      start from.
+- [x] Prove the fix with a concurrent test that passes. **Done 2026-09-08**
+      (Phase 3), at both levels and both shown able to fail. Procedure level
+      (1b): parallel raw connections; removing the lock hints gave three
+      bookings on a capacity-1 room and a pool of four filled ten times. HTTP
+      level (3): `BookingConcurrencyEndpointTests`, six races through the real
+      pipeline; removing the same hints gave **ten** confirmed bookings on a
+      room that holds one, twice over two more runs (8 and 9), a pool of four
+      sold five and six times, and both of two unequal claims accepted. Figures
+      in [`0023`](docs/decisions/0023-booking-concurrency-strategy.md).
 - [x] Document which strategy was chosen and why. **Done 2026-09-07**:
       [`0023`](docs/decisions/0023-booking-concurrency-strategy.md).
 
 Acceptance criteria:
-- [ ] Given one remaining slot and two simultaneous requests, exactly one
+- [x] Given one remaining slot and two simultaneous requests, exactly one
       succeeds and the other gets a clear rejection — never both. AC-1.
+      **Met 2026-09-08** (Phase 3), at the procedure level and through the real
+      HTTP pipeline. The criterion's literal case — two different members, one
+      slot — is `TwoSimultaneousRequestsForOneSlot_ExactlyOneSucceeds` in both
+      suites; the HTTP file also widens it to ten contenders, fills a pool of
+      four to exactly four, refuses the loser of two unequal claims with
+      `CapacityExceeded` rather than `SlotUnavailable`, confirms twelve
+      non-overlapping bookings all succeed (the lock queues, it does not
+      over-refuse), and races a cancel against a create for the freed slot.
+      **Every response must be 201 or 409** in all six, which is what would
+      catch a 1205 escaping the retry as a 500.
 - [x] All rule violations (availability, blackout, capacity) are rejected with
       clear reasons. **Met 2026-09-07** (Phase 1c): every code this endpoint can
       raise is asserted against the status its `ErrorKind` promises, alongside
