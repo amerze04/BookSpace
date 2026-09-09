@@ -423,12 +423,14 @@ public class CreateRecurrenceSeriesCommandRequestHandlerTests
         Assert.All(occurrences, o => Assert.Equal(RecurrenceOccurrenceReportStatus.Refused, o.Status));
     }
 
-    // The RecurrenceRule row is still persisted even though nothing was
-    // booked against it — the accepted, documented consequence of persisting
-    // up front (see the handler's own comment). This test exists so the
-    // behavior is pinned rather than accidental.
+    // The RecurrenceRule row is persisted up front (Bookings.RecurrenceRuleId
+    // is a real FK) and then removed again once nothing was booked against
+    // it — a 422 leaves no trace, not even the series shell. This test
+    // exists so the compensating removal is pinned rather than accidental;
+    // it is a regression test for the handler's first design, which left the
+    // row behind.
     [Fact]
-    public async Task TheRuleIsStillPersistedWhenEveryOccurrenceIsRefused()
+    public async Task TheRuleIsRemovedAgainWhenEveryOccurrenceIsRefused()
     {
         var resource = Room(archived: false);
         var takenInterval = new UtcInterval(
@@ -440,7 +442,32 @@ public class CreateRecurrenceSeriesCommandRequestHandlerTests
             () => harness.Handler.Handle(Request(resource, occurrenceCount: 3), default));
 
         Assert.NotNull(harness.RecurrenceRules.Added);
-        Assert.Equal(1, harness.RecurrenceRules.SaveChangesCount);
+        Assert.Same(harness.RecurrenceRules.Added, harness.RecurrenceRules.Removed);
+        Assert.Equal(2, harness.RecurrenceRules.SaveChangesCount);
+    }
+
+    // The companion case: a skipped occurrence's decision-0008 notification
+    // must not survive an all-refused series either, or a client who was
+    // told the series reserved nothing would still get an email 14 days
+    // later about one of its occurrences.
+    [Fact]
+    public async Task ASkippedOccurrencesNotificationIsNeverPersistedWhenEveryOccurrenceIsRefused()
+    {
+        var resource = Room();
+        var secondOccurrenceLocalStart = StartDate.AddDays(7).ToDateTime(new TimeOnly(9, 0));
+        var zone = new GapForcingTimeZone(secondOccurrenceLocalStart, TimeSpan.Zero);
+        // The other two occurrences are refused by a blackout covering the
+        // whole span, so nothing in this series is ever created.
+        var wholeSpan = new UtcInterval(
+            StartDate.ToDateTime(new TimeOnly(0, 0), DateTimeKind.Utc),
+            StartDate.AddDays(21).ToDateTime(new TimeOnly(0, 0), DateTimeKind.Utc));
+        var harness = Build(resource, blackouts: [wholeSpan], timeZones: new SingleZoneCatalog(zone));
+
+        await Assert.ThrowsAsync<NoOccurrencesCreatedException>(
+            () => harness.Handler.Handle(Request(resource, occurrenceCount: 3), default));
+
+        Assert.Empty(harness.Bookings.AddedNotifications);
+        Assert.NotNull(harness.RecurrenceRules.Removed);
     }
 
     // ---- Rejections before expansion ever runs ---------------------------------

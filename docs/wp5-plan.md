@@ -17,7 +17,7 @@ the one this document's own §6 asked for. Their answers are recorded in
 built on them. The one genuinely open decision (the DST fall-back policy) is
 closed as `0024`, the first thing this package decided.
 
-**Test baseline: 946 unit + 418 integration tests pass, 0 failed.** `dotnet
+**Test baseline: 947 unit + 418 integration tests pass, 0 failed.** `dotnet
 build` is clean across the solution. `POST /recurrence-rules` exists and
 works end to end, through a real SQL Server, including a real
 `dbo.CreateBooking` call per occurrence.
@@ -544,7 +544,8 @@ with an actual ambiguous hour can.
 
 #### 1b — the write path. Done 2026-09-09.
 
-946 unit tests pass (35 new), 418 integration tests pass (12 new). Delivered
+947 unit tests pass (36 new), 418 integration tests pass (12 new, one with an
+added assertion). Delivered
 as planned: `IRecurrenceRuleRepository` + its Infrastructure implementation
 (a plain EF add, registered in DI); the `AppException.Extensions`
 generalization and `GlobalExceptionHandler`'s generic copy onto
@@ -577,18 +578,33 @@ Four things found while building it, none anticipated by §5.1's sketch:
   `Add` on an already-tracked instance is a no-op rather than a duplicate.
   Covered by `ReportsAnOccurrenceTheProcedureDeclinesAndStillCreatesTheRest`
   and `ADeclinedOccurrenceOnAnApprovalGatedResourceStagesNoApprovalRequest`.
-- **Persisting the `RecurrenceRule` row up front, unconditionally, has a
-  real consequence §5.1 didn't settle: an all-refused series still leaves an
+- **Persisting the `RecurrenceRule` row up front, unconditionally, had a real
+  consequence §5.1 didn't settle, raised by the owner after reviewing this
+  chunk and fixed the same day (2026-09-09): an all-refused series left an
   orphaned, `Active` `RecurrenceRule` row with zero occurrences.** The
-  alternative — deferring the `Add` until the first occurrence actually
-  succeeds — turns out to be unsafe for the same reason as the point above
-  (an `Add` staged for conditional flushing has to survive a 1205 retry of
-  *that* occurrence without double-adding, which only works cleanly for
-  entities scoped to one occurrence's own delegate, not one shared across
-  the whole loop). Kept as designed, but flagged explicitly in the handler
-  and pinned by `TheRuleIsStillPersistedWhenEveryOccurrenceIsRefused` rather
-  than left as an accident — worth raising with the owner if an orphaned
-  series is unwanted.
+  alternative first considered — deferring the `Add` until the first
+  occurrence actually succeeds — is unsafe for the same reason as the point
+  above (an `Add` staged for conditional flushing has to survive a 1205
+  retry of *that* occurrence without double-adding, which only works cleanly
+  for entities scoped to one occurrence's own delegate, not one shared
+  across the whole loop). The fix taken instead is a compensating delete: if
+  the loop ends with nothing created, `IRecurrenceRuleRepository.Remove`
+  removes the rule before `NoOccurrencesCreatedException` is thrown — safe
+  unconditionally, because reaching that branch is exactly the condition
+  under which nothing else in the database references the row yet. The
+  companion half of the same bug — a spring-forward skip's decision-0008
+  notification surviving an all-refused series, which would have emailed
+  someone 14 days later about an occurrence from a series they were told
+  reserved nothing — is fixed by the same restructuring: skipped-occurrence
+  notifications are built as plain objects during the loop and only ever
+  staged (`AddNotifications`) once the series' overall outcome is known to
+  include at least one created occurrence, so an all-refused series never
+  adds them at all rather than having to undo an insert. Both halves proved
+  able to fail (the compensating delete was commented out; exactly the two
+  unit tests below and one integration test failed, nothing else did, then
+  the fix was restored). Pinned by `TheRuleIsRemovedAgainWhenEveryOccurrenceIsRefused`,
+  `ASkippedOccurrencesNotificationIsNeverPersistedWhenEveryOccurrenceIsRefused`,
+  and the integration test's added `RecurrenceRules` count assertion.
 - **The `AppException.Extensions` generalization is additive by
   construction, not just by intent** — a new protected constructor overload,
   with the existing three-argument one delegating to it with `extensions:

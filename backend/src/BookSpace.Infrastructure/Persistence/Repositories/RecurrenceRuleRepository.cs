@@ -16,6 +16,8 @@ internal sealed class RecurrenceRuleRepository : IRecurrenceRuleRepository
 
     public void Add(RecurrenceRule rule) => _context.RecurrenceRules.Add(rule);
 
+    public void Remove(RecurrenceRule rule) => _context.RecurrenceRules.Remove(rule);
+
     public Task SaveChangesAsync(CancellationToken cancellationToken) =>
         _context.SaveChangesAsync(cancellationToken);
 }

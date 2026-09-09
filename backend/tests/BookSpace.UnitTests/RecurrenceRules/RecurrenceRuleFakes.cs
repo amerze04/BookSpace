@@ -19,9 +19,13 @@ internal sealed class FakeRecurrenceRuleRepository : IRecurrenceRuleRepository
 {
     public RecurrenceRule? Added { get; private set; }
 
+    public RecurrenceRule? Removed { get; private set; }
+
     public int SaveChangesCount { get; private set; }
 
     public void Add(RecurrenceRule rule) => Added = rule;
+
+    public void Remove(RecurrenceRule rule) => Removed = rule;
 
     public Task SaveChangesAsync(CancellationToken cancellationToken)
     {

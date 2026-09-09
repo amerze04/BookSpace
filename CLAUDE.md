@@ -1695,12 +1695,15 @@ whole series, per `0007`), reporting every occurrence as created, skipped
 (DST), or refused (FR-5.4) — and a new `AppException.Extensions` mechanism so
 the all-refused 422 (`NoOccurrencesCreated`) can carry the same breakdown a
 success would have. See wp5-plan.md §9 for what 1b found while building it,
-including a real staging-order bug 1a's design didn't anticipate (an
-approval/notification pair for a declined occurrence lingering into the next
-occurrence's save) and the accepted consequence that an all-refused series
-still leaves an orphaned `RecurrenceRule` row.
+including a real staging-order bug (an approval/notification pair for a
+declined occurrence lingering into the next occurrence's save) and — raised
+by the owner after reviewing this chunk, fixed the same day — a
+compensating-delete fix so an all-refused series leaves **no** trace at all:
+neither an orphaned `RecurrenceRule` row nor a stray spring-forward-skip
+notification for an occurrence from a series the client was told reserved
+nothing.
 
-Test baseline: **946 unit + 418 integration tests pass, 0 failed** (879 + 406
+Test baseline: **947 unit + 418 integration tests pass, 0 failed** (879 + 406
 at WP-4 handoff).
 
 - [x] Create recurring bookings (daily/weekly/monthly) with interval and end

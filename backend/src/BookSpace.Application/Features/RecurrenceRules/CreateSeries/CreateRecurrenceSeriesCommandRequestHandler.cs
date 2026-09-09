@@ -92,13 +92,13 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
             userId,
             nowUtc);
 
-        // Persisted up front, unconditionally: Bookings.RecurrenceRuleId is a
-        // real FK, so every occurrence created below needs this row to
-        // already exist. Accepted consequence, not settled either way by
-        // wp5-plan.md's architecture: if every occurrence is skipped or
-        // refused, this row survives the resulting 422 as an orphaned,
-        // Active series with nothing booked against it — flagged here rather
-        // than decided silently (CLAUDE.md §11).
+        // Persisted up front: Bookings.RecurrenceRuleId is a real FK, so
+        // every occurrence created below needs this row to already exist.
+        // If every occurrence turns out to be skipped or refused, the rule
+        // is removed again before the 422 is thrown (below) — see that
+        // branch and IRecurrenceRuleRepository.Remove for why the delete is
+        // safe: nothing else in the database ever comes to reference this
+        // row unless an occurrence is actually created.
         _recurrenceRules.Add(rule);
         await _recurrenceRules.SaveChangesAsync(cancellationToken);
 
@@ -130,11 +130,22 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
 
         var reports = new List<RecurrenceOccurrenceReport>(occurrences.Count);
 
+        // Built, not staged: whether these are ever persisted depends on
+        // whether the series as a whole reserves anything at all, decided
+        // only once the loop finishes (below). Staging them into the
+        // DbContext immediately, the way the rule above is added, would mean
+        // explicitly undoing an insert already sent to SQL Server in the
+        // all-refused branch; keeping them as plain objects until that
+        // branch is known means there is nothing to undo — an all-refused
+        // series simply never adds them.
+        var pendingSkippedNotifications = new List<Notification>();
+
         foreach (var occurrence in occurrences)
         {
             if (occurrence.Outcome == RecurrenceOccurrenceOutcome.SkippedSpringForwardGap)
             {
-                await EnqueueSkippedNotificationAsync(rule, occurrence.OccurrenceDate, nowUtc, cancellationToken);
+                pendingSkippedNotifications.Add(
+                    BuildSkippedNotification(rule, occurrence.OccurrenceDate, nowUtc));
                 reports.Add(RecurrenceOccurrenceReport.ForSkippedSpringForwardGap(occurrence.OccurrenceDate));
                 continue;
             }
@@ -171,7 +182,28 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
 
         if (!reports.Any(r => r.Status == RecurrenceOccurrenceReportStatus.Created))
         {
+            // Nothing was reserved. Compensate for the rule persisted up
+            // front so the 422 leaves no trace behind it — not the series
+            // shell, and not a "your occurrence was skipped" notification
+            // for a series that, as far as the client was ever told, never
+            // came into being. Safe unconditionally: no Booking exists to
+            // reference this rule (that is the condition for reaching this
+            // branch at all), and pendingSkippedNotifications was never
+            // added to the context, so there is nothing else to undo.
+            _recurrenceRules.Remove(rule);
+            await _recurrenceRules.SaveChangesAsync(cancellationToken);
+
             throw new NoOccurrencesCreatedException(reports);
+        }
+
+        // At least one occurrence exists, so any spring-forward skips in the
+        // same series are genuine and get their 0008 notification — flushed
+        // together here rather than per skip, since a skip after the last
+        // successful occurrence would otherwise be left staged on nothing.
+        if (pendingSkippedNotifications.Count > 0)
+        {
+            _bookings.AddNotifications(pendingSkippedNotifications);
+            await _bookings.SaveChangesAsync(cancellationToken);
         }
 
         return new CreateRecurrenceSeriesCommandResponse(rule.Id, reports);
@@ -204,24 +236,21 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
     // Decision 0008: told again 14 days before the occurrence's own date, via
     // the existing Reminder dispatch job — no new job, and the row is
     // anchored to RecurrenceRuleId + OccurrenceDate because there is no
-    // Booking to point at. Its own trivial save rather than folded into a
-    // neighbouring occurrence's transaction: a gap is at most twice a year
-    // per resource, so batching would save a rare round trip at the cost of
-    // real complexity (see CreateOccurrenceAsync's header for why staging has
-    // to be handled carefully once retries are involved).
-    private async Task EnqueueSkippedNotificationAsync(
-        RecurrenceRule rule, DateOnly occurrenceDate, DateTime nowUtc, CancellationToken cancellationToken)
+    // Booking to point at.
+    //
+    // Deliberately just a constructor call, not a save — see the loop above
+    // and its trailing flush for why persisting this is deferred until the
+    // series' overall outcome is known. Committing it immediately, per skip,
+    // was this handler's first design and had a real bug: it left the row in
+    // the database even when the series as a whole reserved nothing, which
+    // is the orphan this whole compensating structure exists to avoid.
+    private static Notification BuildSkippedNotification(RecurrenceRule rule, DateOnly occurrenceDate, DateTime nowUtc)
     {
         var sendAtUtc = DateTime.SpecifyKind(
             occurrenceDate.AddDays(-14).ToDateTime(TimeOnly.MinValue), DateTimeKind.Utc);
 
-        _bookings.AddNotifications(
-        [
-            Notification.ForSkippedOccurrence(
-                Guid.NewGuid(), rule.Id, occurrenceDate, rule.UserId, sendAtUtc, nowUtc),
-        ]);
-
-        await _bookings.SaveChangesAsync(cancellationToken);
+        return Notification.ForSkippedOccurrence(
+            Guid.NewGuid(), rule.Id, occurrenceDate, rule.UserId, sendAtUtc, nowUtc);
     }
 
     // **Why staging happens outside the delegate, exactly as the single-

@@ -261,6 +261,12 @@ public class CreateRecurrenceSeriesEndpointTests
                 WHERE r.ResourceId = @p0;
                 """,
                 resource));
+
+            // Nor does the series shell itself survive — a 422 leaves no
+            // trace at all, not even the RecurrenceRule row created before
+            // any occurrence was attempted.
+            Assert.Equal(0, await CountAsync(
+                "SELECT COUNT(*) FROM dbo.RecurrenceRules WHERE ResourceId = @p0;", resource));
         }
         finally
         {
