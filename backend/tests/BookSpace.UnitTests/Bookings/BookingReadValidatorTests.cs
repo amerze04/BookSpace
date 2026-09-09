@@ -65,6 +65,18 @@ public class BookingReadValidatorTests
         Assert.Contains(result.Errors, e => e.PropertyName == nameof(ListBookingsQueryRequest.Scope));
     }
 
+    // WP-5 Phase 3, decision 0018's approver queue: an Approver may also
+    // request scope=tenant, resource-restricted by the handler rather than
+    // ignored by the validator.
+    [Fact]
+    public void AnApproverCanRequestTheTenantScope()
+    {
+        var result = ListValidator(Role.Approver).Validate(
+            new ListBookingsQueryRequest(Scope: BookingScope.Tenant));
+
+        Assert.True(result.IsValid);
+    }
+
     [Fact]
     public void AnAdminCanFilterByUserId()
     {

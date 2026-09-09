@@ -153,4 +153,14 @@ public static class ReasonCodes
     // cancellation is refused rather than treated as idempotent, mirroring
     // BookingNotCancellable: there is an actor and a time to overwrite.
     public const string RecurrenceRuleNotCancellable = "RecurrenceRuleNotCancellable";
+
+    // ---- Approvals (WP-5 Phase 3, FR-7.1-7.5, AC-5) ----
+
+    // ErrorKind.RuleViolation. Approve or reject called on a booking that is
+    // not (or no longer) Pending — already decided, already cancelled
+    // (closing WP-4 loose end 1, decision 0002's amendment), or never Pending
+    // at all. dbo.ApproveBooking's own guard fires this atomically with its
+    // lock; reject's is the same predicate (Booking.CanBeRejected) checked in
+    // the handler, since rejecting needs no lock to begin with.
+    public const string BookingNotPending = "BookingNotPending";
 }

@@ -47,7 +47,30 @@ public sealed class GetBookingQueryRequestHandler
             callerUserId,
             BookingReadRules.CanSeeOtherMembersBookings(_currentUser));
 
-        return await _bookings.FindDetailAsync(request.BookingId, owner, cancellationToken)
+        var detail = await _bookings.FindDetailAsync(request.BookingId, owner, cancellationToken)
             ?? throw new BookingNotFoundException(request.BookingId);
+
+        // A second query, regardless of whether this booking's resource ever
+        // required approval — the same cost WP-3 Phase 3 already accepted for
+        // GET /resources/{id}'s approver names, for the same reason: joining
+        // ApprovalRequests into FindDetailAsync's own query would mean the
+        // common case (no approval, ever) paying for a LEFT JOIN it never uses.
+        // Null here means exactly what it means on the DTO: no approval was
+        // ever required.
+        var approvalRequest = await _bookings.FindApprovalRequestAsync(detail.Id, cancellationToken);
+
+        return approvalRequest is null
+            ? detail
+            : detail with
+            {
+                Approval = new GetBookingApprovalDetail(
+                    approvalRequest.Id,
+                    approvalRequest.RequestedAtUtc,
+                    approvalRequest.ExpiresAtUtc,
+                    approvalRequest.Decision,
+                    approvalRequest.DecidedByUserId,
+                    approvalRequest.DecidedAtUtc,
+                    approvalRequest.Note),
+            };
     }
 }

@@ -142,4 +142,19 @@ internal sealed class FakeSeriesBookingRepository : IBookingRepository
     public Task<Booking?> FindForCancellationAsync(
         Guid bookingId, BookingOwnerFilter owner, CancellationToken cancellationToken) =>
         throw new NotSupportedException();
+
+    public Task<BookingApprovalOutcome> ApproveAsync(
+        Guid bookingId, Guid approverUserId, DateTime nowUtc, CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
+    public Task<Booking?> FindForApprovalAsync(
+        Guid bookingId, ApprovalReach reach, CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
+    public Task<IReadOnlyList<Guid>> FindApprovableResourceIdsAsync(
+        Guid approverUserId, CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
+    public Task<ApprovalRequest?> FindApprovalRequestAsync(Guid bookingId, CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
 }

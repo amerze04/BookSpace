@@ -3,6 +3,7 @@ using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.Bookings;
 using BookSpace.Application.Features.Bookings.GetBooking;
 using BookSpace.Application.Features.Bookings.ListBookings;
+using BookSpace.Domain.Entities;
 using BookSpace.Domain.Enums;
 using BookSpace.UnitTests.Resources;
 
@@ -58,13 +59,61 @@ public class BookingReadHandlerTests
     }
 
     [Fact]
-    public async Task ListIgnoresTenantScopeFromANonAdmin()
+    public async Task ListIgnoresTenantScopeFromAPlainMember()
     {
         var bookings = new FakeBookingRepository();
+
+        await ListHandler(bookings, Role.Member).Handle(
+            new ListBookingsQueryRequest(Scope: BookingScope.Tenant), CancellationToken.None);
+
+        Assert.Equal(Caller, bookings.ListedOwner!.UserId);
+        Assert.Null(bookings.ListedOwner.ResourceIds);
+    }
+
+    // WP-5 Phase 3, decision 0018's approver queue: unlike a plain member,
+    // an Approver's scope=tenant is not ignored — it widens to every owner,
+    // restricted to the resources this caller is assigned to approve.
+    [Fact]
+    public async Task ListRestrictsAnApproversTenantScopeToTheirOwnResources()
+    {
+        var resourceId = Guid.NewGuid();
+        var bookings = new FakeBookingRepository { ApprovableResourceIds = [resourceId] };
 
         await ListHandler(bookings, Role.Approver).Handle(
             new ListBookingsQueryRequest(Scope: BookingScope.Tenant), CancellationToken.None);
 
+        Assert.Equal(Caller, bookings.RequestedApprovableResourcesFor);
+        Assert.Null(bookings.ListedOwner!.UserId);
+        Assert.Equal([resourceId], bookings.ListedOwner.ResourceIds);
+    }
+
+    // A TenantAdmin who also holds Approver still gets the unrestricted sweep —
+    // the widening only matters for an Approver who is *not* also an admin.
+    [Fact]
+    public async Task ListGivesAnAdminApproverTheUnrestrictedSweep()
+    {
+        var bookings = new FakeBookingRepository();
+
+        await ListHandler(bookings, Role.TenantAdmin, Role.Approver).Handle(
+            new ListBookingsQueryRequest(Scope: BookingScope.Tenant), CancellationToken.None);
+
+        Assert.Null(bookings.RequestedApprovableResourcesFor);
+        Assert.Null(bookings.ListedOwner!.UserId);
+        Assert.Null(bookings.ListedOwner.ResourceIds);
+    }
+
+    // An Approver's own-scope read (the default) needs no repository call at
+    // all — the resource lookup is gated on Scope == Tenant, not on the role
+    // alone.
+    [Fact]
+    public async Task ListDoesNotResolveApprovableResourcesForAnOwnScopeRead()
+    {
+        var bookings = new FakeBookingRepository();
+
+        await ListHandler(bookings, Role.Approver).Handle(
+            new ListBookingsQueryRequest(), CancellationToken.None);
+
+        Assert.Null(bookings.RequestedApprovableResourcesFor);
         Assert.Equal(Caller, bookings.ListedOwner!.UserId);
     }
 
@@ -202,6 +251,50 @@ public class BookingReadHandlerTests
         Assert.Equal(detail.Id, bookings.RequestedDetailId);
     }
 
+    // WP-5 Phase 3: a booking whose resource required approval carries the
+    // request's outcome on the read, not just Status = Pending.
+    [Fact]
+    public async Task GetAddsApprovalDetailWhenAnApprovalRequestExists()
+    {
+        var detail = Detail();
+        var requestedAtUtc = new DateTime(2027, 3, 1, 8, 0, 0, DateTimeKind.Utc);
+        var decidedAtUtc = new DateTime(2027, 3, 2, 9, 0, 0, DateTimeKind.Utc);
+        var decidedBy = Guid.NewGuid();
+        var approvalRequest = new ApprovalRequest(Guid.NewGuid(), detail.Id, requestedAtUtc, null);
+        approvalRequest.Decide(ApprovalDecision.Rejected, decidedBy, decidedAtUtc, "No longer needed");
+
+        var bookings = new FakeBookingRepository
+        {
+            Detail = detail,
+            ExistingApprovalRequest = approvalRequest,
+        };
+
+        var result = await GetHandler(bookings, Role.Member).Handle(
+            new GetBookingQueryRequest(detail.Id), CancellationToken.None);
+
+        Assert.NotNull(result.Approval);
+        Assert.Equal(approvalRequest.Id, result.Approval.ApprovalRequestId);
+        Assert.Equal(requestedAtUtc, result.Approval.RequestedAtUtc);
+        Assert.Equal(ApprovalDecision.Rejected, result.Approval.Decision);
+        Assert.Equal(decidedBy, result.Approval.DecidedByUserId);
+        Assert.Equal(decidedAtUtc, result.Approval.DecidedAtUtc);
+        Assert.Equal("No longer needed", result.Approval.Note);
+    }
+
+    // The ordinary case — a resource that never required approval — carries no
+    // Approval at all, not an empty one.
+    [Fact]
+    public async Task GetLeavesApprovalNullWhenTheResourceNeverRequiredOne()
+    {
+        var detail = Detail();
+        var bookings = new FakeBookingRepository { Detail = detail, ExistingApprovalRequest = null };
+
+        var result = await GetHandler(bookings, Role.Member).Handle(
+            new GetBookingQueryRequest(detail.Id), CancellationToken.None);
+
+        Assert.Null(result.Approval);
+    }
+
     // The one branch in the handler: an invisible booking is a 404, and the
     // repository's null is what makes all three cases (no such id, another
     // tenant's, another member's) arrive identically.
@@ -266,6 +359,7 @@ public class BookingReadHandlerTests
             Guid.NewGuid(),
             "Conference Room A",
             Caller,
+            "Jamie Booker",
             RecurrenceRuleId: null,
             new DateTime(2027, 3, 11, 9, 0, 0, DateTimeKind.Utc),
             new DateTime(2027, 3, 11, 10, 0, 0, DateTimeKind.Utc),

@@ -1,10 +1,12 @@
 using BookSpace.Api.Authorization;
 using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.Bookings;
+using BookSpace.Application.Features.Bookings.ApproveBooking;
 using BookSpace.Application.Features.Bookings.CancelBooking;
 using BookSpace.Application.Features.Bookings.CreateBooking;
 using BookSpace.Application.Features.Bookings.GetBooking;
 using BookSpace.Application.Features.Bookings.ListBookings;
+using BookSpace.Application.Features.Bookings.RejectBooking;
 using BookSpace.Application.Messaging;
 using BookSpace.Domain.Enums;
 using Microsoft.AspNetCore.Authorization;
@@ -217,6 +219,69 @@ public sealed class BookingsController : ControllerBase
     {
         var result = await _sender.Send(
             new CancelBookingCommandRequest(id, request?.Reason),
+            cancellationToken);
+
+        return Ok(result);
+    }
+
+    // The body is optional in full, matching CancelBookingRequest — a
+    // decision with no note is legal.
+    public sealed record ApproveBookingRequest(string? Note = null);
+
+    // FR-7.1-7.5, AC-5, decision 0023 inherited whole. A TenantAdmin may
+    // approve any Pending booking in their tenant; an Approver only one whose
+    // resource lists them (decision 0018).
+    //
+    // The statuses:
+    //
+    //   200 — Confirmed
+    //   404 BookingNotFound — not reachable by this caller: another tenant's,
+    //       or a resource this Approver is not assigned to, all
+    //       byte-identical, never a 403 (would confirm the booking exists)
+    //   422 BookingNotPending — already decided, or already cancelled
+    //       (closing WP-4's loose end 1)
+    //   409 SlotUnavailable, CapacityExceeded — the since-taken-slot case
+    //       AC-5 names, decided under dbo.ApproveBooking's lock
+    //   422 BlackoutPeriod, ResourceArchived — re-checked the same way
+    //   400 ValidationFailed — an over-long note
+    [HttpPost("{id:guid}/approve")]
+    [ProducesResponseType<ApproveBookingCommandResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
+    public async Task<IActionResult> Approve(
+        Guid id,
+        [FromBody] ApproveBookingRequest? request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(
+            new ApproveBookingCommandRequest(id, request?.Note),
+            cancellationToken);
+
+        return Ok(result);
+    }
+
+    public sealed record RejectBookingRequest(string? Note = null);
+
+    // Same reach as approve. Rejecting needs no capacity re-check — it
+    // removes a claim rather than adding one — so there is no 409 here.
+    [HttpPost("{id:guid}/reject")]
+    [ProducesResponseType<RejectBookingCommandResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
+    public async Task<IActionResult> Reject(
+        Guid id,
+        [FromBody] RejectBookingRequest? request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(
+            new RejectBookingCommandRequest(id, request?.Note),
             cancellationToken);
 
         return Ok(result);

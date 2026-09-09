@@ -18,44 +18,65 @@ namespace BookSpace.Application.Features.Bookings;
 // is made, for reads in 2a and for the cancel in 2b.
 internal static class BookingReadRules
 {
-    // Resolves the three-valued owner question — me, that member, or anybody —
-    // from the caller and the query.
+    // Resolves the owner question — me, that member, anybody, or anybody on my
+    // resources — from the caller and the query.
     //
     // Callers pass isTenantAdmin rather than an ICurrentUser so the rule stays a
-    // pure function; the handler does the one IsInRole call. It is a required
+    // pure function; the handler does the IsInRole calls. It is a required
     // parameter for the reason BookingOwnerFilter has no public constructor: a
     // defaulted "am I an admin" flag is the one mistake here that fails open.
     //
+    // **approverResourceIds carries WP-5 Phase 3's widening** (decision 0018's
+    // queue): non-null only when the handler has already resolved the caller as
+    // an Approver requesting scope=tenant, in which case it is that Approver's
+    // `FindApprovableResourceIdsAsync` result (possibly empty — assigned to
+    // nothing is a legal, if uninteresting, answer). The handler does that one
+    // repository call itself rather than this file doing it, keeping this class
+    // the pure function every other Rules class in this codebase is; the
+    // reasoning is BookingApprovalReach's, one door over. Null unconditionally
+    // means "not that case", so a member's or a not-scope-tenant Approver's call
+    // falls through to the same Owner(callerUserId) a plain member gets.
+    //
     // The privilege check is **repeated** here even though the validator has
-    // already refused a member sending either parameter. Two gates rather than
-    // one, on the same reasoning that has capacity checked twice on the create
-    // path: the validator's job is to give a client a 400 that names the field,
-    // and this one's is to be the gate that is structurally impossible to route
-    // around — a future caller that dispatches the query without the pipeline,
-    // or a validator someone forgets to type against a new query record
-    // (CLAUDE.md §12's discovery gotcha), still cannot widen a member's view.
+    // already refused a member (or a non-widened Approver) sending either
+    // parameter. Two gates rather than one, on the same reasoning that has
+    // capacity checked twice on the create path: the validator's job is to give
+    // a client a 400 that names the field, and this one's is to be the gate that
+    // is structurally impossible to route around — a future caller that
+    // dispatches the query without the pipeline, or a validator someone forgets
+    // to type against a new query record (CLAUDE.md §12's discovery gotcha),
+    // still cannot widen a member's view.
     public static BookingOwnerFilter ResolveOwnerFilter(
         Guid callerUserId,
         bool isTenantAdmin,
         Guid? requestedUserId,
-        BookingScope scope)
+        BookingScope scope,
+        IReadOnlyCollection<Guid>? approverResourceIds = null)
     {
-        if (!isTenantAdmin)
+        if (isTenantAdmin)
         {
-            return BookingOwnerFilter.Owner(callerUserId);
+            // userId narrows to one member; scope=tenant drops the restriction.
+            // The validator refuses both together, so the order of these two
+            // arms is not a precedence rule anyone has to remember.
+            if (requestedUserId is { } userId)
+            {
+                return BookingOwnerFilter.Owner(userId);
+            }
+
+            return scope == BookingScope.Tenant
+                ? BookingOwnerFilter.AnyOwner
+                : BookingOwnerFilter.Owner(callerUserId);
         }
 
-        // userId narrows to one member; scope=tenant drops the restriction. The
-        // validator refuses both together, so the order of these two arms is not
-        // a precedence rule anyone has to remember.
-        if (requestedUserId is { } userId)
+        // userId stays TenantAdmin-only regardless of approverResourceIds — an
+        // Approver's queue is resource-restricted, not member-restricted, so
+        // this branch never reads requestedUserId at all.
+        if (approverResourceIds is not null && scope == BookingScope.Tenant)
         {
-            return BookingOwnerFilter.Owner(userId);
+            return BookingOwnerFilter.AnyOwnerRestrictedToResources(approverResourceIds);
         }
 
-        return scope == BookingScope.Tenant
-            ? BookingOwnerFilter.AnyOwner
-            : BookingOwnerFilter.Owner(callerUserId);
+        return BookingOwnerFilter.Owner(callerUserId);
     }
 
     // The same question for one booking by id, phrased as the filter the

@@ -318,4 +318,45 @@ public class BookingTests
 
         Assert.False(booking.CanBeCancelledForBlackout(Ends));
     }
+
+    // ---- Reject (WP-5 Phase 3, FR-7.2) --------------------------------------
+
+    [Fact]
+    public void CanBeRejected_IsTrueForAPendingBooking()
+    {
+        Assert.True(CreateValid(BookingStatus.Pending).CanBeRejected());
+    }
+
+    [Theory]
+    [InlineData(BookingStatus.Confirmed)]
+    [InlineData(BookingStatus.Cancelled)]
+    [InlineData(BookingStatus.Rejected)]
+    [InlineData(BookingStatus.Completed)]
+    [InlineData(BookingStatus.NoShow)]
+    public void CanBeRejected_IsFalseForAnythingElse(BookingStatus status)
+    {
+        Assert.False(CreateValid(status).CanBeRejected());
+    }
+
+    [Fact]
+    public void Reject_SetsStatusRejectedAndTouchesAuditFields()
+    {
+        var booking = CreateValid(BookingStatus.Pending);
+        var actor = Guid.NewGuid();
+        var later = NowUtc.AddDays(1);
+
+        booking.Reject(actor, later);
+
+        Assert.Equal(BookingStatus.Rejected, booking.Status);
+        Assert.Equal(actor, booking.UpdatedByUserId);
+        Assert.Equal(later, booking.UpdatedAtUtc);
+    }
+
+    [Fact]
+    public void Reject_ThrowsWhenNotPending()
+    {
+        var booking = CreateValid(BookingStatus.Confirmed);
+
+        Assert.Throws<InvalidOperationException>(() => booking.Reject(Guid.NewGuid(), NowUtc));
+    }
 }

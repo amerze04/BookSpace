@@ -132,6 +132,65 @@ public class BookingReadRulesTests
         Assert.False(BookingReadRules.CanSeeOtherMembersBookings(new FixedCurrentUser(Caller)));
     }
 
+    // ---- The approver queue (WP-5 Phase 3, decision 0018) ------------------
+
+    // approverResourceIds is what the handler passes only after resolving the
+    // caller as an Approver requesting scope=tenant — see
+    // ListBookingsQueryRequestHandler. Passed here directly, since the rule
+    // itself does not re-derive the role.
+    [Fact]
+    public void AnApproverRequestingTenantScopeIsRestrictedToTheirResources()
+    {
+        var resourceId = Guid.NewGuid();
+
+        var owner = BookingReadRules.ResolveOwnerFilter(
+            Caller, isTenantAdmin: false, requestedUserId: null, BookingScope.Tenant, [resourceId]);
+
+        Assert.Null(owner.UserId);
+        Assert.Equal([resourceId], owner.ResourceIds);
+    }
+
+    // Assigned to nothing is a legal answer, not an error — the restriction is
+    // still applied, it is simply empty.
+    [Fact]
+    public void AnApproverAssignedToNoResourcesSeesNoTenantWideRows()
+    {
+        var owner = BookingReadRules.ResolveOwnerFilter(
+            Caller, isTenantAdmin: false, requestedUserId: null, BookingScope.Tenant, []);
+
+        Assert.Null(owner.UserId);
+        Assert.Empty(owner.ResourceIds!);
+    }
+
+    // The restriction only applies to scope=tenant. An Approver's own-scope
+    // read (the default) is untouched even if the handler somehow passed a
+    // resource list anyway — this file's own defense-in-depth reasoning
+    // applied to the new parameter.
+    [Fact]
+    public void ApproverResourceIdsAreIgnoredOutsideTenantScope()
+    {
+        var owner = BookingReadRules.ResolveOwnerFilter(
+            Caller, isTenantAdmin: false, requestedUserId: null, BookingScope.Own, [Guid.NewGuid()]);
+
+        Assert.Equal(Caller, owner.UserId);
+        Assert.Null(owner.ResourceIds);
+    }
+
+    // A TenantAdmin's sweep is unrestricted regardless of what an
+    // approverResourceIds argument carries — the admin branch is resolved
+    // first and never reads it, on the same reasoning userId stays
+    // TenantAdmin-only in the other direction.
+    [Fact]
+    public void AnAdminsTenantScopeIgnoresAnyApproverResourceRestriction()
+    {
+        var owner = BookingReadRules.ResolveOwnerFilter(
+            Caller, isTenantAdmin: true, requestedUserId: null, BookingScope.Tenant, [Guid.NewGuid()]);
+
+        Assert.Null(owner.UserId);
+        Assert.Null(owner.ResourceIds);
+        Assert.Same(BookingOwnerFilter.AnyOwner, owner);
+    }
+
     // ---- BookingOwnerFilter itself ----------------------------------------
 
     // AnyOwner has to be asked for by name. This is the property that makes the
@@ -143,5 +202,17 @@ public class BookingReadRulesTests
     {
         Assert.Equal(Colleague, BookingOwnerFilter.Owner(Colleague).UserId);
         Assert.Null(BookingOwnerFilter.AnyOwner.UserId);
+        Assert.Null(BookingOwnerFilter.Owner(Colleague).ResourceIds);
+        Assert.Null(BookingOwnerFilter.AnyOwner.ResourceIds);
+    }
+
+    [Fact]
+    public void AnyOwnerRestrictedToResourcesCarriesNoOwnerButTheResourcesItWasGiven()
+    {
+        var resourceId = Guid.NewGuid();
+        var filter = BookingOwnerFilter.AnyOwnerRestrictedToResources([resourceId]);
+
+        Assert.Null(filter.UserId);
+        Assert.Equal([resourceId], filter.ResourceIds);
     }
 }

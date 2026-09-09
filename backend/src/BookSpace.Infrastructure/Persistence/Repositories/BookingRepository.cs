@@ -106,6 +106,59 @@ internal sealed class BookingRepository : IBookingRepository
         }
     }
 
+    // ---- The approval re-check (WP-5 Phase 3, decision 0023 inherited whole) ----
+    //
+    // Same shape as CreateAsync above, for the same reasons: raw ADO because
+    // the procedure answers with two columns, opened through EF's own
+    // connection so TenantSessionContextInterceptor still fires, and enlisted
+    // in the ambient transaction so a business rejection here rolls back
+    // together with whatever else IUnitOfWork's delegate staged.
+    public async Task<BookingApprovalOutcome> ApproveAsync(
+        Guid bookingId, Guid approverUserId, DateTime nowUtc, CancellationToken cancellationToken)
+    {
+        var connection = _context.Database.GetDbConnection();
+        var openedHere = connection.State != ConnectionState.Open;
+
+        if (openedHere)
+        {
+            await _context.Database.OpenConnectionAsync(cancellationToken);
+        }
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "dbo.ApproveBooking";
+            command.CommandType = CommandType.StoredProcedure;
+            command.Transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
+
+            command.Parameters.Add(new SqlParameter("@BookingId", SqlDbType.UniqueIdentifier)
+            { Value = bookingId });
+            command.Parameters.Add(new SqlParameter("@ApproverUserId", SqlDbType.UniqueIdentifier)
+            { Value = approverUserId });
+            command.Parameters.Add(new SqlParameter("@NowUtc", SqlDbType.DateTime2)
+            { Scale = 0, Value = nowUtc });
+
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                throw new InvalidOperationException("dbo.ApproveBooking returned no result row.");
+            }
+
+            var resultCode = reader.GetString(0);
+            var remainingCapacity = reader.IsDBNull(1) ? (int?)null : reader.GetInt32(1);
+
+            return new BookingApprovalOutcome(ParseApproval(resultCode), remainingCapacity);
+        }
+        finally
+        {
+            if (openedHere)
+            {
+                await _context.Database.CloseConnectionAsync();
+            }
+        }
+    }
+
     // ---- The reads (WP-4 Phase 2a, FR-4.4) ----
     //
     // Plain EF projections, and CLAUDE.md §4.1 does not reach them: it governs
@@ -136,6 +189,15 @@ internal sealed class BookingRepository : IBookingRepository
         if (owner.UserId is { } ownerUserId)
         {
             bookings = bookings.Where(b => b.UserId == ownerUserId);
+        }
+
+        // The approver queue's restriction (WP-5 Phase 3, decision 0018) — an
+        // Approver's scope=tenant read, resource-restricted rather than
+        // owner-restricted, so it composes with the owner filter above rather
+        // than replacing it (both are null/no-op for a TenantAdmin's AnyOwner).
+        if (owner.ResourceIds is { } approverResourceIds)
+        {
+            bookings = bookings.Where(b => approverResourceIds.Contains(b.ResourceId));
         }
 
         // Overlap, not containment, exactly as the blackout list does it: a
@@ -198,6 +260,7 @@ internal sealed class BookingRepository : IBookingRepository
                 b.ResourceId,
                 _context.Resources.Where(r => r.Id == b.ResourceId).Select(r => r.Name).First(),
                 b.UserId,
+                _context.Users.Where(u => u.Id == b.UserId).Select(u => u.FullName).First(),
                 b.RecurrenceRuleId,
                 b.StartsAtUtc,
                 b.EndsAtUtc,
@@ -242,6 +305,7 @@ internal sealed class BookingRepository : IBookingRepository
                 b.ResourceId,
                 _context.Resources.Where(r => r.Id == b.ResourceId).Select(r => r.Name).First(),
                 b.UserId,
+                _context.Users.Where(u => u.Id == b.UserId).Select(u => u.FullName).First(),
                 b.RecurrenceRuleId,
                 b.StartsAtUtc,
                 b.EndsAtUtc,
@@ -306,6 +370,55 @@ internal sealed class BookingRepository : IBookingRepository
             .OrderBy(b => b.StartsAtUtc)
             .ThenBy(b => b.Id)
             .ToListAsync(cancellationToken);
+
+    // ---- The approval reach and decision (WP-5 Phase 3) ----
+
+    // Tracked: an approve does not mutate this entity through EF (the status
+    // change goes through dbo.ApproveBooking), but a reject does, via
+    // Booking.Reject. Loading it the same way for both keeps one method
+    // serving both handlers rather than a tracked/untracked pair.
+    public Task<Booking?> FindForApprovalAsync(
+        Guid bookingId, ApprovalReach reach, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(reach);
+
+        var bookings = _context.Bookings.Where(b => b.Id == bookingId);
+
+        if (reach.ResourceIds is { } resourceIds)
+        {
+            bookings = bookings.Where(b => resourceIds.Contains(b.ResourceId));
+        }
+
+        return bookings.FirstOrDefaultAsync(cancellationToken);
+    }
+
+    // Raw SQL against ResourceApprovers rather than a LINQ projection: it is an
+    // EF *owned* collection (OwnsMany, ResourceConfiguration.cs) with no
+    // queryable DbSet of its own and no ResourceId CLR property on
+    // Resource.ApproverAssignment to project — the same shape
+    // BookingRepository.CreateAsync's own header names as a reason to step
+    // outside EF's normal query surface. Database.SqlQuery<T> rather than raw
+    // ADO: this reads a single scalar column, which is exactly what it is for
+    // (see CreateAsync's header for why the procedure calls need the heavier
+    // tool instead).
+    //
+    // Goes through the tenant-filtered connection like every other query
+    // here — ResourceApprovers carries no OrgId of its own, but its rows are
+    // meaningless without their Resource, which RLS and the query filter
+    // already scope to this tenant.
+    public async Task<IReadOnlyList<Guid>> FindApprovableResourceIdsAsync(
+        Guid approverUserId, CancellationToken cancellationToken) =>
+        await _context.Database
+            .SqlQuery<Guid>($"SELECT [ResourceId] FROM [ResourceApprovers] WHERE [UserId] = {approverUserId}")
+            .ToListAsync(cancellationToken);
+
+    // Tracked, since Decide() mutates it and the change has to be saved.
+    // FirstOrDefaultAsync rather than Find(): a booking reachable through
+    // FindForApprovalAsync's tenant-filtered query is already known visible,
+    // but Find() would bypass that filter if this were ever called on its
+    // own, and there is no reason to open that door.
+    public Task<ApprovalRequest?> FindApprovalRequestAsync(Guid bookingId, CancellationToken cancellationToken) =>
+        _context.ApprovalRequests.FirstOrDefaultAsync(a => a.BookingId == bookingId, cancellationToken);
 
     // ---- The rows derived from a booking (WP-4 Phase 1c) ----
     //
@@ -425,5 +538,18 @@ internal sealed class BookingRepository : IBookingRepository
         "CapacityExceeded" => BookingCreationResult.CapacityExceeded,
         _ => throw new InvalidOperationException(
             $"dbo.CreateBooking returned an unrecognised result code '{resultCode}'."),
+    };
+
+    private static BookingApprovalResult ParseApproval(string resultCode) => resultCode switch
+    {
+        "Approved" => BookingApprovalResult.Approved,
+        "BookingNotPending" => BookingApprovalResult.BookingNotPending,
+        "ResourceNotFound" => BookingApprovalResult.ResourceNotFound,
+        "ResourceArchived" => BookingApprovalResult.ResourceArchived,
+        "BlackoutPeriod" => BookingApprovalResult.BlackoutPeriod,
+        "SlotUnavailable" => BookingApprovalResult.SlotUnavailable,
+        "CapacityExceeded" => BookingApprovalResult.CapacityExceeded,
+        _ => throw new InvalidOperationException(
+            $"dbo.ApproveBooking returned an unrecognised result code '{resultCode}'."),
     };
 }

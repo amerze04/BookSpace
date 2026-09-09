@@ -126,23 +126,33 @@ resource-scoping, and every endpoint in §1.
 
 ## 4. Loose ends WP-5 inherits from WP-4, and how this plan closes them
 
+**Status as of Phase 4 (2026-09-09), closing WP-5**: 1, 3 and 4 are closed. 2
+and 5 remain open — both were explicitly out of this package's scope from the
+start, not something Phase 4's AC sweep found lacking.
+
 1. **A cancelled `Pending` booking keeps its `ApprovalRequests` row at
-   `Pending`.** §5.3's approve/reject design closes this directly: both paths
-   check `Booking.Status == Pending` before doing anything else, so a
-   cancelled (or otherwise no-longer-Pending) booking is refused with a new
-   `BookingNotPending` rather than silently approved.
-2. **Nothing writes `BookingStatus.Completed`.** Unchanged by WP-5, still worth
-   raising with the mentor; not in this package's scope.
-3. **Read DTOs carry `UserId` but no owner name.** The approver queue is
-   exactly the screen this bites — an approver needs to know who asked.
-   Addressed in §5.3: the list/detail DTOs gain the booker's name, following
-   `ApproverDetail`'s id-and-name-no-email precedent.
+   `Pending`.** ~~§5.3's approve/reject design closes this directly~~ **Closed
+   in Phase 3**: both approve and reject check `Booking.Status == Pending`
+   before doing anything else, so a cancelled (or otherwise no-longer-Pending)
+   booking is refused with `BookingNotPending` rather than silently approved —
+   asserted directly by `Approve_RefusesACancelledBooking`.
+2. **Nothing writes `BookingStatus.Completed`.** Still unchanged by WP-5, and
+   still worth raising with the mentor — not in this package's scope, and
+   nothing in Phase 4's AC sweep depended on it.
+3. **Read DTOs carry `UserId` but no owner name.** **Closed in Phase 3**:
+   `ListBookingsQueryResponse` and `GetBookingQueryResponse` both gained
+   `UserName`, following `ApproverDetail`'s id-and-name-no-email precedent —
+   the approver queue is exactly the screen this bit, and now reads it
+   directly rather than needing a lookup per row.
 4. **`GET /bookings/{id}` carries no approval detail for a `Pending` booking.**
-   Addressed in §5.3 — the detail DTO gains an approval section once
-   `ApproveBooking`/`RejectBooking` exist to act on it.
+   **Closed in Phase 3**: `GetBookingQueryResponse` gained `Approval`
+   (`GetBookingApprovalDetail`) once `ApproveBooking`/`RejectBooking` existed
+   to act on it — present once a resource ever required approval, carrying the
+   decision once made, not withdrawn afterward.
 5. **Reminder rows (FR-8.3) are written by nothing.** Still deferred to the
    notifications package; WP-5's source doc does not ask for reminders beyond
-   the one `0008` already specifies (which is built).
+   the one `0008` already specifies (which is built), and Phase 4 did not
+   revisit it.
 
 ---
 
@@ -695,24 +705,111 @@ than setting a new one.
 
 ### Phase 3 — Approvals (FR-7.1–FR-7.5, AC-5)
 
-`Booking.Reject`; `dbo.ApproveBooking` and its migration; `IBookingRepository
-.ApproveAsync`; `POST /bookings/{id}/approve` and `.../reject`, handlers,
-validators; the approval reach (TenantAdmin-wide, Approver-own-resources);
-`GET /bookings?scope=tenant` opened to `Approver` with the resource
-restriction; the booker-name and approval-detail DTO additions. This is
-WP-5's hard-problem phase, on the same footing `dbo.CreateBooking` was in
-WP-4 — the procedure-level concurrent test (approve racing a competing create
-for the same freed slot) is written and shown passing before the HTTP-level
-one, mirroring WP-4 Phase 1b/3's split.
+**Done 2026-09-09**, in the same shape planned above and in the same two-level
+proof `dbo.CreateBooking` got in WP-4: the procedure-level concurrent test
+(`ApproveBookingProcedureTests`, 14 tests — two decisions racing the same
+booking, an approval racing a concurrent cancel, and the capacity arithmetic
+proved with decision 0017's raw-SQL carve-out, since a Pending booking already
+reserves its units in full and no legitimate app path can produce an
+over-capacity approval to refuse) shown passing before the HTTP-level one
+(`BookingApprovalEndpointTests`, 18 tests) was written, mirroring WP-4 Phase
+1b/3's split. Test baseline: **1039 unit + 468 integration tests pass, 0
+failed**.
+
+Delivered as planned: `Booking.Reject`/`CanBeRejected`; `dbo.ApproveBooking`
+and its migration (`AddApproveBookingProcedure`), mirroring `dbo.CreateBooking`
+'s exact four-part lock design over the Pending row's own status guard;
+`IBookingRepository.ApproveAsync`/`FindForApprovalAsync`/
+`FindApprovableResourceIdsAsync`/`FindApprovalRequestAsync`; `ApprovalReach`
+and the internal `BookingApprovalReach.ResolveAsync` (TenantAdmin-wide,
+Approver-own-resources, per 0018) — deliberately not a pure `…Rules` class
+like `BookingReadRules`, since resolving an Approver's resource set genuinely
+needs a repository call; `BookingNotPendingException` (422, closing WP-4's
+loose end 1); `POST /bookings/{id}/approve` and `.../reject`, their handlers
+and validators; `GET /bookings?scope=tenant` opened to `Approver`
+(`BookingOwnerFilter.AnyOwnerRestrictedToResources`, composing with the
+existing owner filter rather than replacing it); and the booker-name
+(`UserName`, denormalized the same way `ResourceName` already was) and
+approval-detail (`GetBookingApprovalDetail`, its own type per decision 0015 —
+`CreateBooking`'s `BookingApprovalDetail` only ever needs a Pending decision,
+this one carries the outcome too) DTO additions on both `ListBookingsQueryResponse`
+and `GetBookingQueryResponse`, closing loose ends 3 and 4.
+
+Two things found while building it, neither anticipated by the sketch above:
+
+- **The retry-safety hazard reappeared, one door over from Phase 1's.**
+  `ApproveBookingCommandRequestHandler` builds the confirmation notification
+  once, before `IUnitOfWork`'s delegate opens, and stages it only inside the
+  delegate after `ApproveAsync` confirms success — the same pattern Phase 1
+  already needed. New this time: a second guard on `ApprovalRequest.Decide`
+  itself (`if (approvalRequest.Decision == ApprovalDecision.Pending)`), because
+  a 1205 retry re-enters the delegate with an identity-mapped
+  `ApprovalRequest` that a first pass may have already decided in memory —
+  calling `Decide()` again would throw on a decision that is no longer
+  Pending. Proved directly by
+  `DoesNotReapplyADecisionAlreadyRecordedInMemory`.
+- **`RecurrenceRules`' tenant-scoping fix from Phase 2 was not the last gap of
+  its kind.** Nothing new needed fixing here, but the approver queue's
+  resource restriction is the same shape of question Phase 2's cancel
+  endpoint asked — "does this caller's reach stop where it should" — and
+  passing it cleanly on the first attempt (verified by
+  `List_AnApproversTenantScopeNeverReachesAnotherTenant`) is evidence 0025's
+  fix, and the discipline of checking every new caller-supplied-id read
+  against AC-4 by hand, both held.
 
 ### Phase 4 — AC sweep and documentation
 
-Confirm all four acceptance criteria against the full suite; a decision record
-for `0023`'s extension is not needed (`0023` already says `dbo.ApproveBooking`
-inherits its design — this phase adds the measured evidence to it, the same
-way WP-4 Phase 3 extended `0023` rather than writing a new record); tick
-WP-5 in CLAUDE.md §12; update the loose-ends table in §4 above to show what
-closed and what, if anything, did not.
+**Done 2026-09-09.** No new production code — the plan's own framing held:
+this phase confirms rather than builds. Final test baseline: **1039 unit +
+468 integration tests pass, 0 failed**, unchanged from Phase 3's handoff.
+
+**The AC sweep.** All four of WP-5's acceptance criteria are met, each
+checked in CLAUDE.md §12 against the specific tests that prove it rather than
+by assertion:
+
+- A recurring series is created, and single occurrences and the whole series
+  can each be cancelled — met by Phases 1–2, unchanged.
+- Conflicting occurrences are surfaced at creation — met by Phase 1, unchanged.
+- AC-5 (approval re-checks availability) — met by Phase 3's
+  `ApproveBookingProcedureTests` and `BookingApprovalEndpointTests`, unchanged.
+- **AC-3 (the DST edge case)** — the one item this phase actually had to go
+  looking for evidence of, rather than just restate. It was never unproven,
+  only unchecked: Phase 1's `RecurrenceExpansionTests` already asserts
+  spring-forward's skip and fall-back's earlier-instant resolution against
+  real `America/New_York` tzdata, and `CreateRecurrenceSeriesCommandRequestHandlerTests`
+  already covers the write path's own mechanics (a skip creates no booking and
+  enqueues its own notification) with a faked outcome. No HTTP-level DST test
+  was added, deliberately, matching the precedent
+  `CreateRecurrenceSeriesEndpointTests`'/`CreateBookingEndpointTests`' own
+  headers already state: resources in an HTTP-level fixture stay in UTC so the
+  write-path proof and the DST-correctness proof do not have to agree with
+  each other to pass. FR-6.1 and FR-6.2 were checked off the same way — both
+  were already true by construction (§4.3's standing rule; `0008`/`0024`),
+  and this phase is what confirmed rather than assumed it.
+
+**Decision `0023`'s evidence extension** — the one thing this phase actually
+measured. `dbo.ApproveBooking`'s two lock hints were removed from
+`AddApproveBookingProcedure`'s migration body (never committed), and
+`ApproveBookingProcedureTests`' full 14 tests run against the freshly-migrated,
+weakened database: two simultaneous decisions on the same booking both
+reported Approved, and seven of ten did — the point-lookup `UPDLOCK`'s exact
+job, defeated. The hints were then restored and the full suite re-confirmed
+green. A second pass measured SQL Server's `_Total` deadlock counter either
+side of four runs of the *correct* procedure: **every run deadlocked at least
+once** (+8, +5, +5, +5 across fourteen tests each — twenty-three total,
+absorbed by the retry every time), more consistently than
+`dbo.CreateBooking`'s own four-run measurement, which included one run with
+none. Written into
+[`0023`](decisions/0023-booking-concurrency-strategy.md) as a second "Evidence
+extended" pass rather than a new record, exactly as the plan called for.
+
+**Documentation**: CLAUDE.md §12's WP-5 section is ticked complete, its status
+line changed to Done; this file's Phase 3 and Phase 4 sections were rewritten
+from plan into completion report as each landed; the loose-ends table in §4
+above shows three of five items closed, with the remaining two explicitly out
+of scope rather than missed.
+
+**WP-5 is complete.**
 
 ---
 

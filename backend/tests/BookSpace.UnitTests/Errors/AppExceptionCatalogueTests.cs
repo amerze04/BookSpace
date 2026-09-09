@@ -71,6 +71,10 @@ public class AppExceptionCatalogueTests
             (ReasonCodes.RecurrenceRuleNotFound, ErrorKind.NotFound),
         [typeof(RecurrenceRuleNotCancellableException)] =
             (ReasonCodes.RecurrenceRuleNotCancellable, ErrorKind.RuleViolation),
+
+        // WP-5 Phase 3.
+        [typeof(BookingNotPendingException)] =
+            (ReasonCodes.BookingNotPending, ErrorKind.RuleViolation),
     };
 
     // AuthenticationException is excluded deliberately, and it is the one

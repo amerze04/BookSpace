@@ -22,6 +22,14 @@ namespace BookSpace.Application.Features.Bookings.ListBookings;
 // browsing their list needs to see which bookings belong to one without a
 // second request per row, the same reasoning that put ResourceName here.
 //
+// **UserName joins it in WP-5 Phase 3** (loose end 3 from wp4-plan.md), the
+// same denormalization for the same reason: the approver queue
+// (`scope=tenant`) is the first reader of this endpoint who does not already
+// know whose booking each row is, and an id alone would force a lookup per row
+// to render anything a person could read. Following `ApproverDetail`'s
+// id-and-name-no-email shape — a name is what an approver needs to decide, an
+// email address is contact information nobody asked for here.
+//
 // Status serializes as its name — "Confirmed", not 1 — because Program.cs
 // registered JsonStringEnumConverter app-wide in WP-3 Phase 3.
 public sealed record ListBookingsQueryResponse(
@@ -29,6 +37,7 @@ public sealed record ListBookingsQueryResponse(
     Guid ResourceId,
     string ResourceName,
     Guid UserId,
+    string UserName,
     Guid? RecurrenceRuleId,
     DateTime StartsAtUtc,
     DateTime EndsAtUtc,
