@@ -9,18 +9,18 @@ rather than something to add on judgment (CLAUDE.md §11).
 
 ## Status
 
-**In progress — Phase 1a done, 2026-09-09.** All seven shape questions below
-were put to the repo owner on 2026-09-08, before any WP-5 code was written —
-the same process WP-3 and WP-4 each went through, and the one this document's
-own §6 asked for. Their answers are recorded in "Settled before planning" and
-the architecture and phasing that follow are built on them. The one genuinely
-open decision (the DST fall-back policy) is closed as `0024`, the first thing
-this package decided.
+**In progress — Phase 1 (creating a series) done, 2026-09-09.** All seven
+shape questions below were put to the repo owner on 2026-09-08, before any
+WP-5 code was written — the same process WP-3 and WP-4 each went through, and
+the one this document's own §6 asked for. Their answers are recorded in
+"Settled before planning" and the architecture and phasing that follow are
+built on them. The one genuinely open decision (the DST fall-back policy) is
+closed as `0024`, the first thing this package decided.
 
-**Test baseline: 907 unit tests pass (28 new in Phase 1a), 406 integration
-tests unchanged** (Phase 1a touched no EF/RLS/procedure code, so the
-integration suite was not re-run — see Phase 1a's entry in §9). `dotnet
-build` is clean across the solution.
+**Test baseline: 946 unit + 418 integration tests pass, 0 failed.** `dotnet
+build` is clean across the solution. `POST /recurrence-rules` exists and
+works end to end, through a real SQL Server, including a real
+`dbo.CreateBooking` call per occurrence.
 
 ---
 
@@ -542,13 +542,76 @@ and its sibling with an unambiguous end both assert against real
 the fake cannot make `0024`'s "earlier for both ends" claim, only a real zone
 with an actual ambiguous hour can.
 
-#### 1b — the write path. Not started.
+#### 1b — the write path. Done 2026-09-09.
 
-`IRecurrenceRuleRepository`; the `AppException.Extensions` generalization;
-`NoOccurrencesCreatedException`; `POST /recurrence-rules`, its handler,
-validator and DTOs; unit tests for the three-bucket (created/skipped/refused)
-partition; integration tests for the happy path, a series that hits a
-blackout mid-run, and the all-refused 422 case.
+946 unit tests pass (35 new), 418 integration tests pass (12 new). Delivered
+as planned: `IRecurrenceRuleRepository` + its Infrastructure implementation
+(a plain EF add, registered in DI); the `AppException.Extensions`
+generalization and `GlobalExceptionHandler`'s generic copy onto
+`ProblemDetails.Extensions`; `NoOccurrencesCreatedException` and
+`ReasonCodes.NoOccurrencesCreated`; `RecurrenceOccurrenceReport` (shared
+between the success response and the exception, per §5.1's design);
+`POST /recurrence-rules` on `TenantMember`, its handler, validator and DTOs;
+unit tests for the handler's three-bucket partition and the validator's shape
+rules; integration tests for the happy path, approval routing, a series
+hitting a blackout mid-run, the all-refused 422 case, and the usual
+structured-error/authorization sweep.
+
+Four things found while building it, none anticipated by §5.1's sketch:
+
+- **Staging the approval request and notifications inside vs. outside
+  `IUnitOfWork`'s delegate is not the same question here as it is for a
+  single booking.** `CreateBookingCommandRequestHandler` stages both
+  *before* the delegate opens, because a 1205 retry would otherwise re-run an
+  unconditional `Add` and double-insert. A series has something that handler
+  doesn't: a *next* occurrence to fall through to. Staging unconditionally
+  before the delegate meant a declined attempt (no exception, just "not
+  Created") left a tracked-but-unsaved `ApprovalRequest`/`Notification` in
+  the `DbContext` that the *next* occurrence's `SaveChangesAsync` would then
+  try to flush — inserting an `ApprovalRequest` against a `BookingId` that
+  was never created, a foreign-key violation waiting to happen the first
+  time a real request declined mid-series. Fixed by staging only *inside*
+  the delegate, and only after confirming `Created` — retry-safe because the
+  pre-built instances (constructed once, before the delegate, with their ids
+  already fixed) are the same object reference on every retry, and EF's
+  `Add` on an already-tracked instance is a no-op rather than a duplicate.
+  Covered by `ReportsAnOccurrenceTheProcedureDeclinesAndStillCreatesTheRest`
+  and `ADeclinedOccurrenceOnAnApprovalGatedResourceStagesNoApprovalRequest`.
+- **Persisting the `RecurrenceRule` row up front, unconditionally, has a
+  real consequence §5.1 didn't settle: an all-refused series still leaves an
+  orphaned, `Active` `RecurrenceRule` row with zero occurrences.** The
+  alternative — deferring the `Add` until the first occurrence actually
+  succeeds — turns out to be unsafe for the same reason as the point above
+  (an `Add` staged for conditional flushing has to survive a 1205 retry of
+  *that* occurrence without double-adding, which only works cleanly for
+  entities scoped to one occurrence's own delegate, not one shared across
+  the whole loop). Kept as designed, but flagged explicitly in the handler
+  and pinned by `TheRuleIsStillPersistedWhenEveryOccurrenceIsRefused` rather
+  than left as an accident — worth raising with the owner if an orphaned
+  series is unwanted.
+- **The `AppException.Extensions` generalization is additive by
+  construction, not just by intent** — a new protected constructor overload,
+  with the existing three-argument one delegating to it with `extensions:
+  null`. No existing exception subclass needed to change, and
+  `AppExceptionCatalogueTests.Construct`'s reflection-based instantiation
+  (which passes `null` for every reference-type constructor argument) meant
+  `NoOccurrencesCreatedException`'s constructor had to tolerate a null
+  `occurrences` list rather than assume the handler always supplies one.
+- **`RecurrenceRule` had no guard against `LocalEndTime <= LocalStartTime`
+  before this chunk** (recorded in Phase 1a's entry above, since the
+  constructor change landed there) — restated here because 1b is where a
+  client-facing 400 for it was actually added, in
+  `CreateRecurrenceSeriesCommandRequestValidator`, mirroring how
+  `CreateBookingCommandRequestValidator` restates `CK_Bookings_Interval`.
+
+One thing intentionally **not** done in this chunk, unlike WP-4's pattern of
+weakening a guarantee to prove its test can fail: there is no single
+"guarantee" here to weaken the way `dbo.CreateBooking`'s lock is. The nearest
+analogue — the retry-safety of the staging design above — is exercised
+directly by the two tests named for it, but proving *that* a synthetic 1205
+mid-series would misbehave without the fix would need real contention, which
+is out of scope until Phase 3 gives `dbo.ApproveBooking` (and, by extension,
+this design) its own concurrency proof.
 
 ### Phase 2 — Occurrence view/cancel and whole-series cancel (FR-5.2, FR-5.3)
 

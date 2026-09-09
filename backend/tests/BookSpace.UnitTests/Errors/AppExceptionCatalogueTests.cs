@@ -61,6 +61,10 @@ public class AppExceptionCatalogueTests
             (ReasonCodes.BlackoutPeriod, ErrorKind.RuleViolation),
         [typeof(SlotUnavailableException)] = (ReasonCodes.SlotUnavailable, ErrorKind.Conflict),
         [typeof(CapacityExceededException)] = (ReasonCodes.CapacityExceeded, ErrorKind.Conflict),
+
+        // WP-5 Phase 1b.
+        [typeof(NoOccurrencesCreatedException)] =
+            (ReasonCodes.NoOccurrencesCreated, ErrorKind.RuleViolation),
     };
 
     // AuthenticationException is excluded deliberately, and it is the one

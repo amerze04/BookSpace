@@ -1684,21 +1684,35 @@ item — is now [`0024`](docs/decisions/0024-dst-fallback-recurrence-policy.md):
 an ambiguous local time resolves to the **earlier** of its two candidate UTC
 instants, for both an occurrence's start and its end.
 
-Phase 1 ("creating a series") is split into two chunks: **1a, the pure
-`RecurrenceExpansion` — done 2026-09-09** (907 unit tests pass, 28 new;
-`RecurrenceRule.OccurrenceDate(int)`, `IResourceTimeZone.IsInvalidLocalTime`,
-and a same-day `LocalEndTime > LocalStartTime` constructor guard that
-`RecurrenceRule` was missing entirely before this — see wp5-plan.md §9 for
-what that gap would otherwise have done); **1b, the write path — not started**.
+**Phase 1 ("creating a series") is done**, in two chunks: **1a, the pure
+`RecurrenceExpansion`** (`RecurrenceRule.OccurrenceDate(int)`,
+`IResourceTimeZone.IsInvalidLocalTime`, and a same-day `LocalEndTime >
+LocalStartTime` constructor guard that `RecurrenceRule` was missing entirely
+before this); **1b, the write path — done 2026-09-09**:
+`POST /recurrence-rules` on `TenantMember`, calling `dbo.CreateBooking` once
+per occurrence inside its own `IUnitOfWork` (never one transaction for the
+whole series, per `0007`), reporting every occurrence as created, skipped
+(DST), or refused (FR-5.4) — and a new `AppException.Extensions` mechanism so
+the all-refused 422 (`NoOccurrencesCreated`) can carry the same breakdown a
+success would have. See wp5-plan.md §9 for what 1b found while building it,
+including a real staging-order bug 1a's design didn't anticipate (an
+approval/notification pair for a declined occurrence lingering into the next
+occurrence's save) and the accepted consequence that an all-refused series
+still leaves an orphaned `RecurrenceRule` row.
 
-Test baseline at WP-4 handoff: **879 unit + 406 integration, 0 failed**.
+Test baseline: **946 unit + 418 integration tests pass, 0 failed** (879 + 406
+at WP-4 handoff).
 
-- [ ] Create recurring bookings (daily/weekly/monthly) with interval and end
-      condition. FR-5.1.
+- [x] Create recurring bookings (daily/weekly/monthly) with interval and end
+      condition. FR-5.1. **Done 2026-09-09** (Phase 1):
+      `POST /recurrence-rules` on `TenantMember`.
 - [ ] Make each occurrence independently viewable and cancellable. FR-5.2.
 - [ ] Support cancelling one occurrence or the whole remaining series. FR-5.3.
-- [ ] Surface collisions/blackout conflicts at creation — never drop them
-      silently. FR-5.4.
+- [x] Surface collisions/blackout conflicts at creation — never drop them
+      silently. FR-5.4. **Done 2026-09-09** (Phase 1): every occurrence is
+      reported created, skipped (DST), or refused, with its reason code; an
+      all-refused series is a 422 (`NoOccurrencesCreated`) carrying the same
+      breakdown, never a 201 with an empty list.
 - [ ] Implement the approval workflow: Pending → approve/reject → notify;
       re-check availability at approval time. FR-7.1–FR-7.5.
 - [ ] Store all times as UTC; render in the correct local zone. FR-6.1.
@@ -1724,13 +1738,12 @@ occurrence, and [`0023`](docs/decisions/0023-booking-concurrency-strategy.md) is
 **inherited whole** — `dbo.ApproveBooking` needs the same capacity check under
 the same locks over the same index for FR-7.5/AC-5, so it is not a second
 strategy to invent.
-**What does not exist yet and WP-5 must build**: `dbo.ApproveBooking`, any
-approval transition on `Booking` (it has `Cancel`, `CancelForBlackout`,
-`CheckIn` and `MarkNoShow`, and nothing for approve or reject), the
-series-creation write path (1b, below), and the approver queue read.
-`RecurrenceExpansion` (the pure Domain function, 1a) is now done;
-`Bookings.RecurrenceRuleId` still exists and is still unused —
-`dbo.CreateBooking` already takes `@RecurrenceRuleId`, and 1b is what will
-finally pass it something other than null.
+**What does not exist yet and WP-5 must still build**: `dbo.ApproveBooking`,
+any approval transition on `Booking` (it has `Cancel`, `CancelForBlackout`,
+`CheckIn` and `MarkNoShow`, and nothing for approve or reject), whole-series
+cancel, and the approver queue read. **Phase 1 is done**: `RecurrenceExpansion`
+(the pure Domain function) and `POST /recurrence-rules` (the write path) both
+exist — `Bookings.RecurrenceRuleId` is no longer always null, since every
+occurrence a series creates is anchored to its rule.
 The genuinely open one is §9's DST **fall-back** case for an occurrence, which
 this package owns.

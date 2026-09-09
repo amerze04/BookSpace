@@ -134,4 +134,13 @@ public static class ReasonCodes
     // the start, exactly as BlackoutPeriodElapsed is (decision 0019) — booking
     // the room you are already sitting in is the ordinary case.
     public const string BookingInThePast = "BookingInThePast";
+
+    // ---- Recurring series (WP-5, FR-5.1 / FR-5.4) ----
+
+    // ErrorKind.RuleViolation. Every occurrence RecurrenceExpansion produced for
+    // this series was either skipped (decision 0008's spring-forward gap) or
+    // refused (BookingEligibility, or dbo.CreateBooking itself, per occurrence)
+    // — so the request reserved nothing. Carries the same per-occurrence
+    // breakdown a successful response would, via AppException.Extensions.
+    public const string NoOccurrencesCreated = "NoOccurrencesCreated";
 }
