@@ -15,6 +15,7 @@ namespace BookSpace.UnitTests.Availability;
 // one a fake with no ambiguous hour cannot make.
 public class RecurrenceExpansionTests
 {
+    private static readonly Guid OrgId = Guid.NewGuid();
     private static readonly Guid ResourceId = Guid.NewGuid();
     private static readonly Guid UserId = Guid.NewGuid();
     private static readonly Guid ActorId = Guid.NewGuid();
@@ -32,7 +33,7 @@ public class RecurrenceExpansionTests
         DateOnly startDate,
         DateOnly? endDate = null,
         int? occurrenceCount = null) =>
-        new(Guid.NewGuid(), ResourceId, UserId, frequency, intervalValue,
+        new(Guid.NewGuid(), OrgId, ResourceId, UserId, frequency, intervalValue,
             localStartTime, localEndTime, startDate,
             endDate ?? (occurrenceCount is null ? startDate.AddYears(1) : null), occurrenceCount,
             "America/New_York", ActorId, NowUtc);

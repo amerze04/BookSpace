@@ -1,3 +1,4 @@
+using BookSpace.Application.Features.Bookings;
 using BookSpace.Domain.Entities;
 
 namespace BookSpace.Application.Abstractions;
@@ -14,6 +15,26 @@ namespace BookSpace.Application.Abstractions;
 public interface IRecurrenceRuleRepository
 {
     void Add(RecurrenceRule rule);
+
+    // ---- The cancel (WP-5 Phase 2, FR-5.3, decision 0002 reapplied) ----
+
+    // The tracked series, for cancellation — same shape as
+    // IBookingRepository.FindForCancellationAsync one level up. BookingOwnerFilter
+    // is reused verbatim rather than a parallel RecurrenceRuleOwnerFilter type:
+    // decision 0002's reach ("owner, or a TenantAdmin in the same tenant") is
+    // identical regardless of which entity is being reached, so the filter
+    // itself does not need to know which one it is.
+    //
+    // Null covers all three not-found cases at once — no such id, another
+    // tenant's id (the query filter, decision 0025), another member's series —
+    // so the handler answers with one indistinguishable RecurrenceRuleNotFound
+    // (AC-4). The owner filter is part of the query, not a check after loading,
+    // for the same reason it is on the booking cancel: a series the caller may
+    // not reach is never loaded, so there is no state to accidentally leak.
+    Task<RecurrenceRule?> FindForCancellationAsync(
+        Guid recurrenceRuleId,
+        BookingOwnerFilter owner,
+        CancellationToken cancellationToken);
 
     // The compensating half of Add, for a series that reserved nothing
     // (WP-5 Phase 1b). The rule is persisted before any occurrence is

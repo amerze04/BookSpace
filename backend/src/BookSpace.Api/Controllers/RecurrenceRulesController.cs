@@ -1,4 +1,5 @@
 using BookSpace.Api.Authorization;
+using BookSpace.Application.Features.RecurrenceRules.CancelSeries;
 using BookSpace.Application.Features.RecurrenceRules.CreateSeries;
 using BookSpace.Application.Messaging;
 using BookSpace.Domain.Enums;
@@ -81,5 +82,44 @@ public sealed class RecurrenceRulesController : ControllerBase
             cancellationToken);
 
         return StatusCode(StatusCodes.Status201Created, result);
+    }
+
+    // The body is optional in full — a cancellation with no reason is legal
+    // — so [FromBody] with a default, matching BookingsController's
+    // CancelBookingRequest exactly.
+    public sealed record CancelRecurrenceSeriesRequest(string? Reason = null);
+
+    // FR-5.3 / decision 0002 reapplied. Cancels the series and every
+    // occurrence it still has a live claim on (EndsAtUtc > now).
+    //
+    // The statuses:
+    //
+    //   200 — cancelled, with the ids of every occurrence it freed
+    //   404 RecurrenceRuleNotFound — no such series *for this caller*:
+    //       another member's, another tenant's, or nonexistent, all
+    //       byte-identical (AC-4)
+    //   422 RecurrenceRuleNotCancellable — already cancelled
+    //   400 ValidationFailed — an over-long reason
+    //
+    // Deliberately **not idempotent**, exactly like the single-booking
+    // cancel: a second call is 422, not 200, because there is an actor and a
+    // time to overwrite.
+    [HttpPost("{id:guid}/cancel")]
+    [ProducesResponseType<CancelRecurrenceSeriesCommandResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
+    public async Task<IActionResult> Cancel(
+        Guid id,
+        [FromBody] CancelRecurrenceSeriesRequest? request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(
+            new CancelRecurrenceSeriesCommandRequest(id, request?.Reason),
+            cancellationToken);
+
+        return Ok(result);
     }
 }

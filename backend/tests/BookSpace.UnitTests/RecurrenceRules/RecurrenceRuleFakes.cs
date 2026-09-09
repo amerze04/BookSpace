@@ -13,7 +13,7 @@ namespace BookSpace.UnitTests.RecurrenceRules;
 // dbo.CreateBooking call: a series calls it once per occurrence, so this one
 // answers from a queue and records every attempt rather than just the last.
 
-// WP-5 Phase 1b. A plain recorder — IRecurrenceRuleRepository has nothing to
+// WP-5 Phase 1b/2. A plain recorder — IRecurrenceRuleRepository has nothing to
 // simulate, since it embodies no locking protocol.
 internal sealed class FakeRecurrenceRuleRepository : IRecurrenceRuleRepository
 {
@@ -26,6 +26,25 @@ internal sealed class FakeRecurrenceRuleRepository : IRecurrenceRuleRepository
     public void Add(RecurrenceRule rule) => Added = rule;
 
     public void Remove(RecurrenceRule rule) => Removed = rule;
+
+    // ---- The cancel (WP-5 Phase 2) ----
+
+    // What FindForCancellationAsync hands back — null is the "not visible to
+    // this caller" answer the handler turns into RecurrenceRuleNotFound.
+    public RecurrenceRule? Cancellable { get; set; }
+
+    public Guid? RequestedCancellationId { get; private set; }
+
+    public BookingOwnerFilter? CancellationOwner { get; private set; }
+
+    public Task<RecurrenceRule?> FindForCancellationAsync(
+        Guid recurrenceRuleId, BookingOwnerFilter owner, CancellationToken cancellationToken)
+    {
+        RequestedCancellationId = recurrenceRuleId;
+        CancellationOwner = owner;
+
+        return Task.FromResult(Cancellable);
+    }
 
     public Task SaveChangesAsync(CancellationToken cancellationToken)
     {
@@ -88,7 +107,28 @@ internal sealed class FakeSeriesBookingRepository : IBookingRepository
         return Task.CompletedTask;
     }
 
-    // ---- Unused by CreateRecurrenceSeriesCommandRequestHandler ----
+    // ---- The whole-series cancel (WP-5 Phase 2) ----
+
+    // Settable rather than recorded-from-a-call: the cancel handler's tests
+    // arrange "these are the occurrences still cancellable" directly, the
+    // same shape FakeBookingRepository.Cancellable uses for the single-booking
+    // cancel.
+    public List<Booking> CancellableOccurrences { get; set; } = [];
+
+    public Guid? RequestedRecurrenceRuleId { get; private set; }
+
+    public DateTime? RequestedNowUtc { get; private set; }
+
+    public Task<IReadOnlyList<Booking>> FindOccurrencesToCancelAsync(
+        Guid recurrenceRuleId, DateTime nowUtc, CancellationToken cancellationToken)
+    {
+        RequestedRecurrenceRuleId = recurrenceRuleId;
+        RequestedNowUtc = nowUtc;
+
+        return Task.FromResult<IReadOnlyList<Booking>>(CancellableOccurrences);
+    }
+
+    // ---- Unused by either RecurrenceRules handler ----
 
     public Task<PagedResult<ListBookingsQueryResponse>> ListAsync(
         ListBookingsQueryRequest query, BookingOwnerFilter owner, SortOption? sort,

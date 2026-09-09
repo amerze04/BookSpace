@@ -203,6 +203,9 @@ public class TenantIsolationTests
 
         Assert.Equal(0, await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.AvailabilityWindows;"));
         Assert.Equal(0, await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.BlackoutPeriods;"));
+        // Decision 0025: RecurrenceRules joined the tenant-filtered tables in
+        // WP-5 Phase 2, same RLS predicate as the two above.
+        Assert.Equal(0, await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.RecurrenceRules;"));
     }
 
     // Bookings, with no EF anywhere: the rows exist and an uninitialized
@@ -251,6 +254,7 @@ public class TenantIsolationTests
         var windowCount = await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.AvailabilityWindows;");
         var blackoutCount = await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.BlackoutPeriods;");
         var bookingCount = await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.Bookings;");
+        var recurrenceRuleCount = await ScalarAsync(connection, "SELECT COUNT(*) FROM dbo.RecurrenceRules;");
 
         Assert.Equal(2, resourceCount);
         Assert.Equal(4, userCount);
@@ -259,6 +263,8 @@ public class TenantIsolationTests
         Assert.Equal(1, blackoutCount);
         // And of the seeded 6 bookings (WP-4 Phase 3).
         Assert.Equal(3, bookingCount);
+        // Acme's one seeded weekly standup (decision 0025).
+        Assert.Equal(1, recurrenceRuleCount);
     }
 
     private async Task<HttpClient> AuthenticatedClientAsync(string email)

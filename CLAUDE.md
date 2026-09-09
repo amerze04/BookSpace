@@ -105,11 +105,15 @@ FR-1.2 requires isolation that cannot be bypassed by forgetting a filter.
 Three mechanisms, all required:
 
 - Global query filters on `Users`, `Resources`, `Bookings`,
-  `AvailabilityWindows`, `BlackoutPeriods` in `OnModelCreating`
+  `AvailabilityWindows`, `BlackoutPeriods`, `RecurrenceRules` in
+  `OnModelCreating` — `RecurrenceRules` joined the other five in WP-5 Phase 2
+  (decision `0025`), found the same way `AvailabilityWindows`/`BlackoutPeriods`
+  were in WP-3 (`0014`): reachable by resource is not automatically reachable
+  *only* through its resource, once something loads it by its own id.
 - `OrgId` set in `SaveChangesAsync` for added `ITenantOwned` entities
 - SQL Server row-level security via a connection interceptor calling
   `sp_set_session_context`, with `Security.TenantAccessPolicy` covering the
-  same five tables
+  same six tables
 
 Use `FirstOrDefaultAsync`, not `DbSet.Find()` — `Find` returns tracked entities
 without querying and bypasses query filters. `IgnoreQueryFilters()` is allowed
@@ -594,6 +598,25 @@ client, so no ambiguous local time ever arose in anything it built; recurrence
 occurs twice — is where the question finally had to be answered, and `0024` is
 that answer. The `ResourceType` question raised on 2026-09-03 was settled
 separately on 2026-09-04 and is recorded in `0005`'s amendment.
+
+25. [`0025`](docs/decisions/0025-recurrence-rule-tenant-scoping.md) —
+    `RecurrenceRules` gets its own `OrgId`, joining the global query filters,
+    RLS predicate and a composite same-org FK against `Resources` — the same
+    fix `0014` gave `AvailabilityWindows`/`BlackoutPeriods` in WP-3, applied
+    here because it was missing entirely. Not an open question: a bug found
+    while building WP-5 Phase 2's cancel endpoint, the first thing that ever
+    loaded a `RecurrenceRule` by a caller-supplied id rather than only
+    creating one scoped by its resource. Without the fix, a `TenantAdmin`'s
+    dropped owner filter (decision `0002`'s reach) would have had no tenant
+    restriction under it at all. **Found and fixed 2026-09-09**, confirmed
+    with the owner before implementation.
+26. [`0026`](docs/decisions/0026-notifications-series-anchor.md) — widens
+    `CK_Notifications_HasContext` so `RecurrenceRuleId` alone (no
+    `OccurrenceDate`) is a valid anchor, for WP-5 Phase 2's whole-series-cancel
+    notification (`NotificationKind.SeriesCancelled`) — one summary row for
+    the series, not tied to any single occurrence's date. A strict widening of
+    decision `0008`'s original constraint; every row that satisfied it before
+    still does. **Decided and implemented 2026-09-09.**
 
 If a task needs a decision that isn't listed above and isn't in this log,
 **stop and ask** rather than picking silently — same rule as always, this
@@ -1703,14 +1726,41 @@ neither an orphaned `RecurrenceRule` row nor a stray spring-forward-skip
 notification for an occurrence from a series the client was told reserved
 nothing.
 
-Test baseline: **947 unit + 418 integration tests pass, 0 failed** (879 + 406
+**Phase 2 ("occurrence view/cancel and whole-series cancel") is done,
+2026-09-09.** Per-occurrence view/cancel fell out of Phase 1 for free — an
+occurrence *is* a `Booking` with `RecurrenceRuleId` set, so `GET /bookings/{id}`
+and `POST /bookings/{id}/cancel` already worked; this phase closed the one gap
+(`RecurrenceRuleId` added to `ListBookingsQueryResponse`) and built
+`POST /recurrence-rules/{id}/cancel`: cancels the rule and every occurrence
+still holding a live claim (decision `0002`'s `EndsAtUtc > now` window,
+reapplied per occurrence), one summary notification rather than one per
+occurrence (`NotificationKind.SeriesCancelled`), through plain EF — no
+`IUnitOfWork`, on the same reasoning that already keeps the single-booking
+cancel and `BlackoutCascade` out of `dbo.CreateBooking`'s territory.
+
+**Found and fixed while building it**: `RecurrenceRules` had no tenant
+isolation at all — no `OrgId`, no query filter, no RLS — a WP-1 gap that
+Phase 1's create path never exposed (it only ever creates a rule, scoped
+implicitly through its resource) but Phase 2's cancel-by-id endpoint would
+have, immediately: a `TenantAdmin`'s dropped owner filter had nothing under it
+restricting it to their own tenant. Fixed as `0025`, applying decision `0014`'s
+exact pattern. `0026` is the smaller, related schema change Phase 2 needed
+regardless: widening `CK_Notifications_HasContext` so a `SeriesCancelled`
+notification can anchor to a `RecurrenceRuleId` alone, with no single
+occurrence date to hang it on.
+
+Test baseline: **978 unit + 430 integration tests pass, 0 failed** (879 + 406
 at WP-4 handoff).
 
 - [x] Create recurring bookings (daily/weekly/monthly) with interval and end
       condition. FR-5.1. **Done 2026-09-09** (Phase 1):
       `POST /recurrence-rules` on `TenantMember`.
-- [ ] Make each occurrence independently viewable and cancellable. FR-5.2.
-- [ ] Support cancelling one occurrence or the whole remaining series. FR-5.3.
+- [x] Make each occurrence independently viewable and cancellable. FR-5.2.
+      **Done 2026-09-09** (Phase 2) — free from Phase 1's `RecurrenceRuleId`
+      anchoring, plus `RecurrenceRuleId` added to `ListBookingsQueryResponse`
+      (previously detail-only).
+- [x] Support cancelling one occurrence or the whole remaining series. FR-5.3.
+      **Done 2026-09-09** (Phase 2): `POST /recurrence-rules/{id}/cancel`.
 - [x] Surface collisions/blackout conflicts at creation — never drop them
       silently. FR-5.4. **Done 2026-09-09** (Phase 1): every occurrence is
       reported created, skipped (DST), or refused, with its reason code; an
@@ -1722,9 +1772,10 @@ at WP-4 handoff).
 - [ ] Define and implement DST-transition behavior for recurring bookings. FR-6.2.
 
 Acceptance criteria:
-- [ ] A recurring series is created, and single occurrences and the whole series
-      can each be cancelled.
-- [ ] Conflicting occurrences are surfaced at creation.
+- [x] A recurring series is created, and single occurrences and the whole series
+      can each be cancelled. **Met 2026-09-09** (Phases 1–2).
+- [x] Conflicting occurrences are surfaced at creation. **Met 2026-09-09**
+      (Phase 1).
 - [ ] Approval re-checks availability, so approving a since-taken slot fails
       safely. AC-5.
 - [ ] The DST edge case resolves per the documented policy with no crash or
@@ -1743,10 +1794,7 @@ the same locks over the same index for FR-7.5/AC-5, so it is not a second
 strategy to invent.
 **What does not exist yet and WP-5 must still build**: `dbo.ApproveBooking`,
 any approval transition on `Booking` (it has `Cancel`, `CancelForBlackout`,
-`CheckIn` and `MarkNoShow`, and nothing for approve or reject), whole-series
-cancel, and the approver queue read. **Phase 1 is done**: `RecurrenceExpansion`
-(the pure Domain function) and `POST /recurrence-rules` (the write path) both
-exist — `Bookings.RecurrenceRuleId` is no longer always null, since every
-occurrence a series creates is anchored to its rule.
-The genuinely open one is §9's DST **fall-back** case for an occurrence, which
-this package owns.
+`CheckIn` and `MarkNoShow`, and nothing for approve or reject), and the
+approver queue read — Phase 3's scope. **Phases 1 and 2 are done.** §9's DST
+**fall-back** case, the one item this package owned that was still open, is
+already answered by `0024` — nothing further to do there.

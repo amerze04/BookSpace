@@ -17,10 +17,10 @@ namespace BookSpace.Application.Features.Bookings.ListBookings;
 // fetch per row to render anything a person could read. One join, projected in
 // the same query.
 //
-// RecurrenceRuleId is deliberately **not** here, and is on the detail instead.
-// WP-4 never writes it, so today it would be a column that is null on every row;
-// WP-5 makes occurrences independently viewable (FR-5.2) and can add it to the
-// list then, which is an additive change no client breaks on.
+// RecurrenceRuleId is now here too (WP-5 Phase 2, FR-5.2) — WP-4 left it off
+// because it was null on every row; now that a series populates it, a member
+// browsing their list needs to see which bookings belong to one without a
+// second request per row, the same reasoning that put ResourceName here.
 //
 // Status serializes as its name — "Confirmed", not 1 — because Program.cs
 // registered JsonStringEnumConverter app-wide in WP-3 Phase 3.
@@ -29,6 +29,7 @@ public sealed record ListBookingsQueryResponse(
     Guid ResourceId,
     string ResourceName,
     Guid UserId,
+    Guid? RecurrenceRuleId,
     DateTime StartsAtUtc,
     DateTime EndsAtUtc,
     int Quantity,

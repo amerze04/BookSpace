@@ -4,6 +4,7 @@ using BookSpace.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace BookSpace.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(BookSpaceDbContext))]
-    partial class BookSpaceDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260909090456_AddRecurrenceRuleTenantScoping")]
+    partial class AddRecurrenceRuleTenantScoping
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -347,9 +350,9 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
 
                     b.ToTable("Notifications", null, t =>
                         {
-                            t.HasCheckConstraint("CK_Notifications_HasContext", "[BookingId] IS NOT NULL OR [RecurrenceRuleId] IS NOT NULL");
+                            t.HasCheckConstraint("CK_Notifications_HasContext", "[BookingId] IS NOT NULL OR ([RecurrenceRuleId] IS NOT NULL AND [OccurrenceDate] IS NOT NULL)");
 
-                            t.HasCheckConstraint("CK_Notifications_Kind", "[Kind] IN ('Confirmed','Rejected','Cancelled','Reminder','ApprovalRequested','NoShowReleased','RecurrenceOccurrenceSkipped','SeriesCancelled')");
+                            t.HasCheckConstraint("CK_Notifications_Kind", "[Kind] IN ('Confirmed','Rejected','Cancelled','Reminder','ApprovalRequested','NoShowReleased','RecurrenceOccurrenceSkipped')");
                         });
                 });
 

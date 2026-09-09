@@ -102,6 +102,22 @@ public interface IBookingRepository
         BookingOwnerFilter owner,
         CancellationToken cancellationToken);
 
+    // ---- The whole-series cancel (WP-5 Phase 2, FR-5.3, decision 0002) ----
+
+    // Every occurrence of a series still worth cancelling: Pending or
+    // Confirmed, and not yet ended — decision 0002's window, the same
+    // EndsAtUtc > nowUtc test the single-booking cancel and the blackout
+    // cascade both apply, reapplied here per occurrence rather than per
+    // booking. A past or already-terminal occurrence is left alone, exactly
+    // as it would be if a client tried to cancel it individually.
+    //
+    // Tracked, for the same reason FindForCancellationAsync is: the caller
+    // mutates each one through Booking.Cancel.
+    Task<IReadOnlyList<Booking>> FindOccurrencesToCancelAsync(
+        Guid recurrenceRuleId,
+        DateTime nowUtc,
+        CancellationToken cancellationToken);
+
     // ---- The rows derived from a booking (WP-4 Phase 1c) ----
     //
     // These go through EF, not the procedure: they carry no capacity claim and

@@ -5,6 +5,7 @@ namespace BookSpace.UnitTests;
 
 public class RecurrenceRuleTests
 {
+    private static readonly Guid OrgId = Guid.NewGuid();
     private static readonly Guid ResourceId = Guid.NewGuid();
     private static readonly Guid UserId = Guid.NewGuid();
     private static readonly Guid ActorId = Guid.NewGuid();
@@ -14,7 +15,7 @@ public class RecurrenceRuleTests
     private static readonly TimeOnly EndTime = new(9, 30);
 
     private static RecurrenceRule CreateValid(DateOnly? endDate = null, int? occurrenceCount = null) =>
-        new(Guid.NewGuid(), ResourceId, UserId, RecurrenceFrequency.Weekly, 1, StartTime, EndTime,
+        new(Guid.NewGuid(), OrgId, ResourceId, UserId, RecurrenceFrequency.Weekly, 1, StartTime, EndTime,
             StartDate, endDate ?? StartDate.AddYears(1), endDate is null ? occurrenceCount : null,
             "America/New_York", ActorId, NowUtc);
 
@@ -24,7 +25,7 @@ public class RecurrenceRuleTests
     public void Constructor_ThrowsOnNonPositiveIntervalValue(int intervalValue)
     {
         Assert.Throws<ArgumentOutOfRangeException>(() =>
-            new RecurrenceRule(Guid.NewGuid(), ResourceId, UserId, RecurrenceFrequency.Weekly, intervalValue,
+            new RecurrenceRule(Guid.NewGuid(), OrgId, ResourceId, UserId, RecurrenceFrequency.Weekly, intervalValue,
                 StartTime, EndTime, StartDate, StartDate.AddYears(1), null, "America/New_York", ActorId, NowUtc));
     }
 
@@ -34,7 +35,7 @@ public class RecurrenceRuleTests
     public void Constructor_ThrowsOnBlankTimeZoneId(string timeZoneId)
     {
         Assert.Throws<ArgumentException>(() =>
-            new RecurrenceRule(Guid.NewGuid(), ResourceId, UserId, RecurrenceFrequency.Weekly, 1,
+            new RecurrenceRule(Guid.NewGuid(), OrgId, ResourceId, UserId, RecurrenceFrequency.Weekly, 1,
                 StartTime, EndTime, StartDate, StartDate.AddYears(1), null, timeZoneId, ActorId, NowUtc));
     }
 
@@ -42,7 +43,7 @@ public class RecurrenceRuleTests
     public void Constructor_Throws_WhenBothEndDateAndOccurrenceCountAreSet()
     {
         Assert.Throws<ArgumentException>(() =>
-            new RecurrenceRule(Guid.NewGuid(), ResourceId, UserId, RecurrenceFrequency.Weekly, 1,
+            new RecurrenceRule(Guid.NewGuid(), OrgId, ResourceId, UserId, RecurrenceFrequency.Weekly, 1,
                 StartTime, EndTime, StartDate, StartDate.AddYears(1), 10, "America/New_York", ActorId, NowUtc));
     }
 
@@ -50,7 +51,7 @@ public class RecurrenceRuleTests
     public void Constructor_Throws_WhenNeitherEndDateNorOccurrenceCountIsSet()
     {
         Assert.Throws<ArgumentException>(() =>
-            new RecurrenceRule(Guid.NewGuid(), ResourceId, UserId, RecurrenceFrequency.Weekly, 1,
+            new RecurrenceRule(Guid.NewGuid(), OrgId, ResourceId, UserId, RecurrenceFrequency.Weekly, 1,
                 StartTime, EndTime, StartDate, null, null, "America/New_York", ActorId, NowUtc));
     }
 
@@ -61,7 +62,7 @@ public class RecurrenceRuleTests
         int startHour, int startMinute, int endHour, int endMinute)
     {
         Assert.Throws<ArgumentException>(() =>
-            new RecurrenceRule(Guid.NewGuid(), ResourceId, UserId, RecurrenceFrequency.Weekly, 1,
+            new RecurrenceRule(Guid.NewGuid(), OrgId, ResourceId, UserId, RecurrenceFrequency.Weekly, 1,
                 new TimeOnly(startHour, startMinute), new TimeOnly(endHour, endMinute),
                 StartDate, StartDate.AddYears(1), null, "America/New_York", ActorId, NowUtc));
     }
@@ -86,7 +87,7 @@ public class RecurrenceRuleTests
     [InlineData(RecurrenceFrequency.Monthly, 12)]  // 11 months, well under the cap
     public void Constructor_Succeeds_WhenOccurrenceCountImpliesSpanUnderTwoYears(RecurrenceFrequency frequency, int occurrenceCount)
     {
-        var rule = new RecurrenceRule(Guid.NewGuid(), ResourceId, UserId, frequency, 1,
+        var rule = new RecurrenceRule(Guid.NewGuid(), OrgId, ResourceId, UserId, frequency, 1,
             StartTime, EndTime, StartDate, null, occurrenceCount, "America/New_York", ActorId, NowUtc);
 
         Assert.Equal(occurrenceCount, rule.OccurrenceCount);
@@ -99,7 +100,7 @@ public class RecurrenceRuleTests
     public void Constructor_Throws_WhenOccurrenceCountImpliesSpanOverTwoYears(RecurrenceFrequency frequency, int occurrenceCount)
     {
         Assert.Throws<ArgumentException>(() =>
-            new RecurrenceRule(Guid.NewGuid(), ResourceId, UserId, frequency, 1,
+            new RecurrenceRule(Guid.NewGuid(), OrgId, ResourceId, UserId, frequency, 1,
                 StartTime, EndTime, StartDate, null, occurrenceCount, "America/New_York", ActorId, NowUtc));
     }
 
@@ -118,7 +119,7 @@ public class RecurrenceRuleTests
     [Fact]
     public void OccurrenceDate_StepsDailyByIntervalValue()
     {
-        var rule = new RecurrenceRule(Guid.NewGuid(), ResourceId, UserId, RecurrenceFrequency.Daily, 3,
+        var rule = new RecurrenceRule(Guid.NewGuid(), OrgId, ResourceId, UserId, RecurrenceFrequency.Daily, 3,
             StartTime, EndTime, StartDate, StartDate.AddYears(1), null, "America/New_York", ActorId, NowUtc);
 
         Assert.Equal(StartDate, rule.OccurrenceDate(0));
@@ -129,7 +130,7 @@ public class RecurrenceRuleTests
     [Fact]
     public void OccurrenceDate_StepsWeeklyByIntervalValueWeeks()
     {
-        var rule = new RecurrenceRule(Guid.NewGuid(), ResourceId, UserId, RecurrenceFrequency.Weekly, 2,
+        var rule = new RecurrenceRule(Guid.NewGuid(), OrgId, ResourceId, UserId, RecurrenceFrequency.Weekly, 2,
             StartTime, EndTime, StartDate, StartDate.AddYears(1), null, "America/New_York", ActorId, NowUtc);
 
         Assert.Equal(StartDate, rule.OccurrenceDate(0));
@@ -139,7 +140,7 @@ public class RecurrenceRuleTests
     [Fact]
     public void OccurrenceDate_StepsMonthlyByIntervalValueMonths()
     {
-        var rule = new RecurrenceRule(Guid.NewGuid(), ResourceId, UserId, RecurrenceFrequency.Monthly, 1,
+        var rule = new RecurrenceRule(Guid.NewGuid(), OrgId, ResourceId, UserId, RecurrenceFrequency.Monthly, 1,
             StartTime, EndTime, StartDate, StartDate.AddYears(1), null, "America/New_York", ActorId, NowUtc);
 
         Assert.Equal(StartDate, rule.OccurrenceDate(0));
@@ -160,7 +161,7 @@ public class RecurrenceRuleTests
     [Fact]
     public void OccurrenceDate_OfTheLastIndexMatchesTheImpliedEndDate()
     {
-        var rule = new RecurrenceRule(Guid.NewGuid(), ResourceId, UserId, RecurrenceFrequency.Weekly, 1,
+        var rule = new RecurrenceRule(Guid.NewGuid(), OrgId, ResourceId, UserId, RecurrenceFrequency.Weekly, 1,
             StartTime, EndTime, StartDate, null, occurrenceCount: 10, "America/New_York", ActorId, NowUtc);
 
         Assert.Equal(StartDate.AddDays(9 * 7), rule.OccurrenceDate(9));
@@ -178,5 +179,34 @@ public class RecurrenceRuleTests
         Assert.Equal(RecurrenceStatus.Cancelled, rule.Status);
         Assert.Equal(actor, rule.UpdatedByUserId);
         Assert.Equal(later, rule.UpdatedAtUtc);
+    }
+
+    // WP-5 Phase 2, FR-5.3: a second cancellation is refused, not idempotent
+    // — mirroring Booking.CanBeCancelled, since there is an actor and a time
+    // that a repeat would quietly overwrite.
+    [Fact]
+    public void CanBeCancelled_IsTrueForAnActiveRule()
+    {
+        var rule = CreateValid();
+
+        Assert.True(rule.CanBeCancelled());
+    }
+
+    [Fact]
+    public void CanBeCancelled_IsFalseOnceCancelled()
+    {
+        var rule = CreateValid();
+        rule.Cancel(Guid.NewGuid(), NowUtc);
+
+        Assert.False(rule.CanBeCancelled());
+    }
+
+    [Fact]
+    public void Cancel_ThrowsWhenAlreadyCancelled()
+    {
+        var rule = CreateValid();
+        rule.Cancel(Guid.NewGuid(), NowUtc);
+
+        Assert.Throws<InvalidOperationException>(() => rule.Cancel(Guid.NewGuid(), NowUtc.AddDays(1)));
     }
 }

@@ -65,6 +65,12 @@ public class AppExceptionCatalogueTests
         // WP-5 Phase 1b.
         [typeof(NoOccurrencesCreatedException)] =
             (ReasonCodes.NoOccurrencesCreated, ErrorKind.RuleViolation),
+
+        // WP-5 Phase 2.
+        [typeof(RecurrenceRuleNotFoundException)] =
+            (ReasonCodes.RecurrenceRuleNotFound, ErrorKind.NotFound),
+        [typeof(RecurrenceRuleNotCancellableException)] =
+            (ReasonCodes.RecurrenceRuleNotCancellable, ErrorKind.RuleViolation),
     };
 
     // AuthenticationException is excluded deliberately, and it is the one

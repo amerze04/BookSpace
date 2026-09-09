@@ -13,9 +13,23 @@ namespace BookSpace.Domain.Entities;
 // case is also enforced in the DB (CK_RecurrenceRules_MaxSpan); the
 // OccurrenceCount case can only be checked here, since "implied span" for
 // Monthly recurrence isn't a clean single SQL expression across frequencies.
-public class RecurrenceRule : IAuditable
+//
+// OrgId is denormalized from the owning Resource (decision 0025, following
+// 0014's and 0006's precedent) so this table sits inside all three CLAUDE.md
+// §4.2 isolation mechanisms instead of being reachable by id alone — which,
+// before 0025, it was: WP-5 Phase 2's cancel endpoint is the first thing that
+// ever loads a RecurrenceRule directly rather than only creating one scoped
+// by the resource it belongs to, and that is exactly the shape 0014 already
+// closed for AvailabilityWindows and BlackoutPeriods. Like BlackoutPeriod and
+// unlike AvailabilityWindow, a RecurrenceRule is not part of the Resource
+// aggregate — Resource has no navigation to it — so the constructor stays
+// public and takes OrgId from the resource its caller already loaded; the
+// composite FK (OrgId, ResourceId) is what makes the two physically unable
+// to disagree.
+public class RecurrenceRule : IAuditable, ITenantOwned
 {
     public Guid Id { get; private set; }
+    public Guid OrgId { get; private set; }
     public Guid ResourceId { get; private set; }
     public Guid UserId { get; private set; }
     public RecurrenceFrequency Frequency { get; private set; }
@@ -41,6 +55,7 @@ public class RecurrenceRule : IAuditable
 
     public RecurrenceRule(
         Guid id,
+        Guid orgId,
         Guid resourceId,
         Guid userId,
         RecurrenceFrequency frequency,
@@ -75,6 +90,7 @@ public class RecurrenceRule : IAuditable
             throw new ArgumentException("A recurrence series cannot run more than two years past its StartDate.");
 
         Id = id;
+        OrgId = orgId;
         ResourceId = resourceId;
         UserId = userId;
         Frequency = frequency;
@@ -92,8 +108,20 @@ public class RecurrenceRule : IAuditable
         UpdatedByUserId = createdByUserId;
     }
 
+    Guid? ITenantOwned.OrgId => OrgId;
+
+    // WP-5 Phase 2, FR-5.3: a series already cancelled has nothing left to
+    // cancel again — the same reasoning Booking.CanBeCancelled states for a
+    // second booking cancel, applied one level up. Stated as a predicate so
+    // the handler can refuse with a reason code (RecurrenceRuleNotCancellable)
+    // instead of catching Cancel's exception.
+    public bool CanBeCancelled() => Status == RecurrenceStatus.Active;
+
     public void Cancel(Guid actorUserId, DateTime nowUtc)
     {
+        if (!CanBeCancelled())
+            throw new InvalidOperationException($"RecurrenceRule {Id} in status {Status} cannot be cancelled.");
+
         Status = RecurrenceStatus.Cancelled;
         UpdatedAtUtc = nowUtc;
         UpdatedByUserId = actorUserId;

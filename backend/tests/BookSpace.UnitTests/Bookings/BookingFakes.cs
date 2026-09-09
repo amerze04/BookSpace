@@ -178,6 +178,16 @@ internal sealed class FakeBookingRepository : IBookingRepository
 
         return Task.FromResult(Cancellable);
     }
+
+    // ---- The whole-series cancel (WP-5 Phase 2) — unused by this file's
+    // single-booking tests, so a fixed empty answer is enough to satisfy the
+    // interface. CancelRecurrenceSeriesCommandRequestHandlerTests exercises
+    // this properly via FakeSeriesBookingRepository instead.
+    public Task<IReadOnlyList<Booking>> FindOccurrencesToCancelAsync(
+        Guid recurrenceRuleId,
+        DateTime nowUtc,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<Booking>>([]);
 }
 
 // Runs the delegate straight through. The real implementation's job — a

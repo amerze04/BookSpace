@@ -143,4 +143,14 @@ public static class ReasonCodes
     // — so the request reserved nothing. Carries the same per-occurrence
     // breakdown a successful response would, via AppException.Extensions.
     public const string NoOccurrencesCreated = "NoOccurrencesCreated";
+
+    // ErrorKind.NotFound (WP-5 Phase 2, FR-5.3). No such series visible to
+    // this caller — id, cross-tenant, or another member's, all identical
+    // (AC-4), following BookingNotFound's reasoning one level up.
+    public const string RecurrenceRuleNotFound = "RecurrenceRuleNotFound";
+
+    // ErrorKind.RuleViolation. The series is already Cancelled — a second
+    // cancellation is refused rather than treated as idempotent, mirroring
+    // BookingNotCancellable: there is an actor and a time to overwrite.
+    public const string RecurrenceRuleNotCancellable = "RecurrenceRuleNotCancellable";
 }

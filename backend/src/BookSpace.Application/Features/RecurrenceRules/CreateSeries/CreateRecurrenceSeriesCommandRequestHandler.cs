@@ -79,6 +79,7 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
 
         var rule = new RecurrenceRule(
             Guid.NewGuid(),
+            resource.OrgId,
             resource.Id,
             userId,
             request.Frequency,

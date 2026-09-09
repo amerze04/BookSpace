@@ -5,6 +5,7 @@ using BookSpace.Application.Features.Bookings;
 using BookSpace.Application.Features.Bookings.GetBooking;
 using BookSpace.Application.Features.Bookings.ListBookings;
 using BookSpace.Domain.Entities;
+using BookSpace.Domain.Enums;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -197,6 +198,7 @@ internal sealed class BookingRepository : IBookingRepository
                 b.ResourceId,
                 _context.Resources.Where(r => r.Id == b.ResourceId).Select(r => r.Name).First(),
                 b.UserId,
+                b.RecurrenceRuleId,
                 b.StartsAtUtc,
                 b.EndsAtUtc,
                 b.Quantity,
@@ -287,6 +289,23 @@ internal sealed class BookingRepository : IBookingRepository
 
         return bookings.FirstOrDefaultAsync(cancellationToken);
     }
+
+    // ---- The whole-series cancel (WP-5 Phase 2, FR-5.3) ----
+
+    // Ordered so the response lists cancelled occurrences in a stable,
+    // readable order rather than whatever order the engine returns — the same
+    // reasoning IBlackoutPeriodRepository.FindBookingsToCancelAsync gives.
+    public async Task<IReadOnlyList<Booking>> FindOccurrencesToCancelAsync(
+        Guid recurrenceRuleId,
+        DateTime nowUtc,
+        CancellationToken cancellationToken) =>
+        await _context.Bookings
+            .Where(b => b.RecurrenceRuleId == recurrenceRuleId
+                && b.EndsAtUtc > nowUtc
+                && (b.Status == BookingStatus.Pending || b.Status == BookingStatus.Confirmed))
+            .OrderBy(b => b.StartsAtUtc)
+            .ThenBy(b => b.Id)
+            .ToListAsync(cancellationToken);
 
     // ---- The rows derived from a booking (WP-4 Phase 1c) ----
     //

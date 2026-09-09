@@ -174,7 +174,7 @@ public static class SeedData
         // which doesn't exist yet (CLAUDE.md §4.1).
         var standupStart = new DateOnly(2026, 8, 24);
         var recurrenceRule = new RecurrenceRule(
-            Guid.NewGuid(), openResource.Id, memberOne.Id,
+            Guid.NewGuid(), org.Id, openResource.Id, memberOne.Id,
             RecurrenceFrequency.Weekly, intervalValue: 1,
             localStartTime: new TimeOnly(9, 0), localEndTime: new TimeOnly(9, 30),
             startDate: standupStart, endDate: standupStart.AddYears(2), occurrenceCount: null,

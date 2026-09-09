@@ -9,18 +9,22 @@ rather than something to add on judgment (CLAUDE.md §11).
 
 ## Status
 
-**In progress — Phase 1 (creating a series) done, 2026-09-09.** All seven
-shape questions below were put to the repo owner on 2026-09-08, before any
-WP-5 code was written — the same process WP-3 and WP-4 each went through, and
-the one this document's own §6 asked for. Their answers are recorded in
-"Settled before planning" and the architecture and phasing that follow are
-built on them. The one genuinely open decision (the DST fall-back policy) is
-closed as `0024`, the first thing this package decided.
+**In progress — Phases 1 and 2 done, 2026-09-09.** All seven shape questions
+below were put to the repo owner on 2026-09-08, before any WP-5 code was
+written — the same process WP-3 and WP-4 each went through, and the one this
+document's own §6 asked for. Their answers are recorded in "Settled before
+planning" and the architecture and phasing that follow are built on them. The
+one genuinely open decision (the DST fall-back policy) is closed as `0024`,
+the first thing this package decided.
 
-**Test baseline: 947 unit + 418 integration tests pass, 0 failed.** `dotnet
-build` is clean across the solution. `POST /recurrence-rules` exists and
-works end to end, through a real SQL Server, including a real
-`dbo.CreateBooking` call per occurrence.
+**Test baseline: 978 unit + 430 integration tests pass, 0 failed.** `dotnet
+build` is clean across the solution. `POST /recurrence-rules` and
+`POST /recurrence-rules/{id}/cancel` both exist and work end to end, through a
+real SQL Server, the first with a real `dbo.CreateBooking` call per occurrence.
+Phase 2 also found and fixed a real pre-existing tenant-isolation gap —
+`RecurrenceRules` had none at all — recorded as
+[`0025`](decisions/0025-recurrence-rule-tenant-scoping.md); see Phase 2's entry
+in §9 for the full story.
 
 ---
 
@@ -631,15 +635,63 @@ this design) its own concurrency proof.
 
 ### Phase 2 — Occurrence view/cancel and whole-series cancel (FR-5.2, FR-5.3)
 
-Populate `NewBooking.RecurrenceRuleId` from Phase 1's series creation (already
-done there, so this phase is really about the *cancel* side and closing the
-list-row gap); add `RecurrenceRuleId` to `ListBookingsQueryResponse`;
-`POST /recurrence-rules/{id}/cancel`, its handler, the not-already-cancelled
-guard on `RecurrenceRule.Cancel`, the `WidenNotificationsRecurrenceAnchor`
-migration, `Notification.ForSeriesCancelled`; integration tests for cancelling
-mid-series (asserts past/already-cancelled occurrences are untouched, future
-ones are cancelled, the freed slot is bookable again) and for the AC-4 sweep
-over the new routes.
+**Done 2026-09-09.** 978 unit tests pass (23 new), 430 integration tests pass
+(12 new, plus 2 existing files gaining an assertion each). Delivered as
+planned: `RecurrenceRuleId` added to `ListBookingsQueryResponse` (per-occurrence
+view/cancel needed nothing else — an occurrence *is* a `Booking` with
+`RecurrenceRuleId` set, so `GET /bookings/{id}` and `POST /bookings/{id}/cancel`
+already worked the moment Phase 1 started populating it);
+`POST /recurrence-rules/{id}/cancel`, its handler and validator;
+`RecurrenceRule.CanBeCancelled()` and the not-already-cancelled guard on
+`Cancel`; `IRecurrenceRuleRepository.FindForCancellationAsync` and
+`IBookingRepository.FindOccurrencesToCancelAsync`; `Notification.ForSeriesCancelled`;
+the `WidenNotificationsRecurrenceAnchor` migration; unit tests for the handler
+(who may cancel, the notification asymmetry, the refusals) and the validator;
+integration tests for the happy path, an already-individually-cancelled
+occurrence being left untouched, the freed slot being bookable again, the
+notification asymmetry, and the AC-4 sweep.
+
+**Found and fixed while building it, before any of the above was written**:
+`RecurrenceRules` had no tenant isolation at all — no `OrgId`, no EF query
+filter, no RLS predicate. Phase 1 never exposed this (it only ever creates a
+rule, scoped implicitly through the resource it belongs to); this phase's
+cancel-by-id endpoint is the first thing that loads an *existing*
+`RecurrenceRule` by a caller-supplied id, and with decision `0002`'s reach — a
+`TenantAdmin`'s owner filter dropped entirely — the query would have had zero
+tenant restriction under it. Raised with the owner before writing any of
+Phase 2's feature code (the owner chose to fix it in the same pass rather than
+as a separate step or a documented stopgap), fixed as
+[`0025`](decisions/0025-recurrence-rule-tenant-scoping.md) by applying decision
+`0014`'s exact pattern: `OrgId` denormalized from the owning `Resource`, a
+composite same-org FK, the query filter, and the RLS predicate. Migration
+`AddRecurrenceRuleTenantScoping`, verified by a real revert and re-apply
+against the dev database, same as `0014`'s was.
+`CancelRecurrenceSeriesEndpointTests.Cancel_RefusesAnAdminReachingIntoAnotherTenant`
+is the test that would have caught the gap, and now does; `SeedDataTests` and
+`TenantIsolationTests` needed the same `IgnoreQueryFilters()` treatment their
+`AvailabilityWindows`/`BlackoutPeriods` assertions already had, since both had
+been reading `RecurrenceRules` with no filter to ignore.
+
+**A second, smaller schema change fell out of the design rather than being
+anticipated**: the owner's answer to shape question 3 (one summary
+notification for the whole series, not one per occurrence) meant
+`SeriesCancelled` needed to anchor to a `RecurrenceRuleId` alone, with no
+single occurrence date — decision `0008`'s original
+`CK_Notifications_HasContext` required `RecurrenceRuleId` *and*
+`OccurrenceDate` together, built for its one specific kind
+(`RecurrenceOccurrenceSkipped`). Widened as
+[`0026`](decisions/0026-notifications-series-anchor.md), a strict widening
+verified the same way.
+
+**One design choice worth recording**: the notification is enqueued directly
+via `IBookingRepository.AddNotifications`, the same port Phase 1 already uses
+for skipped-occurrence notifications, rather than adding an equivalent method
+to `IRecurrenceRuleRepository`. Both repositories share the same scoped
+`DbContext`, so this is purely a question of which port a call site reaches
+through — `IBookingRepository` already generalized past "rows derived from a
+booking" once Phase 1 used it for a rule-anchored notification, so a second
+non-booking notification through the same port extends a precedent rather
+than setting a new one.
 
 ### Phase 3 — Approvals (FR-7.1–FR-7.5, AC-5)
 
