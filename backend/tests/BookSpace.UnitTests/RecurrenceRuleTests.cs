@@ -54,6 +54,18 @@ public class RecurrenceRuleTests
                 StartTime, EndTime, StartDate, null, null, "America/New_York", ActorId, NowUtc));
     }
 
+    [Theory]
+    [InlineData(9, 0, 9, 0)]  // equal
+    [InlineData(9, 30, 9, 0)] // end before start
+    public void Constructor_Throws_WhenLocalEndTimeIsNotAfterLocalStartTime(
+        int startHour, int startMinute, int endHour, int endMinute)
+    {
+        Assert.Throws<ArgumentException>(() =>
+            new RecurrenceRule(Guid.NewGuid(), ResourceId, UserId, RecurrenceFrequency.Weekly, 1,
+                new TimeOnly(startHour, startMinute), new TimeOnly(endHour, endMinute),
+                StartDate, StartDate.AddYears(1), null, "America/New_York", ActorId, NowUtc));
+    }
+
     [Fact]
     public void Constructor_Succeeds_WhenEndDateIsExactlyTwoYearsAfterStartDate()
     {
@@ -97,6 +109,61 @@ public class RecurrenceRuleTests
         var rule = CreateValid();
 
         Assert.Equal(RecurrenceStatus.Active, rule.Status);
+    }
+
+    // ---- OccurrenceDate(index) -----------------------------------------------
+    // The same stepping ComputeImpliedEndDate already uses for the span cap,
+    // exposed for RecurrenceExpansion (WP-5) to walk the whole series with.
+
+    [Fact]
+    public void OccurrenceDate_StepsDailyByIntervalValue()
+    {
+        var rule = new RecurrenceRule(Guid.NewGuid(), ResourceId, UserId, RecurrenceFrequency.Daily, 3,
+            StartTime, EndTime, StartDate, StartDate.AddYears(1), null, "America/New_York", ActorId, NowUtc);
+
+        Assert.Equal(StartDate, rule.OccurrenceDate(0));
+        Assert.Equal(StartDate.AddDays(3), rule.OccurrenceDate(1));
+        Assert.Equal(StartDate.AddDays(6), rule.OccurrenceDate(2));
+    }
+
+    [Fact]
+    public void OccurrenceDate_StepsWeeklyByIntervalValueWeeks()
+    {
+        var rule = new RecurrenceRule(Guid.NewGuid(), ResourceId, UserId, RecurrenceFrequency.Weekly, 2,
+            StartTime, EndTime, StartDate, StartDate.AddYears(1), null, "America/New_York", ActorId, NowUtc);
+
+        Assert.Equal(StartDate, rule.OccurrenceDate(0));
+        Assert.Equal(StartDate.AddDays(14), rule.OccurrenceDate(1));
+    }
+
+    [Fact]
+    public void OccurrenceDate_StepsMonthlyByIntervalValueMonths()
+    {
+        var rule = new RecurrenceRule(Guid.NewGuid(), ResourceId, UserId, RecurrenceFrequency.Monthly, 1,
+            StartTime, EndTime, StartDate, StartDate.AddYears(1), null, "America/New_York", ActorId, NowUtc);
+
+        Assert.Equal(StartDate, rule.OccurrenceDate(0));
+        Assert.Equal(StartDate.AddMonths(1), rule.OccurrenceDate(1));
+        Assert.Equal(StartDate.AddMonths(2), rule.OccurrenceDate(2));
+    }
+
+    [Fact]
+    public void OccurrenceDate_ThrowsOnNegativeIndex()
+    {
+        var rule = CreateValid();
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => rule.OccurrenceDate(-1));
+    }
+
+    // The last occurrence an OccurrenceCount-bound rule produces lands exactly
+    // on ComputeImpliedEndDate's answer — same arithmetic, one implementation.
+    [Fact]
+    public void OccurrenceDate_OfTheLastIndexMatchesTheImpliedEndDate()
+    {
+        var rule = new RecurrenceRule(Guid.NewGuid(), ResourceId, UserId, RecurrenceFrequency.Weekly, 1,
+            StartTime, EndTime, StartDate, null, occurrenceCount: 10, "America/New_York", ActorId, NowUtc);
+
+        Assert.Equal(StartDate.AddDays(9 * 7), rule.OccurrenceDate(9));
     }
 
     [Fact]

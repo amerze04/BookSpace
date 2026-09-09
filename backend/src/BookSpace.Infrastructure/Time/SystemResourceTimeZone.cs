@@ -55,6 +55,22 @@ internal sealed class SystemResourceTimeZone : IResourceTimeZone
         return TimeZoneInfo.ConvertTimeFromUtc(utc, _zone);
     }
 
+    // WP-5: RecurrenceExpansion has to know the gap exists *before* calling
+    // ToUtcEarliest, whose answer for a gap (the transition instant) is not
+    // "there is no such time" — decision 0008 needs the latter to skip the
+    // occurrence rather than silently shifting it.
+    public bool IsInvalidLocalTime(DateTime resourceLocal)
+    {
+        if (resourceLocal.Kind != DateTimeKind.Unspecified)
+        {
+            throw new ArgumentException(
+                "A resource-local wall-clock time must have DateTimeKind.Unspecified.",
+                nameof(resourceLocal));
+        }
+
+        return _zone.IsInvalidTime(resourceLocal);
+    }
+
     private DateTime Resolve(DateTime resourceLocal, bool earliest)
     {
         // A wall clock is not an instant, and Unspecified is how .NET spells

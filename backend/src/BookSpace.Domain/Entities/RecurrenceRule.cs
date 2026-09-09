@@ -58,6 +58,14 @@ public class RecurrenceRule : IAuditable
             throw new ArgumentOutOfRangeException(nameof(intervalValue), "IntervalValue must be greater than zero.");
         if (string.IsNullOrWhiteSpace(timeZoneId))
             throw new ArgumentException("TimeZoneId is required.", nameof(timeZoneId));
+        // No CK_RecurrenceRules constraint backs this — unlike AvailabilityWindow,
+        // which CK_AvailabilityWindows_Window enforces at the DB too — so it is
+        // stated here only. An occurrence is one calendar day's pair of local
+        // times (RecurrenceExpansion, WP-5); FR-5.1 never asks for one that
+        // crosses midnight, and nothing upstream computes what "the next day"
+        // would even mean for a Monthly rule's occurrence date.
+        if (localEndTime <= localStartTime)
+            throw new ArgumentException("LocalEndTime must be after LocalStartTime.", nameof(localEndTime));
         // CK_RecurrenceRules_EndCondition: exactly one of EndDate / OccurrenceCount
         if ((endDate is null) == (occurrenceCount is null))
             throw new ArgumentException("Exactly one of EndDate or OccurrenceCount must be set.");
@@ -91,6 +99,20 @@ public class RecurrenceRule : IAuditable
         UpdatedByUserId = actorUserId;
     }
 
+    // The date of the occurrence at this zero-based index in the series — WP-5's
+    // RecurrenceExpansion walks the whole series with this rather than
+    // re-deriving the daily/weekly/monthly stepping, which is also what
+    // ComputeImpliedEndDate below uses for the span cap. One implementation,
+    // two callers, so the two can never compute a different date for the same
+    // index.
+    public DateOnly OccurrenceDate(int index)
+    {
+        if (index < 0)
+            throw new ArgumentOutOfRangeException(nameof(index), "index must not be negative.");
+
+        return StepDate(Frequency, StartDate, IntervalValue * index);
+    }
+
     // Decision #7 span cap: for an EndDate-bound rule this is just EndDate;
     // for an OccurrenceCount-bound rule it's the date of the last occurrence,
     // computed the same way full materialization will (last occurrence is
@@ -106,12 +128,18 @@ public class RecurrenceRule : IAuditable
             return endDate.Value;
 
         var steps = intervalValue * (occurrenceCount!.Value - 1);
-        return frequency switch
+        return StepDate(frequency, startDate, steps);
+    }
+
+    // steps is already IntervalValue-scaled — the caller multiplies by
+    // IntervalValue before this is reached, so this method only knows how to
+    // walk a plain count of days/weeks/months.
+    private static DateOnly StepDate(RecurrenceFrequency frequency, DateOnly startDate, int steps) =>
+        frequency switch
         {
             RecurrenceFrequency.Daily => startDate.AddDays(steps),
             RecurrenceFrequency.Weekly => startDate.AddDays(steps * 7),
             RecurrenceFrequency.Monthly => startDate.AddMonths(steps),
             _ => throw new ArgumentOutOfRangeException(nameof(frequency))
         };
-    }
 }

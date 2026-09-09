@@ -572,24 +572,28 @@ D2 → [`0020`](docs/decisions/0020-bookable-interval-semantics.md) and
 D3 → [`0021`](docs/decisions/0021-daylight-saving-for-availability-ranges.md)
 (both Phase 5). Nothing in `docs/wp3-plan.md` is still awaiting promotion.
 
-**Still open** — flag before building the affected feature, don't decide
-silently:
+24. [`0024`](docs/decisions/0024-dst-fallback-recurrence-policy.md) — the DST
+    **fall-back** case for a recurring occurrence (clocks go back, a local
+    wall-clock time is ambiguous rather than nonexistent) resolves to the
+    **earlier** of its two candidate UTC instants, for **both** the
+    occurrence's start and its end — not `0021`'s start-earlier/end-later split,
+    which is a property of a *range* allowed to stretch to 25 hours, whereas an
+    occurrence's nominal duration should not silently grow by an hour. No
+    occurrence is skipped (unlike spring-forward, `0008`): both instants are
+    real, so there is always something to create the `Booking` from, and no new
+    `Notifications` anchor is needed. Mechanically this is
+    `IResourceTimeZone.ToUtcEarliest`, already built in WP-3 Phase 5 — the gap
+    was the policy, not the code. **Settled by the repo owner 2026-09-08**, the
+    first decision of WP-5, before any of its code was written.
 
-- The DST **fall-back** case for a recurring booking **occurrence** (clocks go
-  back, a local time occurs twice and is ambiguous rather than nonexistent).
-  See the Notes section of `0008` for why it's a genuinely separate question
-  from spring-forward. `0021` resolves it for availability *ranges* — a range
-  absorbs a missing or repeated hour by being shorter or longer — and leaves
-  the *occurrence* case, an instant which has to land somewhere, exactly as
-  open as it was. **WP-5 owns it** — reassigned from WP-4 on 2026-09-07: WP-4
-  creates one-off bookings from explicit UTC instants supplied by the client
-  (which is what the availability endpoint already answers in), so no ambiguous
-  local time arises anywhere in it, and nothing WP-4 builds can answer the
-  question. Recurrence — where a rule expands a *wall-clock* time and has to
-  resolve the one that occurs twice — is WP-5's first task.
-  This is now the only open item — the
-  `ResourceType` question raised on 2026-09-03 was settled on 2026-09-04 and is
-  recorded in `0005`'s amendment.
+**§9's "Still open" list is now empty.** The DST fall-back case above was its
+last item, reassigned from WP-4 to WP-5 on 2026-09-07 and settled the next day:
+WP-4 creates one-off bookings from explicit UTC instants supplied by the
+client, so no ambiguous local time ever arose in anything it built; recurrence
+— where a rule expands a *wall-clock* time and has to resolve the one that
+occurs twice — is where the question finally had to be answered, and `0024` is
+that answer. The `ResourceType` question raised on 2026-09-03 was settled
+separately on 2026-09-04 and is recorded in `0005`'s amendment.
 
 If a task needs a decision that isn't listed above and isn't in this log,
 **stop and ask** rather than picking silently — same rule as always, this
@@ -1670,18 +1674,24 @@ Notes:
   **WP-5**: a one-off booking is created from explicit UTC instants, so no
   ambiguous local time arises in anything WP-4 builds.
 
-### WP-5 — Recurrence, Approvals & Time Correctness — **Not started**
+### WP-5 — Recurrence, Approvals & Time Correctness — **In progress**
 Source doc: `docs/Work Packages - Week 4.pdf` (week 4, backend track).
-**Start here: [`docs/wp5-plan.md`](docs/wp5-plan.md)** — written 2026-09-08 at
-the close of WP-4 as a handoff brief, deliberately **not yet a plan**. It carries
-what already exists that WP-5 builds on, the five settled decisions it inherits,
-the one genuinely open decision it owns, the five loose ends WP-4 handed it
-(one of which is a live correctness bug if ignored), the traps that have each
-already cost time once, and the shape questions to settle with the owner before
-any code. The phasing gets written into that file and approved first, as WP-3's
-and WP-4's were.
+**Plan: [`docs/wp5-plan.md`](docs/wp5-plan.md)**, approved 2026-09-08 after all
+seven of its shape questions were put to the owner in one sitting (the same
+process WP-3 and WP-4 each went through). The one genuinely open decision it
+owned — the DST fall-back policy for a recurring occurrence, §9's last open
+item — is now [`0024`](docs/decisions/0024-dst-fallback-recurrence-policy.md):
+an ambiguous local time resolves to the **earlier** of its two candidate UTC
+instants, for both an occurrence's start and its end.
 
-Test baseline at handoff: **879 unit + 406 integration, 0 failed**.
+Phase 1 ("creating a series") is split into two chunks: **1a, the pure
+`RecurrenceExpansion` — done 2026-09-09** (907 unit tests pass, 28 new;
+`RecurrenceRule.OccurrenceDate(int)`, `IResourceTimeZone.IsInvalidLocalTime`,
+and a same-day `LocalEndTime > LocalStartTime` constructor guard that
+`RecurrenceRule` was missing entirely before this — see wp5-plan.md §9 for
+what that gap would otherwise have done); **1b, the write path — not started**.
+
+Test baseline at WP-4 handoff: **879 unit + 406 integration, 0 failed**.
 
 - [ ] Create recurring bookings (daily/weekly/monthly) with interval and end
       condition. FR-5.1.
@@ -1716,9 +1726,11 @@ the same locks over the same index for FR-7.5/AC-5, so it is not a second
 strategy to invent.
 **What does not exist yet and WP-5 must build**: `dbo.ApproveBooking`, any
 approval transition on `Booking` (it has `Cancel`, `CancelForBlackout`,
-`CheckIn` and `MarkNoShow`, and nothing for approve or reject), the recurrence
-expansion, and the approver queue read. `RecurrenceRule` and
-`Bookings.RecurrenceRuleId` already exist and are unused —
-`dbo.CreateBooking` already takes `@RecurrenceRuleId`.
+`CheckIn` and `MarkNoShow`, and nothing for approve or reject), the
+series-creation write path (1b, below), and the approver queue read.
+`RecurrenceExpansion` (the pure Domain function, 1a) is now done;
+`Bookings.RecurrenceRuleId` still exists and is still unused —
+`dbo.CreateBooking` already takes `@RecurrenceRuleId`, and 1b is what will
+finally pass it something other than null.
 The genuinely open one is §9's DST **fall-back** case for an occurrence, which
 this package owns.

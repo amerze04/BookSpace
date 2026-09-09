@@ -203,4 +203,46 @@ public class SystemResourceTimeZoneTests
 
         Assert.Throws<ArgumentException>(() => NewYork.ToLocal(notAnInstant));
     }
+
+    // ---- IsInvalidLocalTime (WP-5) ------------------------------------------
+
+    [Fact]
+    public void AnOrdinaryLocalTimeIsNotInvalid()
+    {
+        Assert.False(NewYork.IsInvalidLocalTime(Local(2026, 9, 7, 9, 0)));
+    }
+
+    // The whole point of the ambiguous (clocks-back) case: it names two real
+    // instants, neither of which is "invalid" — only the gap is.
+    [Fact]
+    public void AnAmbiguousLocalTimeIsNotInvalid()
+    {
+        Assert.False(NewYork.IsInvalidLocalTime(Local(2026, 11, 1, 1, 30)));
+    }
+
+    [Theory]
+    [InlineData(2, 0, 0)]
+    [InlineData(2, 30, 0)]
+    [InlineData(2, 59, 59)]
+    public void ALocalTimeInsideTheGapIsInvalid(int hour, int minute, int second)
+    {
+        Assert.True(NewYork.IsInvalidLocalTime(Local(2026, 3, 8, hour, minute, second)));
+    }
+
+    [Fact]
+    public void TheLocalTimesAroundTheGapAreNotInvalid()
+    {
+        Assert.False(NewYork.IsInvalidLocalTime(Local(2026, 3, 8, 1, 59, 59)));
+        Assert.False(NewYork.IsInvalidLocalTime(Local(2026, 3, 8, 3, 0, 1)));
+    }
+
+    [Theory]
+    [InlineData(DateTimeKind.Utc)]
+    [InlineData(DateTimeKind.Local)]
+    public void IsInvalidLocalTimeRefusesAnythingThatIsNotAWallClock(DateTimeKind kind)
+    {
+        var notAWallClock = DateTime.SpecifyKind(Local(2026, 9, 7, 9, 0), kind);
+
+        Assert.Throws<ArgumentException>(() => NewYork.IsInvalidLocalTime(notAWallClock));
+    }
 }
