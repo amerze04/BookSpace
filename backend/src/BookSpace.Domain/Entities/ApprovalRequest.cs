@@ -51,4 +51,25 @@ public class ApprovalRequest
         Decision = ApprovalDecision.Expired;
         DecidedAtUtc = nowUtc;
     }
+
+    // Hardening pass, P2: the invariant this establishes is "a booking that is
+    // no longer Pending cannot have an actionable Pending ApprovalRequest".
+    // Called from every path that cancels a Pending booking — single-booking
+    // cancel, the blackout cascade, and whole-series cancellation — so a
+    // stale row can never be picked up by an approve/reject call or a future
+    // scanning job. System-initiated like Expire: there is no approver
+    // decision being recorded, only the fact that the booking it was about
+    // stopped existing to decide on. Silently returns rather than throwing
+    // when already decided — the caller cancels a booking regardless of
+    // whether its approval request happened to be decided a moment earlier
+    // in the same request (WP-5's own retry-safety pattern, applied here),
+    // and "already resolved, one way or another" is not a failure.
+    public void Withdraw(DateTime nowUtc)
+    {
+        if (Decision != ApprovalDecision.Pending)
+            return;
+
+        Decision = ApprovalDecision.Withdrawn;
+        DecidedAtUtc = nowUtc;
+    }
 }

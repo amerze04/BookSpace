@@ -48,6 +48,12 @@ public sealed class ApproveBookingCommandRequestHandler
             ?? throw new InvalidOperationException(
                 "No authenticated user: an approval decision records who made it.");
 
+        // Hardening pass, P2: read once here and passed to dbo.ApproveBooking
+        // as @CallerIsTenantAdmin, so the procedure's own re-check under lock
+        // (below) agrees with ApprovalReach's — a TenantAdmin's reach never
+        // depended on ResourceApprovers, so nothing about it can go stale.
+        var callerIsTenantAdmin = _currentUser.IsInRole(Role.TenantAdmin);
+
         var reach = await BookingApprovalReach.ResolveAsync(_bookings, _currentUser, actorUserId, cancellationToken);
 
         // Filtered in the query, so a booking this caller may not decide on is
@@ -72,11 +78,12 @@ public sealed class ApproveBookingCommandRequestHandler
         return await _unitOfWork.ExecuteAsync(
             async token =>
             {
-                var outcome = await _bookings.ApproveAsync(booking.Id, actorUserId, nowUtc, token);
+                var outcome = await _bookings.ApproveAsync(
+                    booking.Id, actorUserId, callerIsTenantAdmin, nowUtc, token);
 
                 if (outcome.Result != BookingApprovalResult.Approved)
                 {
-                    throw Rejection(outcome, booking.Id, booking.ResourceId);
+                    throw Rejection(outcome, booking.Id, booking.ResourceId, actorUserId);
                 }
 
                 var approvalRequest = await _bookings.FindApprovalRequestAsync(booking.Id, token)
@@ -110,10 +117,15 @@ public sealed class ApproveBookingCommandRequestHandler
     // reusing every code but the one genuinely new one (decision 0023's
     // point: AC-5 is satisfied by reusing WP-4's reason codes, not inventing
     // parallel ones).
-    private static AppException Rejection(BookingApprovalOutcome outcome, Guid bookingId, Guid resourceId) =>
+    private static AppException Rejection(
+        BookingApprovalOutcome outcome, Guid bookingId, Guid resourceId, Guid actorUserId) =>
         outcome.Result switch
         {
             BookingApprovalResult.BookingNotPending => new BookingNotPendingException(bookingId),
+            // Hardening pass, P2: the caller's own id is the only one that
+            // could have failed this check — dbo.ApproveBooking's
+            // eligibility re-check is by @ApproverUserId alone.
+            BookingApprovalResult.ApproverNotEligible => new ApproverNotEligibleException([actorUserId]),
             BookingApprovalResult.ResourceNotFound => new ResourceNotFoundException(resourceId),
             BookingApprovalResult.ResourceArchived => new ResourceArchivedException(resourceId),
             BookingApprovalResult.BlackoutPeriod => new BookingInBlackoutPeriodException(resourceId),

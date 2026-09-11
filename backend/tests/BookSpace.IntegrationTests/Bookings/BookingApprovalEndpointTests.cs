@@ -40,8 +40,8 @@ public class BookingApprovalEndpointTests
     private const string AcmeApprover = "approver@acme.test";
     private const string GlobexAdmin = "admin@globex.test";
 
-    private const string ConnectionString =
-        "Server=localhost\\SQLEXPRESS;Database=BookSpace_AuthTests;Trusted_Connection=True;TrustServerCertificate=True;";
+    private static readonly string ConnectionString =
+        IntegrationTestSettings.ConnectionStringFor("BookSpace_AuthTests");
 
     public BookingApprovalEndpointTests(AuthenticationTestHost host)
     {

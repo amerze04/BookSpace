@@ -14,8 +14,8 @@ namespace BookSpace.IntegrationTests;
 // while the constraint was missing in production.
 public class UserEmailUniquenessTests : IAsyncLifetime
 {
-    private const string ConnectionString =
-        "Server=localhost\\SQLEXPRESS;Database=BookSpace_EmailUniquenessTests;Trusted_Connection=True;TrustServerCertificate=True;";
+    private static readonly string ConnectionString =
+        IntegrationTestSettings.ConnectionStringFor("BookSpace_EmailUniquenessTests");
 
     private BookSpaceDbContext _context = null!;
 

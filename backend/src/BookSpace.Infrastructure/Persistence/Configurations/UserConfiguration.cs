@@ -12,6 +12,15 @@ internal sealed class UserConfiguration : IEntityTypeConfiguration<User>
         builder.HasKey(u => u.Id).HasName("PK_Users");
         builder.HasAlternateKey(u => u.CalendarFeedToken).HasName("UQ_Users_CalendarFeedToken");
 
+        // Hardening pass, P2/3: NOT declared here via HasAlternateKey. EF
+        // Core's alternate-key API requires every column to be non-nullable,
+        // and Users.OrgId is nullable by design — a SysAdmin genuinely has no
+        // organization (decision 0009). UQ_Users_Org_Id and the composite
+        // same-org FKs on Bookings that reference it are instead added as raw
+        // SQL in migration AddCrossTenantUserForeignKeys, the same category
+        // CLAUDE.md §5 already puts stored procedures and RLS policies in:
+        // EF's C# model cannot express them, so it never claims to own them.
+
         builder.Property(u => u.Email).HasMaxLength(320).IsRequired();
         builder.Property(u => u.PasswordHash).HasMaxLength(255).IsRequired();
         builder.Property(u => u.FullName).HasMaxLength(200).IsRequired();

@@ -111,9 +111,14 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
         // FR-7.4, fetched once: every occurrence belongs to the same tenant,
         // so the expiry configuration cannot differ between them — fetching
         // it per occurrence would be up to hundreds of identical round trips.
-        var expiryHours = status == BookingStatus.Pending
-            ? await _bookings.FindApprovalExpiryHoursAsync(resource.OrgId, cancellationToken)
-            : null;
+        //
+        // Hardening pass, P1: fetched unconditionally, not only when this
+        // snapshot says Pending. dbo.CreateBooking re-reads RequiresApproval
+        // itself and can downgrade a Confirmed request to Pending per
+        // occurrence — see CreateOccurrenceAsync — and if it does, FR-7.4's
+        // configured expiry still has to apply. The cost is one extra cheap
+        // read on a series that turns out fully Confirmed.
+        var expiryHours = await _bookings.FindApprovalExpiryHoursAsync(resource.OrgId, cancellationToken);
 
         // One snapshot read across the whole series' span, not one per
         // occurrence — safe because occurrences of *one* rule never overlap
@@ -141,44 +146,77 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
         // series simply never adds them.
         var pendingSkippedNotifications = new List<Notification>();
 
-        foreach (var occurrence in occurrences)
+        // Hardening pass, P2: the whole loop is now inside a try/catch whose
+        // only job is orphan prevention, not error handling. Before this
+        // pass, the compensating delete below only ran when the loop
+        // completed *normally* into an all-refused report — a genuinely
+        // unexpected exception mid-loop (a real DB error, a bug — anything
+        // other than dbo.CreateBooking's own clean rejection outcomes, which
+        // never throw) propagated straight out, leaving the rule persisted
+        // up front as an orphan with zero occurrences and no response ever
+        // reaching the client to explain it. This does not change what the
+        // client sees for that exception — it still propagates via `throw;`,
+        // preserving its original type and stack trace for GlobalExceptionHandler
+        // to map exactly as before — it only makes sure nothing is left
+        // behind when propagating it.
+        try
         {
-            if (occurrence.Outcome == RecurrenceOccurrenceOutcome.SkippedSpringForwardGap)
+            foreach (var occurrence in occurrences)
             {
-                pendingSkippedNotifications.Add(
-                    BuildSkippedNotification(rule, occurrence.OccurrenceDate, nowUtc));
-                reports.Add(RecurrenceOccurrenceReport.ForSkippedSpringForwardGap(occurrence.OccurrenceDate));
-                continue;
+                if (occurrence.Outcome == RecurrenceOccurrenceOutcome.SkippedSpringForwardGap)
+                {
+                    pendingSkippedNotifications.Add(
+                        BuildSkippedNotification(rule, occurrence.OccurrenceDate, nowUtc));
+                    reports.Add(RecurrenceOccurrenceReport.ForSkippedSpringForwardGap(occurrence.OccurrenceDate));
+                    continue;
+                }
+
+                var interval = occurrence.Interval!.Value;
+
+                // Entirely elapsed: the same rule CreateBookingCommandRequestHandler
+                // applies to a one-off request, applied per occurrence here.
+                if (interval.EndUtc <= nowUtc)
+                {
+                    reports.Add(
+                        RecurrenceOccurrenceReport.ForRefused(
+                            occurrence.OccurrenceDate, ReasonCodes.BookingInThePast));
+                    continue;
+                }
+
+                var eligibility = BookingEligibility.Evaluate(
+                    resource, interval, request.Quantity, zone, blackouts, booked);
+
+                if (eligibility != BookingEligibilityResult.Eligible)
+                {
+                    reports.Add(
+                        RecurrenceOccurrenceReport.ForRefused(occurrence.OccurrenceDate, ReasonCodeFor(eligibility)));
+                    continue;
+                }
+
+                var (bookingId, reasonCode) = await CreateOccurrenceAsync(
+                    resource, rule.Id, userId, interval, request.Quantity, request.Title, status, expiryHours,
+                    nowUtc, cancellationToken);
+
+                reports.Add(bookingId is { } id
+                    ? RecurrenceOccurrenceReport.ForCreated(occurrence.OccurrenceDate, id)
+                    : RecurrenceOccurrenceReport.ForRefused(occurrence.OccurrenceDate, reasonCode!));
+            }
+        }
+        catch
+        {
+            // Known, accepted gap: any spring-forward skip notifications
+            // built for occurrences processed before the throw are lost
+            // rather than flushed, on both branches below. Persisting them
+            // here would mean deciding whether *this* exception still leaves
+            // the series in a state worth notifying about, which is exactly
+            // the judgment call an unexpected exception cannot safely make —
+            // the normal, no-exception path below still flushes them.
+            if (!reports.Any(r => r.Status == RecurrenceOccurrenceReportStatus.Created))
+            {
+                await RemoveOrphanedRuleAsync(rule, cancellationToken);
             }
 
-            var interval = occurrence.Interval!.Value;
-
-            // Entirely elapsed: the same rule CreateBookingCommandRequestHandler
-            // applies to a one-off request, applied per occurrence here.
-            if (interval.EndUtc <= nowUtc)
-            {
-                reports.Add(
-                    RecurrenceOccurrenceReport.ForRefused(occurrence.OccurrenceDate, ReasonCodes.BookingInThePast));
-                continue;
-            }
-
-            var eligibility = BookingEligibility.Evaluate(
-                resource, interval, request.Quantity, zone, blackouts, booked);
-
-            if (eligibility != BookingEligibilityResult.Eligible)
-            {
-                reports.Add(
-                    RecurrenceOccurrenceReport.ForRefused(occurrence.OccurrenceDate, ReasonCodeFor(eligibility)));
-                continue;
-            }
-
-            var (bookingId, reasonCode) = await CreateOccurrenceAsync(
-                resource, rule.Id, userId, interval, request.Quantity, request.Title, status, expiryHours,
-                nowUtc, cancellationToken);
-
-            reports.Add(bookingId is { } id
-                ? RecurrenceOccurrenceReport.ForCreated(occurrence.OccurrenceDate, id)
-                : RecurrenceOccurrenceReport.ForRefused(occurrence.OccurrenceDate, reasonCode!));
+            throw;
         }
 
         if (!reports.Any(r => r.Status == RecurrenceOccurrenceReportStatus.Created))
@@ -191,8 +229,7 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
             // reference this rule (that is the condition for reaching this
             // branch at all), and pendingSkippedNotifications was never
             // added to the context, so there is nothing else to undo.
-            _recurrenceRules.Remove(rule);
-            await _recurrenceRules.SaveChangesAsync(cancellationToken);
+            await RemoveOrphanedRuleAsync(rule, cancellationToken);
 
             throw new NoOccurrencesCreatedException(reports);
         }
@@ -234,6 +271,17 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
         return span;
     }
 
+    // Hardening pass, P2: the one compensating action both the clean
+    // all-refused path and the mid-loop-exception path need, factored out so
+    // neither can drift from the other. Safe unconditionally, per the
+    // all-refused branch's own comment: reachable only when no Booking
+    // exists yet to reference this rule.
+    private async Task RemoveOrphanedRuleAsync(RecurrenceRule rule, CancellationToken cancellationToken)
+    {
+        _recurrenceRules.Remove(rule);
+        await _recurrenceRules.SaveChangesAsync(cancellationToken);
+    }
+
     // Decision 0008: told again 14 days before the occurrence's own date, via
     // the existing Reminder dispatch job — no new job, and the row is
     // anchored to RecurrenceRuleId + OccurrenceDate because there is no
@@ -273,6 +321,13 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
     // ApprovalRequest against a BookingId that was never created. And a 1205
     // retry of *this* occurrence stages the same pre-built instances again,
     // which EF simply treats as already tracked rather than duplicating.
+    //
+    // **Hardening pass, P1.** dbo.CreateBooking re-reads RequiresApproval under
+    // its own lock per occurrence and can downgrade a requested Confirmed to
+    // Pending — the same race CreateBookingCommandRequestHandler reacts to,
+    // one level up. Both possible outcomes are staged as plain objects (fixed
+    // ids, safe to repeat on retry) and only the one the procedure's
+    // ActualStatus actually names is staged into the DbContext.
     private async Task<(Guid? BookingId, string? ReasonCode)> CreateOccurrenceAsync(
         Resource resource,
         Guid recurrenceRuleId,
@@ -287,15 +342,14 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
     {
         var bookingId = Guid.NewGuid();
 
-        var approval = status == BookingStatus.Pending
-            ? new ApprovalRequest(
-                Guid.NewGuid(),
-                bookingId,
-                nowUtc,
-                expiryHours is null ? null : nowUtc.AddHours(expiryHours.Value))
-            : null;
+        var approval = new ApprovalRequest(
+            Guid.NewGuid(),
+            bookingId,
+            nowUtc,
+            expiryHours is null ? null : nowUtc.AddHours(expiryHours.Value));
 
-        var notifications = NotificationsFor(resource, bookingId, userId, status, nowUtc);
+        var confirmedNotifications = NotificationsFor(resource, bookingId, userId, BookingStatus.Confirmed, nowUtc);
+        var pendingNotifications = NotificationsFor(resource, bookingId, userId, BookingStatus.Pending, nowUtc);
 
         return await _unitOfWork.ExecuteAsync(
             async token =>
@@ -320,12 +374,19 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
                     return ((Guid?)null, ReasonCodeFor(outcome));
                 }
 
-                if (approval is not null)
+                var actualStatus = outcome.ActualStatus
+                    ?? throw new InvalidOperationException(
+                        "dbo.CreateBooking reported Created with no ActualStatus.");
+
+                if (actualStatus == BookingStatus.Pending)
                 {
                     _bookings.AddApprovalRequest(approval);
+                    _bookings.AddNotifications(pendingNotifications);
                 }
-
-                _bookings.AddNotifications(notifications);
+                else
+                {
+                    _bookings.AddNotifications(confirmedNotifications);
+                }
 
                 await _bookings.SaveChangesAsync(token);
 

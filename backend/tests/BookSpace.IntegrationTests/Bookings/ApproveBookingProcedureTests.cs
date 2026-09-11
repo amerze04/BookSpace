@@ -40,8 +40,8 @@ public class ApproveBookingProcedureTests
     private const string AcmeMember = "member1@acme.test";
     private const string AcmeApprover = "approver@acme.test";
 
-    private const string ConnectionString =
-        "Server=localhost\\SQLEXPRESS;Database=BookSpace_AuthTests;Trusted_Connection=True;TrustServerCertificate=True;";
+    private static readonly string ConnectionString =
+        IntegrationTestSettings.ConnectionStringFor("BookSpace_AuthTests");
 
     public ApproveBookingProcedureTests(AuthenticationTestHost host)
     {
@@ -71,6 +71,86 @@ public class ApproveBookingProcedureTests
             var stored = await ReadBookingAsync(bookingId);
             Assert.Equal("Confirmed", stored.Status);
             Assert.Equal(approverId, stored.UpdatedByUserId);
+        }
+        finally
+        {
+            await CleanUpAsync(resource.Id);
+        }
+    }
+
+    // ---- Approver eligibility re-check (hardening pass, P2) ---------------
+
+    [Fact]
+    public async Task ApproveBooking_ConfirmsWhenTheCallerIsAnAssignedApprover()
+    {
+        var resource = await CreateResourceAsync(capacity: 1);
+
+        try
+        {
+            var approverId = await ApproverIdAsync();
+            await AssignApproverAsync(resource, approverId);
+
+            var bookingId = await CreateBookingAsync(resource, At(9), At(10), quantity: 1, status: "Pending");
+
+            var outcome = await CallApproveAsync(resource, bookingId, approverId, callerIsTenantAdmin: false);
+
+            Assert.Equal("Approved", outcome.ResultCode);
+        }
+        finally
+        {
+            await CleanUpAsync(resource.Id);
+        }
+    }
+
+    // The race this migration closes: ApprovalReach resolved eligibility
+    // before the lock in this procedure was ever taken. Simulated here by
+    // the state that race would leave behind — the caller no longer appears
+    // in ResourceApprovers by the time the procedure runs — rather than
+    // trying to interleave two real HTTP requests around an admin's removal,
+    // which the unit-level ApproveBookingCommandRequestHandlerTests already
+    // covers via a fake. This is the proof that the procedure itself, not
+    // just the handler around it, refuses.
+    [Fact]
+    public async Task ApproveBooking_RefusesACallerNoLongerAssignedAsApprover()
+    {
+        var resource = await CreateResourceAsync(capacity: 1);
+
+        try
+        {
+            var approverId = await ApproverIdAsync();
+            // Deliberately never assigned via AssignApproverAsync — this
+            // caller is not, and was never, an approver on this resource.
+            var bookingId = await CreateBookingAsync(resource, At(9), At(10), quantity: 1, status: "Pending");
+
+            var outcome = await CallApproveAsync(resource, bookingId, approverId, callerIsTenantAdmin: false);
+
+            Assert.Equal("ApproverNotEligible", outcome.ResultCode);
+
+            var stored = await ReadBookingAsync(bookingId);
+            Assert.Equal("Pending", stored.Status);
+        }
+        finally
+        {
+            await CleanUpAsync(resource.Id);
+        }
+    }
+
+    // The other half of the same invariant: a TenantAdmin's reach (decision
+    // 0002) does not run through ResourceApprovers at all, so removing them
+    // from nothing they were ever in changes nothing.
+    [Fact]
+    public async Task ApproveBooking_ATenantAdminNeedsNoResourceApproversRow()
+    {
+        var resource = await CreateResourceAsync(capacity: 1);
+
+        try
+        {
+            var adminId = await ScalarAsync<Guid>("SELECT Id FROM dbo.Users WHERE Email = @p0;", AcmeAdmin);
+            var bookingId = await CreateBookingAsync(resource, At(9), At(10), quantity: 1, status: "Pending");
+
+            var outcome = await CallApproveAsync(resource, bookingId, adminId, callerIsTenantAdmin: true);
+
+            Assert.Equal("Approved", outcome.ResultCode);
         }
         finally
         {
@@ -430,21 +510,31 @@ public class ApproveBookingProcedureTests
 
     // ---- Calling the procedure -----------------------------------------------
 
+    // callerIsTenantAdmin defaults to true: every test in this file predates
+    // the hardening-pass eligibility re-check and is about capacity/blackout/
+    // status logic, not about who @ApproverUserId is — none arrange a real
+    // ResourceApprovers row for it, so simulating an admin caller (whose
+    // reach never runs through that table) preserves what each of these was
+    // actually testing. ApproveBooking_RefusesACallerNoLongerAssignedAsApprover
+    // is the one that sets it to false, on purpose.
     private async Task<ProcedureOutcome> CallApproveAsync(
-        TestResource resource, Guid bookingId, Guid approverUserId, DateTime? nowUtc = null)
+        TestResource resource, Guid bookingId, Guid approverUserId, DateTime? nowUtc = null,
+        bool callerIsTenantAdmin = true)
     {
         await using var connection = new SqlConnection(ConnectionString);
         await connection.OpenAsync();
         await SetTenantContextAsync(connection, resource.OrgId);
 
-        return await ExecuteApproveAsync(connection, bookingId, approverUserId, nowUtc ?? At(0));
+        return await ExecuteApproveAsync(
+            connection, bookingId, approverUserId, nowUtc ?? At(0), callerIsTenantAdmin);
     }
 
     // Retries a deadlock victim, because production does (IUnitOfWork). See
     // CreateBookingProcedureTests' identical helper for the full reasoning —
     // decision 0023 measured 1205 as routine at contention, not exotic.
     private static async Task<ProcedureOutcome> ExecuteApproveAsync(
-        SqlConnection connection, Guid bookingId, Guid approverUserId, DateTime nowUtc)
+        SqlConnection connection, Guid bookingId, Guid approverUserId, DateTime nowUtc,
+        bool callerIsTenantAdmin = true)
     {
         const int deadlockVictim = 1205;
         const int maxAttempts = 5;
@@ -453,7 +543,8 @@ public class ApproveBookingProcedureTests
         {
             try
             {
-                return await ExecuteApproveOnceAsync(connection, bookingId, approverUserId, nowUtc);
+                return await ExecuteApproveOnceAsync(
+                    connection, bookingId, approverUserId, nowUtc, callerIsTenantAdmin);
             }
             catch (SqlException e) when (e.Number == deadlockVictim && attempt < maxAttempts)
             {
@@ -463,7 +554,8 @@ public class ApproveBookingProcedureTests
     }
 
     private static async Task<ProcedureOutcome> ExecuteApproveOnceAsync(
-        SqlConnection connection, Guid bookingId, Guid approverUserId, DateTime nowUtc)
+        SqlConnection connection, Guid bookingId, Guid approverUserId, DateTime nowUtc,
+        bool callerIsTenantAdmin = true)
     {
         await using var command = connection.CreateCommand();
         command.CommandText = "dbo.ApproveBooking";
@@ -472,6 +564,7 @@ public class ApproveBookingProcedureTests
         command.Parameters.AddWithValue("@BookingId", bookingId);
         command.Parameters.AddWithValue("@ApproverUserId", approverUserId);
         command.Parameters.AddWithValue("@NowUtc", nowUtc);
+        command.Parameters.AddWithValue("@CallerIsTenantAdmin", callerIsTenantAdmin);
 
         await using var reader = await command.ExecuteReaderAsync();
         Assert.True(await reader.ReadAsync(), "dbo.ApproveBooking returned no result row.");
@@ -521,6 +614,17 @@ public class ApproveBookingProcedureTests
         var created = (await response.Content.ReadFromJsonAsync<CreateResourceCommandResponse>(TestJson.Options))!;
 
         return new TestResource(created.Id, await OrgIdOfAsync(created.Id), await MemberIdAsync());
+    }
+
+    // Through the real endpoint, so this exercises exactly the state a real
+    // admin action leaves in ResourceApprovers, not a hand-written INSERT.
+    private async Task AssignApproverAsync(TestResource resource, Guid approverId)
+    {
+        var client = await AuthenticatedClientAsync(AcmeAdmin);
+
+        (await client.PutAsJsonAsync(
+            $"/resources/{resource.Id}/approvers",
+            new { approverUserIds = new[] { approverId } })).EnsureSuccessStatusCode();
     }
 
     // Through the real procedure, exactly as CreateBookingProcedureTests calls

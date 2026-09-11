@@ -11,6 +11,27 @@ namespace BookSpace.Application.Features.Authentication.Login;
 // FR-2.4 an inactive user or suspended organization cannot obtain a session.
 public sealed class LoginCommandRequestHandler : IRequestHandler<LoginCommandRequest, LoginCommandResponse>
 {
+    // Hardening pass, P2 security. A fixed, valid-format PBKDF2 hash with no
+    // real password behind it, so IPasswordHasher.Verify below still runs its
+    // full 100k-iteration cost. Its only job is to make the nonexistent-user
+    // path pay the same work the real-user path always paid, so response
+    // timing stops being a statistically observable account-existence oracle.
+    // The result of verifying against it is never read for anything but
+    // discarding: it must be architecturally impossible for a coincidental
+    // match here to be mistaken for a successful login.
+    //
+    // A literal, pre-computed hash — not IPasswordHasher.Hash(...) called
+    // here — deliberately: this is BookSpace.Application, which CLAUDE.md §3
+    // keeps free of BookSpace.Infrastructure's concrete PasswordHasherAdapter,
+    // and computing it fresh via the injected interface on every handler
+    // construction would repeat the very cost this constant exists to pay
+    // exactly once, ahead of time. Produced by
+    // PasswordHasherAdapter().Hash("no real account uses this password") —
+    // regenerating it is safe any time; nothing decodes or depends on its
+    // specific bytes beyond "a hash Verify will spend real PBKDF2 work on".
+    private const string DummyPasswordHash =
+        "AQAAAAIAAYagAAAAEDCP5FwLtICvnB+dL5Mk9d5LxaSIn0Nsft9mp+IPyHkZJrsH0iwv3f3Me0u9EEgP1g==";
+
     private readonly IAuthenticationUserRepository _users;
     private readonly IRefreshTokenRepository _refreshTokens;
     private readonly IPasswordHasher _passwordHasher;
@@ -41,7 +62,21 @@ public sealed class LoginCommandRequestHandler : IRequestHandler<LoginCommandReq
         // The server log carries the real cause; the client does not.
         if (found is null)
         {
-            _logger.LogWarning("Login failed: no user for {Email}", email);
+            // Hardening pass, P2 security: verified against a fixed dummy
+            // hash before failing, so this path costs the same PBKDF2 work
+            // the real-user branch below always paid — otherwise a
+            // nonexistent email returns in microseconds while a wrong
+            // password on a real one costs a full KDF round, and that gap is
+            // a remotely observable account-enumeration oracle no reason
+            // code hides. The result is discarded unconditionally: nothing
+            // about "does it happen to verify" may ever influence what this
+            // branch does next.
+            _ = _passwordHasher.Verify(DummyPasswordHash, request.Password);
+
+            // No email logged, unlike the CLAUDE.md §4.4 violation this used
+            // to be the one exception to — every other branch here already
+            // logs only an id, never a submitted credential.
+            _logger.LogWarning("Login failed: no user for the submitted email");
             throw InvalidCredentials();
         }
 

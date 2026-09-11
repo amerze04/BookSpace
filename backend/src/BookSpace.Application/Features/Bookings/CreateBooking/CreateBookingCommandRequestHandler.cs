@@ -128,7 +128,7 @@ public sealed class CreateBookingCommandRequestHandler
                 resource, requested, request.Quantity, zone, blackouts, booked),
             resource.Id);
 
-        var status = resource.RequiresApproval ? BookingStatus.Pending : BookingStatus.Confirmed;
+        var requestedStatus = resource.RequiresApproval ? BookingStatus.Pending : BookingStatus.Confirmed;
 
         // **Everything below is staged before the unit of work opens**, and the
         // id is minted here rather than inside the delegate. Both are about the
@@ -140,12 +140,29 @@ public sealed class CreateBookingCommandRequestHandler
         // Staging once, outside, makes the delegate safe to repeat.
         var bookingId = Guid.NewGuid();
 
-        var approval = status == BookingStatus.Pending
-            ? await StageApprovalAsync(resource, bookingId, nowUtc, cancellationToken)
-            : null;
+        // Hardening pass, P1: dbo.CreateBooking may downgrade a requested
+        // Confirmed to Pending if RequiresApproval is true when it reads the
+        // resource under its own lock — this snapshot was read a moment
+        // earlier and can be stale. Both possible outcomes are therefore
+        // staged as plain objects (fixed ids, never inserted twice on a 1205
+        // retry) before the delegate opens, and only one is actually Add()-ed
+        // inside it, once the procedure's ActualStatus says which happened.
+        // expiryHours is fetched unconditionally for the same reason: if the
+        // downgrade fires, FR-7.4's configured expiry still has to apply, and
+        // fetching it late, inside the delegate, would be a read whose result
+        // feeds a freshly-minted ApprovalRequest id — exactly the double-insert
+        // hazard the comment above exists to avoid. The cost is one extra cheap
+        // read on the ordinary Confirmed path.
+        var expiryHours = await _bookings.FindApprovalExpiryHoursAsync(resource.OrgId, cancellationToken);
+        var approval = new ApprovalRequest(
+            Guid.NewGuid(),
+            bookingId,
+            nowUtc,
+            expiryHours is null ? null : nowUtc.AddHours(expiryHours.Value));
+        var approvalDetail = new BookingApprovalDetail(approval.Id, approval.ExpiresAtUtc);
 
-        _bookings.AddNotifications(
-            NotificationsFor(resource, bookingId, userId, status, nowUtc));
+        var confirmedNotifications = NotificationsFor(resource, bookingId, userId, BookingStatus.Confirmed, nowUtc);
+        var pendingNotifications = NotificationsFor(resource, bookingId, userId, BookingStatus.Pending, nowUtc);
 
         return await _unitOfWork.ExecuteAsync(
             async token =>
@@ -160,7 +177,7 @@ public sealed class CreateBookingCommandRequestHandler
                         endsAtUtc,
                         request.Quantity,
                         request.Title,
-                        status,
+                        requestedStatus,
                         CreatedByUserId: userId,
                         nowUtc),
                     token);
@@ -168,6 +185,24 @@ public sealed class CreateBookingCommandRequestHandler
                 if (outcome.Result != BookingCreationResult.Created)
                 {
                     throw Rejection(outcome, resource.Id);
+                }
+
+                var actualStatus = outcome.ActualStatus
+                    ?? throw new InvalidOperationException(
+                        "dbo.CreateBooking reported Created with no ActualStatus.");
+
+                // Staged only now that the real status is known, so a Pending
+                // booking always gets exactly one ApprovalRequest and the
+                // right notifications — never the ones built for the status
+                // this handler merely guessed at.
+                if (actualStatus == BookingStatus.Pending)
+                {
+                    _bookings.AddApprovalRequest(approval);
+                    _bookings.AddNotifications(pendingNotifications);
+                }
+                else
+                {
+                    _bookings.AddNotifications(confirmedNotifications);
                 }
 
                 // The approval request and the notifications, in the same
@@ -185,34 +220,11 @@ public sealed class CreateBookingCommandRequestHandler
                     endsAtUtc,
                     request.Quantity,
                     request.Title,
-                    status,
+                    actualStatus,
                     nowUtc,
-                    approval);
+                    actualStatus == BookingStatus.Pending ? approvalDetail : null);
             },
             cancellationToken);
-    }
-
-    // FR-7.1. The decision record WP-5's approve/reject endpoints will act on;
-    // this phase only creates it.
-    private async Task<BookingApprovalDetail> StageApprovalAsync(
-        Resource resource,
-        Guid bookingId,
-        DateTime nowUtc,
-        CancellationToken cancellationToken)
-    {
-        // FR-7.4: null means the tenant set no expiry, and the request then waits
-        // indefinitely rather than being expired by the stale-approval job.
-        var expiryHours = await _bookings.FindApprovalExpiryHoursAsync(resource.OrgId, cancellationToken);
-
-        var approvalRequest = new ApprovalRequest(
-            Guid.NewGuid(),
-            bookingId,
-            nowUtc,
-            expiryHours is null ? null : nowUtc.AddHours(expiryHours.Value));
-
-        _bookings.AddApprovalRequest(approvalRequest);
-
-        return new BookingApprovalDetail(approvalRequest.Id, approvalRequest.ExpiresAtUtc);
     }
 
     // FR-8.1, rows only — nothing sends anything yet (CLAUDE.md §7), and

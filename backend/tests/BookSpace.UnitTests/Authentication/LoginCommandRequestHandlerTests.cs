@@ -83,6 +83,34 @@ public class LoginCommandRequestHandlerTests
         Assert.Equal(AuthenticationFailureReason.InvalidCredentials, exception.ReasonCode);
     }
 
+    // Hardening pass, P2 security. Before this pass, an unknown email
+    // short-circuited before IPasswordHasher.Verify was ever called, while a
+    // real account always paid PBKDF2's cost — a timing gap large enough to
+    // be a remote, statistically observable account-existence oracle. Verify
+    // must now run on both paths, against a fixed dummy hash on this one, so
+    // the two cost the same regardless of which account exists.
+    [Fact]
+    public async Task Handle_UnknownEmail_StillCallsVerifyAgainstAFixedDummyHash()
+    {
+        var harness = new Harness();
+
+        await Assert.ThrowsAsync<AuthenticationException>(
+            () => harness.Handle("nobody@acme.test", "Passw0rd!"));
+
+        var checkedHash = Assert.Single(harness.PasswordHasher.VerifiedAgainst);
+
+        // Never the real stored-hash placeholder AddUser sets on actual
+        // accounts, and stable across calls — a fixed constant, not
+        // freshly (and expensively) generated per request.
+        Assert.NotEqual("stored-hash", checkedHash);
+
+        harness.PasswordHasher.VerifiedAgainst.Clear();
+        await Assert.ThrowsAsync<AuthenticationException>(
+            () => harness.Handle("still-nobody@acme.test", "Passw0rd!"));
+
+        Assert.Equal(checkedHash, Assert.Single(harness.PasswordHasher.VerifiedAgainst));
+    }
+
     [Fact]
     public async Task Handle_WrongPassword_ThrowsInvalidCredentials()
     {
@@ -150,7 +178,7 @@ public class LoginCommandRequestHandlerTests
         public FakeAuthenticationUserRepository Users { get; } = new();
         public FakeRefreshTokenRepository RefreshTokens { get; } = new();
         public FakeRefreshTokenFactory TokenFactory { get; } = new();
-        private readonly RecordingPasswordHasher _passwordHasher = new();
+        public RecordingPasswordHasher PasswordHasher { get; } = new();
         private readonly TestClock _clock = new(Now);
 
         public User AddUser(
@@ -181,7 +209,7 @@ public class LoginCommandRequestHandlerTests
             var handler = new LoginCommandRequestHandler(
                 Users,
                 RefreshTokens,
-                _passwordHasher,
+                PasswordHasher,
                 issuer,
                 NullLogger<LoginCommandRequestHandler>.Instance);
 

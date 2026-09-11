@@ -133,6 +133,57 @@ public class RejectBookingCommandRequestHandlerTests
         Assert.Equal(BookingStatus.Confirmed, booking.Status);
     }
 
+    // Hardening pass, P2 — approver TOCTOU, reject's half. Reachable is set
+    // directly (simulating ApprovalReach having resolved eligibility a
+    // moment ago, before an admin removed this caller from the resource),
+    // but ApprovableResourceIds — the re-check this pass added, queried
+    // fresh immediately before the mutation — no longer contains ResourceId.
+    // Before this pass, nothing re-verified eligibility here at all, and the
+    // rejection would have gone through.
+    [Fact]
+    public async Task RefusesAnApproverNoLongerAssignedToTheResource()
+    {
+        var booking = Booking();
+        var approverId = Guid.NewGuid();
+        var bookings = new FakeApprovalBookingRepository
+        {
+            Reachable = booking,
+            ApprovableResourceIds = [], // no longer includes booking's ResourceId
+        };
+
+        var exception = await Assert.ThrowsAsync<ApproverNotEligibleException>(
+            () => Handler(bookings, approverId, Role.Approver).Handle(
+                new RejectBookingCommandRequest(booking.Id), CancellationToken.None));
+
+        Assert.Equal(ErrorKind.RuleViolation, exception.Kind);
+        Assert.Equal(ReasonCodes.ApproverNotEligible, exception.ReasonCode);
+
+        // Refused before any mutation or save — the same "nothing partially
+        // applied" discipline ANonPendingBookingIsBookingNotPending already
+        // asserts for the sibling rejection.
+        Assert.Equal(BookingStatus.Pending, booking.Status);
+        Assert.Equal(0, bookings.SaveChangesCount);
+    }
+
+    // The other half: a TenantAdmin's reach does not depend on
+    // ApprovableResourceIds at all, so an empty set changes nothing for them.
+    [Fact]
+    public async Task ATenantAdminNeedsNoApprovableResourceIdsEntry()
+    {
+        var booking = Booking();
+        var bookings = new FakeApprovalBookingRepository
+        {
+            Reachable = booking,
+            ExistingApprovalRequest = new ApprovalRequest(Guid.NewGuid(), booking.Id, NowUtc, null),
+            ApprovableResourceIds = [],
+        };
+
+        var response = await Handler(bookings, Admin, Role.TenantAdmin).Handle(
+            new RejectBookingCommandRequest(booking.Id), CancellationToken.None);
+
+        Assert.Equal(BookingStatus.Rejected, response.Status);
+    }
+
     [Fact]
     public async Task ThrowsWhenThereIsNoAuthenticatedUser()
     {

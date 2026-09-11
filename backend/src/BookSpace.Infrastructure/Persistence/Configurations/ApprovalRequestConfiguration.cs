@@ -10,8 +10,12 @@ internal sealed class ApprovalRequestConfiguration : IEntityTypeConfiguration<Ap
     {
         builder.ToTable("ApprovalRequests", t =>
         {
+            // Hardening pass, P2: 'Withdrawn' added — a booking that is no
+            // longer Pending (cancelled directly, by the blackout cascade, or
+            // by a whole-series cancellation) cannot leave behind an
+            // actionable Pending ApprovalRequest. See ApprovalRequest.Withdraw.
             t.HasCheckConstraint("CK_ApprovalRequests_Decision",
-                "[Decision] IN ('Pending','Approved','Rejected','Expired')");
+                "[Decision] IN ('Pending','Approved','Rejected','Expired','Withdrawn')");
             t.HasCheckConstraint("CK_ApprovalRequests_DecisionPaired",
                 "([Decision] = 'Pending' AND [DecidedByUserId] IS NULL AND [DecidedAtUtc] IS NULL) " +
                 "OR ([Decision] <> 'Pending' AND [DecidedAtUtc] IS NOT NULL)");

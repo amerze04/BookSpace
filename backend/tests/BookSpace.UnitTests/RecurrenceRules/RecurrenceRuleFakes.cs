@@ -85,10 +85,41 @@ internal sealed class FakeSeriesBookingRepository : IBookingRepository
 
     public int SaveChangesCount { get; private set; }
 
+    // Hardening pass, P2: simulates the genuinely-unexpected exception the
+    // handler's try/catch (orphan prevention around the occurrence loop) is
+    // for — a real DB error, not one of dbo.CreateBooking's own clean
+    // rejection outcomes, which never throw. Null (the default) means every
+    // call succeeds or is dequeued normally, matching every test written
+    // before this pass. ThrowOnCallNumber is 1-based and 0 means "never" —
+    // set both to make the Nth call to CreateAsync throw instead of
+    // returning an outcome.
+    public Exception? ThrowOnCreate { get; set; }
+
+    public int ThrowOnCallNumber { get; set; }
+
+    private int _createCallCount;
+
     public Task<BookingCreationOutcome> CreateAsync(NewBooking booking, CancellationToken cancellationToken)
     {
         Attempted.Add(booking);
+        _createCallCount++;
+
+        if (ThrowOnCreate is { } exception && _createCallCount == ThrowOnCallNumber)
+        {
+            throw exception;
+        }
+
         var outcome = _outcomes.Count > 0 ? _outcomes.Dequeue() : _default;
+
+        // Hardening pass, P1: a queued/default outcome that did not specify
+        // ActualStatus (every one built before this pass) echoes the
+        // requested status back, matching FakeBookingRepository's default —
+        // "no downgrade" unless a test explicitly queues one.
+        if (outcome.Result == BookingCreationResult.Created && outcome.ActualStatus is null)
+        {
+            outcome = outcome with { ActualStatus = booking.Status };
+        }
+
         return Task.FromResult(outcome);
     }
 
@@ -128,6 +159,16 @@ internal sealed class FakeSeriesBookingRepository : IBookingRepository
         return Task.FromResult<IReadOnlyList<Booking>>(CancellableOccurrences);
     }
 
+    // Hardening pass, P2. Empty by default — "nothing Pending to withdraw" —
+    // which is what every existing series-cancel test here wants; a test
+    // proving the withdraw behavior sets it explicitly.
+    public IReadOnlyList<ApprovalRequest> PendingApprovalRequests { get; set; } = [];
+
+    public Task<IReadOnlyList<ApprovalRequest>> FindPendingApprovalRequestsAsync(
+        IReadOnlyCollection<Guid> bookingIds, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<ApprovalRequest>>(
+            PendingApprovalRequests.Where(a => bookingIds.Contains(a.BookingId)).ToList());
+
     // ---- Unused by either RecurrenceRules handler ----
 
     public Task<PagedResult<ListBookingsQueryResponse>> ListAsync(
@@ -144,7 +185,8 @@ internal sealed class FakeSeriesBookingRepository : IBookingRepository
         throw new NotSupportedException();
 
     public Task<BookingApprovalOutcome> ApproveAsync(
-        Guid bookingId, Guid approverUserId, DateTime nowUtc, CancellationToken cancellationToken) =>
+        Guid bookingId, Guid approverUserId, bool callerIsTenantAdmin, DateTime nowUtc,
+        CancellationToken cancellationToken) =>
         throw new NotSupportedException();
 
     public Task<Booking?> FindForApprovalAsync(

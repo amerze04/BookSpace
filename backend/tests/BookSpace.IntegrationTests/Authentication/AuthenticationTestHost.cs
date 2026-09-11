@@ -1,5 +1,6 @@
 using BookSpace.Application.Abstractions;
 using BookSpace.Infrastructure.Persistence;
+using BookSpace.IntegrationTests.Support;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
@@ -17,8 +18,8 @@ namespace BookSpace.IntegrationTests.Authentication;
 // Its own database, never the "BookSpace" dev one, following SeedDataTests.
 public sealed class AuthenticationTestHost : WebApplicationFactory<Program>, IAsyncLifetime
 {
-    private const string ConnectionString =
-        "Server=localhost\\SQLEXPRESS;Database=BookSpace_AuthTests;Trusted_Connection=True;TrustServerCertificate=True;";
+    private static readonly string ConnectionString =
+        IntegrationTestSettings.ConnectionStringFor("BookSpace_AuthTests");
 
     // Supplied here rather than committed to appsettings (CLAUDE.md §4.4). Long
     // enough to satisfy the 32-character JwtOptions guard.
@@ -37,6 +38,20 @@ public sealed class AuthenticationTestHost : WebApplicationFactory<Program>, IAs
         builder.UseSetting("Jwt:Audience", "BookSpace.Client");
         builder.UseSetting("Jwt:AccessTokenMinutes", "15");
         builder.UseSetting("Jwt:RefreshTokenDays", "14");
+
+        // Hardening pass, P2 security: Program.cs now rate-limits
+        // /auth/login and /auth/refresh. This suite has no shared token
+        // cache — most test classes log in fresh per test method — and
+        // every test in a full run shares one process, so a production-sized
+        // window would start rejecting logins partway through the suite
+        // rather than exercising the product code these tests are actually
+        // about. Effectively unlimited here, not disabled: the policy itself
+        // stays wired up and reachable, which is what an accidental removal
+        // would actually break.
+        builder.UseSetting("RateLimiting:Login:PermitLimit", "1000000");
+        builder.UseSetting("RateLimiting:Login:WindowSeconds", "60");
+        builder.UseSetting("RateLimiting:Refresh:PermitLimit", "1000000");
+        builder.UseSetting("RateLimiting:Refresh:WindowSeconds", "60");
 
         // Makes PolicyProbeController discoverable. The API has no business
         // endpoints yet, so without it there is nothing for the authorization

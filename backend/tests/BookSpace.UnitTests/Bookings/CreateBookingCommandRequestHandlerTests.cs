@@ -87,10 +87,12 @@ public class CreateBookingCommandRequestHandlerTests
         int? approvalExpiryHours = null,
         IReadOnlyList<UtcInterval>? blackouts = null,
         IReadOnlyList<BookedQuantity>? bookings = null,
-        Guid? currentUserId = null)
+        Guid? currentUserId = null,
+        BookingStatus? actualStatusOverride = null)
     {
         var availability = new FakeAvailabilityRepository(resource, blackouts, bookings);
-        var bookingRepository = new FakeBookingRepository(result, remainingCapacity, approvalExpiryHours);
+        var bookingRepository = new FakeBookingRepository(
+            result, remainingCapacity, approvalExpiryHours, actualStatusOverride);
         var unitOfWork = new PassThroughUnitOfWork();
 
         var handler = new CreateBookingCommandRequestHandler(
@@ -244,6 +246,45 @@ public class CreateBookingCommandRequestHandlerTests
         await harness.Handler.Handle(Request(resource), default);
 
         Assert.Null(harness.Bookings.AddedApprovalRequest);
+    }
+
+    // Hardening pass, P1. The resource snapshot read before the unit of work
+    // opened said RequiresApproval = false, so the handler asked
+    // dbo.CreateBooking for Confirmed — but the procedure re-reads
+    // RequiresApproval under its own lock and can answer with Pending instead,
+    // if an admin flipped the flag on in the gap. Before this pass the handler
+    // trusted its own guess unconditionally: it would have reported Confirmed,
+    // enqueued a Confirmed notification, and created no ApprovalRequest at all —
+    // a Pending booking (in the database) with no decision record for any
+    // approver to find, the exact FR-7.1 invariant this codebase guards
+    // everywhere else. Simulated here via FakeBookingRepository's
+    // actualStatusOverride, since no fake can simulate the lock itself — the
+    // race at the database is CreateBookingProcedureTests' job.
+    [Fact]
+    public async Task ReactsToTheProcedureDowngradingAConfirmedRequestToPending()
+    {
+        // Approvers assigned but RequiresApproval left false at the object
+        // level, so the handler's own pre-check still guesses Confirmed — the
+        // resource in the state it would be in a moment before an admin's
+        // SetRequiresApproval(true, ...) commits.
+        var resource = Room(requiresApproval: false);
+        resource.ReplaceApprovers([ApproverId], ActorId, NowUtc);
+
+        var harness = Build(resource, actualStatusOverride: BookingStatus.Pending, approvalExpiryHours: 48);
+
+        var response = await harness.Handler.Handle(Request(resource), default);
+
+        Assert.Equal(BookingStatus.Pending, response.Status);
+        Assert.NotNull(response.Approval);
+
+        Assert.NotNull(harness.Bookings.AddedApprovalRequest);
+        Assert.Equal(response.Id, harness.Bookings.AddedApprovalRequest!.BookingId);
+        Assert.Equal(NowUtc.AddHours(48), harness.Bookings.AddedApprovalRequest.ExpiresAtUtc);
+
+        // Exactly one notification, and it is the approval-requested kind —
+        // never the Confirmed one the handler's own stale guess would have sent.
+        var notification = Assert.Single(harness.Bookings.AddedNotifications);
+        Assert.Equal(NotificationKind.ApprovalRequested, notification.Kind);
     }
 
     // ---- Notification rows (FR-8.1) ----------------------------------------

@@ -37,8 +37,8 @@ public class CreateRecurrenceSeriesEndpointTests
     private const string AcmeApprover = "approver@acme.test";
     private const string SysAdmin = "sysadmin@bookspace.local";
 
-    private const string ConnectionString =
-        "Server=localhost\\SQLEXPRESS;Database=BookSpace_AuthTests;Trusted_Connection=True;TrustServerCertificate=True;";
+    private static readonly string ConnectionString =
+        IntegrationTestSettings.ConnectionStringFor("BookSpace_AuthTests");
 
     public CreateRecurrenceSeriesEndpointTests(AuthenticationTestHost host)
     {
@@ -306,6 +306,133 @@ public class CreateRecurrenceSeriesEndpointTests
                     localEndTime = "10:00:00",
                     startDate = StartDate.ToString("yyyy-MM-dd"),
                     occurrenceCount = 3,
+                });
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal("ValidationFailed", await ReasonCodeAsync(response));
+        }
+        finally
+        {
+            await CleanUpAsync(resource);
+        }
+    }
+
+    // ---- Hardening pass: extreme input reaches 400, never 500 ---------------
+    //
+    // Before CreateRecurrenceSeriesCommandRequestValidator gained these bounds,
+    // each request below reached RecurrenceRule's constructor unvalidated and
+    // threw a plain ArgumentException/ArgumentOutOfRangeException —
+    // GlobalExceptionHandler has no case for either, so ordinary (if extreme)
+    // client input surfaced as an unhandled 500 rather than a reason code.
+    // These are boundary/malicious-input tests in the sense the hardening
+    // pass asked for: values a real client could send, not merely values the
+    // domain constructor happens to reject.
+
+    [Fact]
+    public async Task Post_RefusesAnIntervalValueBeyondTheMaximumWith400NotServerError()
+    {
+        var resource = await CreateResourceAsync();
+
+        try
+        {
+            var client = await AuthenticatedClientAsync(AcmeMember);
+            var response = await client.PostAsJsonAsync(
+                "/recurrence-rules",
+                new
+                {
+                    resourceId = resource,
+                    frequency = "Weekly",
+                    intervalValue = int.MaxValue,
+                    localStartTime = "09:00:00",
+                    localEndTime = "10:00:00",
+                    startDate = StartDate.ToString("yyyy-MM-dd"),
+                    occurrenceCount = 3,
+                });
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal("ValidationFailed", await ReasonCodeAsync(response));
+        }
+        finally
+        {
+            await CleanUpAsync(resource);
+        }
+    }
+
+    [Fact]
+    public async Task Post_RefusesAnOccurrenceCountBeyondTheMaximumWith400NotServerError()
+    {
+        var resource = await CreateResourceAsync();
+
+        try
+        {
+            var client = await AuthenticatedClientAsync(AcmeMember);
+            var response = await client.PostAsJsonAsync(
+                "/recurrence-rules",
+                Series(resource, occurrenceCount: int.MaxValue));
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal("ValidationFailed", await ReasonCodeAsync(response));
+        }
+        finally
+        {
+            await CleanUpAsync(resource);
+        }
+    }
+
+    [Fact]
+    public async Task Post_RefusesAnEndDateBeyondTheTwoYearCapWith400NotServerError()
+    {
+        var resource = await CreateResourceAsync();
+
+        try
+        {
+            var client = await AuthenticatedClientAsync(AcmeMember);
+            var response = await client.PostAsJsonAsync(
+                "/recurrence-rules",
+                new
+                {
+                    resourceId = resource,
+                    frequency = "Weekly",
+                    intervalValue = 1,
+                    localStartTime = "09:00:00",
+                    localEndTime = "10:00:00",
+                    startDate = StartDate.ToString("yyyy-MM-dd"),
+                    endDate = StartDate.AddYears(3).ToString("yyyy-MM-dd"),
+                });
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal("ValidationFailed", await ReasonCodeAsync(response));
+        }
+        finally
+        {
+            await CleanUpAsync(resource);
+        }
+    }
+
+    // A StartDate far enough in the future that, combined with a large but
+    // individually-legal IntervalValue and OccurrenceCount, would step the
+    // implied end date past DateOnly's own year-9999 ceiling inside
+    // RecurrenceRule's constructor — the overflow case rather than the plain
+    // over-the-cap case above.
+    [Fact]
+    public async Task Post_RefusesAStartDateThatWouldOverflowTheImpliedEndDateWith400NotServerError()
+    {
+        var resource = await CreateResourceAsync();
+
+        try
+        {
+            var client = await AuthenticatedClientAsync(AcmeMember);
+            var response = await client.PostAsJsonAsync(
+                "/recurrence-rules",
+                new
+                {
+                    resourceId = resource,
+                    frequency = "Weekly",
+                    intervalValue = 366,
+                    localStartTime = "09:00:00",
+                    localEndTime = "10:00:00",
+                    startDate = "9900-01-01",
+                    occurrenceCount = 730,
                 });
 
             Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);

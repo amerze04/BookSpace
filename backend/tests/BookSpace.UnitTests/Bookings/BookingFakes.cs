@@ -5,6 +5,7 @@ using BookSpace.Application.Features.Bookings.GetBooking;
 using BookSpace.Application.Features.Bookings.ListBookings;
 using BookSpace.Domain.Availability;
 using BookSpace.Domain.Entities;
+using BookSpace.Domain.Enums;
 
 namespace BookSpace.UnitTests.Bookings;
 
@@ -63,14 +64,26 @@ internal sealed class FakeAvailabilityRepository : IAvailabilityRepository
 // handler test drive every result code the procedure is allowed to return.
 internal sealed class FakeBookingRepository : IBookingRepository
 {
-    private readonly BookingCreationOutcome _outcome;
+    private readonly BookingCreationResult _result;
+    private readonly int? _remainingCapacity;
+
+    // Hardening pass, P1: null means "echo whatever status the handler asked
+    // for", matching every real Created path except the one this parameter
+    // exists to simulate — dbo.CreateBooking downgrading a requested Confirmed
+    // to Pending because RequiresApproval was true under the lock. A test
+    // proving that reaction sets this explicitly; every other test is
+    // unaffected by its default.
+    private readonly BookingStatus? _actualStatusOverride;
 
     public FakeBookingRepository(
         BookingCreationResult result = BookingCreationResult.Created,
         int? remainingCapacity = null,
-        int? approvalExpiryHours = null)
+        int? approvalExpiryHours = null,
+        BookingStatus? actualStatusOverride = null)
     {
-        _outcome = new BookingCreationOutcome(result, remainingCapacity);
+        _result = result;
+        _remainingCapacity = remainingCapacity;
+        _actualStatusOverride = actualStatusOverride;
         ApprovalExpiryHours = approvalExpiryHours;
     }
 
@@ -91,7 +104,12 @@ internal sealed class FakeBookingRepository : IBookingRepository
     public Task<BookingCreationOutcome> CreateAsync(NewBooking booking, CancellationToken cancellationToken)
     {
         Created = booking;
-        return Task.FromResult(_outcome);
+
+        var actualStatus = _result == BookingCreationResult.Created
+            ? _actualStatusOverride ?? booking.Status
+            : (BookingStatus?)null;
+
+        return Task.FromResult(new BookingCreationOutcome(_result, _remainingCapacity, actualStatus));
     }
 
     public void AddApprovalRequest(ApprovalRequest approvalRequest) =>
@@ -200,7 +218,8 @@ internal sealed class FakeBookingRepository : IBookingRepository
     // an Approver's scope=tenant read — so both need a real, settable answer
     // rather than a throw.
     public Task<BookingApprovalOutcome> ApproveAsync(
-        Guid bookingId, Guid approverUserId, DateTime nowUtc, CancellationToken cancellationToken) =>
+        Guid bookingId, Guid approverUserId, bool callerIsTenantAdmin, DateTime nowUtc,
+        CancellationToken cancellationToken) =>
         throw new NotSupportedException();
 
     public Task<Booking?> FindForApprovalAsync(
@@ -227,6 +246,16 @@ internal sealed class FakeBookingRepository : IBookingRepository
 
     public Task<ApprovalRequest?> FindApprovalRequestAsync(Guid bookingId, CancellationToken cancellationToken) =>
         Task.FromResult(ExistingApprovalRequest);
+
+    // Hardening pass, P2. Empty by default — "this cancellation has nothing
+    // Pending to withdraw" — which is what every existing cancel test here
+    // wants; a test proving the withdraw behavior sets it explicitly.
+    public IReadOnlyList<ApprovalRequest> PendingApprovalRequests { get; set; } = [];
+
+    public Task<IReadOnlyList<ApprovalRequest>> FindPendingApprovalRequestsAsync(
+        IReadOnlyCollection<Guid> bookingIds, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<ApprovalRequest>>(
+            PendingApprovalRequests.Where(a => bookingIds.Contains(a.BookingId)).ToList());
 }
 
 // Runs the delegate straight through. The real implementation's job — a

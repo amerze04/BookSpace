@@ -39,6 +39,31 @@ public class PagedQueryRulesTests
         Assert.Contains(result.Errors, e => e.PropertyName == nameof(ProbeQuery.Page));
     }
 
+    // Hardening pass, P3. Before PagingDefaults.MaxPage existed, Page had no
+    // upper bound at all: (Page - 1) * PageSize in ToPagedResultAsync is
+    // plain int arithmetic, and at PageSize's own maximum (100), a Page above
+    // roughly 21.4 million overflows int and wraps to a negative value — a
+    // negative OFFSET that SQL Server rejects, reaching the client as an
+    // unhandled 500 rather than a 400 naming the field. int.MaxValue is the
+    // sharpest version of that input; well below it is already unreasonable
+    // for any real result set, which is what MaxPage actually enforces.
+    [Theory]
+    [InlineData(PagingDefaults.MaxPage + 1)]
+    [InlineData(int.MaxValue)]
+    public void Page_AboveTheCeiling_IsRejected(int page)
+    {
+        var result = Validator.Validate(new ProbeQuery(Page: page, PageSize: PagingDefaults.MaxPageSize));
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.PropertyName == nameof(ProbeQuery.Page));
+    }
+
+    [Fact]
+    public void Page_AtTheCeiling_IsAccepted()
+    {
+        Assert.True(Validator.Validate(new ProbeQuery(Page: PagingDefaults.MaxPage)).IsValid);
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(-5)]

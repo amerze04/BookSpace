@@ -1,0 +1,91 @@
+# Hardening pass — engineering/CI item. Before this workflow existed, the
+# backend had substantial unit and integration test suites (1053 unit,
+# 487 integration as of this pass) but nothing ran them automatically, and
+# the integration suite was hardcoded to a local Windows SQL Server Express
+# instance (see tests/BookSpace.IntegrationTests/Support/IntegrationTestSettings.cs
+# for the override this workflow relies on). This runs both suites on every
+# push/PR against a real SQL Server — CLAUDE.md §8 is explicit that the
+# concurrency and isolation suites need real locking and real RLS, so this
+# deliberately does not use EF's in-memory provider anywhere.
+#
+# Recommended branch protection (cannot be set from this file): require the
+# "backend" job below as a required status check on `main` and `dev`.
+name: Backend CI
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: ${{ secrets.CI_SQL_SA_PASSWORD || 'BookSpace!CI-Only-1' }}
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+
+    env:
+      # Consumed by IntegrationTestSettings.ConnectionStringFor — SQL
+      # authentication rather than the Windows Trusted_Connection every
+      # developer's local appsettings/test run uses, since the container has
+      # no Windows integrated auth to offer. {0} is filled in per test suite
+      # with its own throwaway database name.
+      BOOKSPACE_TEST_CONNECTION_STRING_TEMPLATE: >-
+        Server=localhost,1433;Database={0};User Id=sa;Password=${{ secrets.CI_SQL_SA_PASSWORD || 'BookSpace!CI-Only-1' }};TrustServerCertificate=True;
+      # BookSpace.Api's own JwtOptions.SigningKey guard (CLAUDE.md §4.4)
+      # fails startup below 32 characters; this is CI-only and never a real
+      # secret. The Api project itself is never started as a server in this
+      # workflow — dotnet test boots it in-process via WebApplicationFactory —
+      # so this only needs to satisfy that startup guard.
+      Jwt__SigningKey: "ci-only-signing-key-not-used-in-production"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Wait for SQL Server to accept connections
+        run: |
+          for i in $(seq 1 30); do
+            if docker exec "$(docker ps -q --filter ancestor=mcr.microsoft.com/mssql/server:2022-latest)" \
+              /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "${{ secrets.CI_SQL_SA_PASSWORD || 'BookSpace!CI-Only-1' }}" -Q "SELECT 1" > /dev/null 2>&1; then
+              echo "SQL Server is accepting connections."
+              exit 0
+            fi
+            echo "Waiting for SQL Server... ($i/30)"
+            sleep 2
+          done
+          echo "SQL Server did not become ready in time." >&2
+          exit 1
+
+      - name: Restore
+        run: dotnet restore BookSpace.slnx
+
+      - name: Build
+        run: dotnet build BookSpace.slnx --no-restore --configuration Release
+
+      - name: Unit tests
+        run: dotnet test tests/BookSpace.UnitTests --no-build --configuration Release --logger "console;verbosity=normal"
+
+      - name: Integration tests
+        run: dotnet test tests/BookSpace.IntegrationTests --no-build --configuration Release --logger "console;verbosity=normal"

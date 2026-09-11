@@ -13,19 +13,32 @@ namespace BookSpace.Application.Features.BlackoutPeriods.CreateBlackoutPeriod;
 // Same ordering discipline as the Phase 2 and 3 write handlers: every rule check
 // runs before any mutation, so a rejected request leaves the request-scoped
 // DbContext untouched and nothing has to be undone.
+//
+// **Hardening pass, P0.** The cascade used to read "which bookings does this
+// cancel" with no lock at all, before any transaction existed — a booking
+// dbo.CreateBooking committed in the gap between that read and this handler's
+// own SaveChangesAsync was never selected for cancellation, violating decision
+// 0001's absolute-priority guarantee. Now wrapped in IUnitOfWork.ExecuteAsync,
+// taking dbo.LockBookingsForBlackout's range lock — the identical lock
+// dbo.CreateBooking/dbo.ApproveBooking already take — before the read. See
+// IBlackoutPeriodRepository.LockBookingRangeAsync and
+// docs/decisions/0023-booking-concurrency-strategy.md.
 public sealed class CreateBlackoutPeriodCommandRequestHandler
     : IRequestHandler<CreateBlackoutPeriodCommandRequest, CreateBlackoutPeriodCommandResponse>
 {
     private readonly IBlackoutPeriodRepository _blackouts;
+    private readonly IUnitOfWork _unitOfWork;
     private readonly ICurrentUser _currentUser;
     private readonly IClock _clock;
 
     public CreateBlackoutPeriodCommandRequestHandler(
         IBlackoutPeriodRepository blackouts,
+        IUnitOfWork unitOfWork,
         ICurrentUser currentUser,
         IClock clock)
     {
         _blackouts = blackouts;
+        _unitOfWork = unitOfWork;
         _currentUser = currentUser;
         _clock = clock;
     }
@@ -79,31 +92,61 @@ public sealed class CreateBlackoutPeriodCommandRequestHandler
             actorUserId,
             nowUtc);
 
-        _blackouts.Add(blackout);
+        // Everything below is staged before the unit of work opens, matching
+        // CreateBookingCommandRequestHandler's own rule: the delegate can run
+        // more than once (1205), so blackout.Id was already minted above via
+        // Guid.NewGuid() rather than inside it.
+        return await _unitOfWork.ExecuteAsync(
+            async token =>
+            {
+                // P0: the lock, taken before the read it protects. Joins this
+                // transaction, so a concurrent dbo.CreateBooking on the same
+                // resource+interval now genuinely blocks behind it (or vice
+                // versa) instead of racing an unlocked SELECT.
+                await _blackouts.LockBookingRangeAsync(resource.Id, startsAtUtc, endsAtUtc, token);
 
-        // Decision 0001. Read after the blackout is staged but before the save,
-        // so both land in one transaction: a cancellation that committed without
-        // its blackout, or a blackout without its cancellations, would leave the
-        // absolute-priority guarantee broken with nothing to point at.
-        var bookings = await _blackouts.FindBookingsToCancelAsync(
-            resource.Id, startsAtUtc, endsAtUtc, nowUtc, cancellationToken);
+                // Re-added on every retry attempt; already-tracked after the
+                // first, so this is a no-op rather than a second insert.
+                _blackouts.Add(blackout);
 
-        var cascade = BlackoutCascade.Apply(blackout, bookings, actorUserId, nowUtc);
-        _blackouts.AddNotifications(cascade.Notifications);
+                // Decision 0001. Read after the lock, so nothing committed
+                // into this range after the lock was taken can be missed —
+                // and after the blackout is staged but before the save, so
+                // both land in one transaction: a cancellation that committed
+                // without its blackout, or a blackout without its
+                // cancellations, would leave the absolute-priority guarantee
+                // broken with nothing to point at.
+                var bookings = await _blackouts.FindBookingsToCancelAsync(
+                    resource.Id, startsAtUtc, endsAtUtc, nowUtc, token);
 
-        // One save for the blackout, the cancellations and the notifications. No
-        // explicit transaction: SaveChanges is already transactional, so
-        // CLAUDE.md §5's execution-strategy rule does not apply here (see
-        // IBlackoutPeriodRepository).
-        await _blackouts.SaveChangesAsync(cancellationToken);
+                // Hardening pass, P2: withdrawn by BlackoutCascade.Apply for
+                // whichever of these bookings turn out Pending — see
+                // ApprovalRequest.Withdraw.
+                var pendingApprovals = await _blackouts.FindPendingApprovalRequestsAsync(
+                    bookings.Select(b => b.Id).ToList(), token);
 
-        return new CreateBlackoutPeriodCommandResponse(
-            blackout.Id,
-            blackout.ResourceId,
-            blackout.StartsAtUtc,
-            blackout.EndsAtUtc,
-            blackout.Reason,
-            blackout.CreatedAtUtc,
-            cascade.CancelledBookings);
+                // See BlackoutCascade.Apply's own header for why a retry
+                // replaying this same list is safe rather than a duplicate
+                // cancellation or a crash.
+                var cascade = BlackoutCascade.Apply(
+                    blackout,
+                    bookings,
+                    pendingApprovals.ToDictionary(a => a.BookingId),
+                    actorUserId,
+                    nowUtc);
+                _blackouts.AddNotifications(cascade.Notifications);
+
+                await _blackouts.SaveChangesAsync(token);
+
+                return new CreateBlackoutPeriodCommandResponse(
+                    blackout.Id,
+                    blackout.ResourceId,
+                    blackout.StartsAtUtc,
+                    blackout.EndsAtUtc,
+                    blackout.Reason,
+                    blackout.CreatedAtUtc,
+                    cascade.CancelledBookings);
+            },
+            cancellationToken);
     }
 }

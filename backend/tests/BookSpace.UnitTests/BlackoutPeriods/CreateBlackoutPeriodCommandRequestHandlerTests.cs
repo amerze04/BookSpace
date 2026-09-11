@@ -2,6 +2,7 @@ using BookSpace.Application.Common.Errors;
 using BookSpace.Application.Features.BlackoutPeriods.CreateBlackoutPeriod;
 using BookSpace.Domain.Entities;
 using BookSpace.Domain.Enums;
+using BookSpace.UnitTests.Bookings;
 using BookSpace.UnitTests.Resources;
 using BookSpace.UnitTests.Security;
 
@@ -37,7 +38,7 @@ public class CreateBlackoutPeriodCommandRequestHandlerTests
 
     private static CreateBlackoutPeriodCommandRequestHandler Handler(
         FakeBlackoutPeriodRepository repository) =>
-        new(repository, new FixedCurrentUser(AdminId), new TestClock(NowUtc));
+        new(repository, new PassThroughUnitOfWork(), new FixedCurrentUser(AdminId), new TestClock(NowUtc));
 
     private static CreateBlackoutPeriodCommandRequest Request(
         Guid resourceId,
@@ -100,6 +101,29 @@ public class CreateBlackoutPeriodCommandRequestHandlerTests
         Assert.Equal(
             (resource.Id, BlackoutStarts, BlackoutEnds, NowUtc),
             repository.CascadeQuery);
+    }
+
+    // Hardening pass, P2: "a booking that is no longer Pending cannot have an
+    // actionable Pending ApprovalRequest", enforced here for the blackout
+    // cascade specifically — the one cancellation path that cancels bookings
+    // it did not look up individually, so it needs its own proof.
+    [Fact]
+    public async Task Handle_WithdrawsThePendingApprovalRequestOfEveryPendingBookingItCancels()
+    {
+        var resource = ExistingResource();
+        var confirmed = BookingOn(resource, BlackoutStarts.AddHours(1), BlackoutStarts.AddHours(2));
+        var pending = BookingOn(
+            resource, BlackoutStarts.AddHours(3), BlackoutStarts.AddHours(4), BookingStatus.Pending);
+        var approval = new ApprovalRequest(Guid.NewGuid(), pending.Id, NowUtc, null);
+        var repository = new FakeBlackoutPeriodRepository(resource, [confirmed, pending])
+        {
+            PendingApprovalRequests = [approval],
+        };
+
+        await Handler(repository).Handle(Request(resource.Id), CancellationToken.None);
+
+        Assert.Equal(ApprovalDecision.Withdrawn, approval.Decision);
+        Assert.Equal(NowUtc, approval.DecidedAtUtc);
     }
 
     // ---- Decision 0001: absolute priority ----
@@ -353,7 +377,7 @@ public class CreateBlackoutPeriodCommandRequestHandlerTests
         var resource = ExistingResource();
         var repository = new FakeBlackoutPeriodRepository(resource);
         var handler = new CreateBlackoutPeriodCommandRequestHandler(
-            repository, new FixedCurrentUser(null), new TestClock(NowUtc));
+            repository, new PassThroughUnitOfWork(), new FixedCurrentUser(null), new TestClock(NowUtc));
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             handler.Handle(Request(resource.Id), CancellationToken.None));

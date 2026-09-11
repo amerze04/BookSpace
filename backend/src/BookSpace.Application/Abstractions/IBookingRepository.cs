@@ -48,8 +48,18 @@ public interface IBookingRepository
     // since the request was created. Never throws for a business rejection,
     // on the same reasoning as CreateAsync: a since-taken slot is an answer,
     // not a fault.
+    // callerIsTenantAdmin, hardening pass P2: decides whether
+    // dbo.ApproveBooking re-checks @approverUserId against ResourceApprovers
+    // under its own lock. A TenantAdmin's reach (decision 0002) never
+    // depended on that table, so nothing can go stale for them; an Approver's
+    // does, and this is what closes the TOCTOU window between ApprovalReach
+    // resolving eligibility and this call taking the lock.
     Task<BookingApprovalOutcome> ApproveAsync(
-        Guid bookingId, Guid approverUserId, DateTime nowUtc, CancellationToken cancellationToken);
+        Guid bookingId,
+        Guid approverUserId,
+        bool callerIsTenantAdmin,
+        DateTime nowUtc,
+        CancellationToken cancellationToken);
 
     // ---- The reads (WP-4 Phase 2a, FR-4.4) ----
     //
@@ -164,6 +174,15 @@ public interface IBookingRepository
     // handler finding null here has a data-integrity bug, not a client error.
     Task<ApprovalRequest?> FindApprovalRequestAsync(Guid bookingId, CancellationToken cancellationToken);
 
+    // Hardening pass, P2: every still-Pending ApprovalRequest among the given
+    // bookings — what CancelBookingCommandRequestHandler and
+    // CancelRecurrenceSeriesCommandRequestHandler withdraw when they cancel a
+    // Pending booking, so a stale row is never left for an approve/reject
+    // call or a future scanning job to act on. Tracked, since the caller
+    // mutates each one through ApprovalRequest.Withdraw.
+    Task<IReadOnlyList<ApprovalRequest>> FindPendingApprovalRequestsAsync(
+        IReadOnlyCollection<Guid> bookingIds, CancellationToken cancellationToken);
+
     // ---- The rows derived from a booking (WP-4 Phase 1c) ----
     //
     // These go through EF, not the procedure: they carry no capacity claim and
@@ -226,7 +245,15 @@ public sealed record NewBooking(
 // this booking: the figure the two capacity refusals are split on, and on the
 // Created path what is left after it. Null where the question did not arise —
 // the resource was missing, archived, or blacked out.
-public sealed record BookingCreationOutcome(BookingCreationResult Result, int? RemainingCapacity);
+//
+// **ActualStatus, hardening pass P1**: the status dbo.CreateBooking actually
+// stored, which is not always the caller's requested NewBooking.Status. The
+// procedure downgrades a requested Confirmed to Pending if
+// Resources.RequiresApproval is true at the moment it reads the resource under
+// the lock — a check made after the caller's own read, which is why the two
+// can disagree. Null on every non-Created path, where no row was written.
+public sealed record BookingCreationOutcome(
+    BookingCreationResult Result, int? RemainingCapacity, BookingStatus? ActualStatus = null);
 
 // The procedure's result codes. Deliberately not ReasonCodes strings: those are
 // the Application layer's wire contract and the mapping to them is the
@@ -274,6 +301,13 @@ public enum BookingApprovalResult
     // atomic with the lock inside the procedure, not a separate check the
     // handler could race.
     BookingNotPending,
+
+    // Hardening pass, P2: the caller is no longer an assigned approver for
+    // this resource — checked under the same lock as the decision itself, so
+    // an admin removing them mid-request cannot slip through. Never reached
+    // when the caller is a TenantAdmin (decision 0002's reach does not run
+    // through ResourceApprovers).
+    ApproverNotEligible,
 
     // The remaining four mirror BookingCreationResult exactly — the whole
     // point of decision 0023 being inherited rather than reinvented.

@@ -3,6 +3,7 @@ using BookSpace.Application.Features.BlackoutPeriods.DeleteBlackoutPeriod;
 using BookSpace.Application.Features.BlackoutPeriods.UpdateBlackoutPeriod;
 using BookSpace.Domain.Entities;
 using BookSpace.Domain.Enums;
+using BookSpace.UnitTests.Bookings;
 using BookSpace.UnitTests.Resources;
 using BookSpace.UnitTests.Security;
 
@@ -37,7 +38,7 @@ public class UpdateAndDeleteBlackoutPeriodHandlerTests
 
     private static UpdateBlackoutPeriodCommandRequestHandler UpdateHandler(
         FakeBlackoutPeriodRepository repository) =>
-        new(repository, new FixedCurrentUser(AdminId), new TestClock(NowUtc));
+        new(repository, new PassThroughUnitOfWork(), new FixedCurrentUser(AdminId), new TestClock(NowUtc));
 
     private static DeleteBlackoutPeriodCommandRequestHandler DeleteHandler(
         FakeBlackoutPeriodRepository repository) =>
@@ -265,7 +266,7 @@ public class UpdateAndDeleteBlackoutPeriodHandlerTests
         var blackout = ExistingBlackout(resource);
         var repository = new FakeBlackoutPeriodRepository(resource, existing: blackout);
         var handler = new UpdateBlackoutPeriodCommandRequestHandler(
-            repository, new FixedCurrentUser(null), new TestClock(NowUtc));
+            repository, new PassThroughUnitOfWork(), new FixedCurrentUser(null), new TestClock(NowUtc));
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             handler.Handle(UpdateRequest(resource.Id, blackout.Id), CancellationToken.None));

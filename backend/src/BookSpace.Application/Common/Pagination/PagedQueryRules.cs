@@ -22,9 +22,13 @@ public static class PagedQueryRules
         IReadOnlyCollection<string> sortableFields)
         where TQuery : IPagedQuery
     {
+        // Hardening pass, P3: the upper bound is new — see
+        // PagingDefaults.MaxPage for why an unbounded Page combined with
+        // PageSize's own maximum can overflow the plain int arithmetic
+        // ToPagedResultAsync computes an offset with.
         validator.RuleFor(q => q.Page)
-            .GreaterThanOrEqualTo(1)
-            .WithMessage("Page must be 1 or greater.");
+            .InclusiveBetween(1, PagingDefaults.MaxPage)
+            .WithMessage($"Page must be between 1 and {PagingDefaults.MaxPage}.");
 
         // Rejected, not clamped: see PagingDefaults.MaxPageSize.
         validator.RuleFor(q => q.PageSize)

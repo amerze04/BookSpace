@@ -25,8 +25,8 @@ namespace BookSpace.IntegrationTests;
 // the EF-level filter and the DB-level RLS layer, which are independent.
 public class SeedDataTests : IAsyncLifetime
 {
-    private const string ConnectionString =
-        "Server=localhost\\SQLEXPRESS;Database=BookSpace_SeedDataTests;Trusted_Connection=True;TrustServerCertificate=True;";
+    private static readonly string ConnectionString =
+        IntegrationTestSettings.ConnectionStringFor("BookSpace_SeedDataTests");
 
     // Real hasher: the seed now stores genuine PBKDF2 hashes, and asserting on
     // that is part of proving FR-2.3 holds for seeded accounts too.

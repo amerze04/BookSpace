@@ -138,7 +138,18 @@ public class RecurrenceRule : IAuditable, ITenantOwned
         if (index < 0)
             throw new ArgumentOutOfRangeException(nameof(index), "index must not be negative.");
 
-        return StepDate(Frequency, StartDate, IntervalValue * index);
+        // Hardening pass: checked, not the default unchecked int multiplication.
+        // Unchecked, a large enough index * IntervalValue silently wraps to a
+        // small or negative value instead of throwing — which could make a
+        // step land somewhere other than where it visibly should, rather than
+        // failing loudly the way an out-of-range value ought to. The
+        // application-layer validator (CreateRecurrenceSeriesCommandRequestValidator)
+        // is what actually keeps a real request out of this range; this is
+        // defense in depth for any other caller (CLAUDE.md §6).
+        checked
+        {
+            return StepDate(Frequency, StartDate, IntervalValue * index);
+        }
     }
 
     // Decision #7 span cap: for an EndDate-bound rule this is just EndDate;
@@ -155,8 +166,16 @@ public class RecurrenceRule : IAuditable, ITenantOwned
         if (endDate is not null)
             return endDate.Value;
 
-        var steps = intervalValue * (occurrenceCount!.Value - 1);
-        return StepDate(frequency, startDate, steps);
+        // Hardening pass: checked, for the identical reason OccurrenceDate is
+        // above — this is the multiplication that decides whether the
+        // two-year span cap even fires, so a silent wraparound here would not
+        // just crash somewhere else, it would make an out-of-range series
+        // pass the cap check it exists to enforce.
+        checked
+        {
+            var steps = intervalValue * (occurrenceCount!.Value - 1);
+            return StepDate(frequency, startDate, steps);
+        }
     }
 
     // steps is already IntervalValue-scaled — the caller multiplies by

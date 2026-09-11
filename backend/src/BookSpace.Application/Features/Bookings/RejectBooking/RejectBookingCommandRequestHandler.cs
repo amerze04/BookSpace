@@ -39,6 +39,8 @@ public sealed class RejectBookingCommandRequestHandler
             ?? throw new InvalidOperationException(
                 "No authenticated user: an approval decision records who made it.");
 
+        var callerIsTenantAdmin = _currentUser.IsInRole(Role.TenantAdmin);
+
         var reach = await BookingApprovalReach.ResolveAsync(_bookings, _currentUser, actorUserId, cancellationToken);
 
         var booking = await _bookings.FindForApprovalAsync(request.BookingId, reach, cancellationToken)
@@ -51,6 +53,28 @@ public sealed class RejectBookingCommandRequestHandler
         if (!booking.CanBeRejected())
         {
             throw new BookingNotPendingException(booking.Id);
+        }
+
+        // Hardening pass, P2 — the same TOCTOU dbo.ApproveBooking's own
+        // re-check closes, mirrored here since reject has no procedure to
+        // hold a lock: re-verified immediately before the mutation rather
+        // than trusted from ApprovalReach's read at the top of this method,
+        // so an admin removing this caller from the resource in between has
+        // an effect. Skipped for a TenantAdmin, whose reach (decision 0002)
+        // never ran through ResourceApprovers. Not watertight against a
+        // removal landing in the instant between this check and
+        // SaveChangesAsync below — EF gives no lock to close that with
+        // outside a stored procedure — but it closes the window that
+        // mattered: the one between ApprovalReach resolving at the top of
+        // this method and the decision actually being made, which could
+        // otherwise be arbitrarily wide.
+        if (!callerIsTenantAdmin)
+        {
+            var resourceIds = await _bookings.FindApprovableResourceIdsAsync(actorUserId, cancellationToken);
+            if (!resourceIds.Contains(booking.ResourceId))
+            {
+                throw new ApproverNotEligibleException([actorUserId]);
+            }
         }
 
         var nowUtc = _clock.UtcNow;

@@ -92,6 +92,18 @@ public sealed class CancelBookingCommandRequestHandler
 
         booking.Cancel(actorUserId, request.Reason, nowUtc);
 
+        // Hardening pass, P2: a Pending booking's approval request must not
+        // outlive it as an actionable Pending row — see
+        // ApprovalRequest.Withdraw. Queried rather than assumed empty for a
+        // Confirmed booking: the filter already narrows to Pending requests,
+        // so this is a no-op read for the common (Confirmed) cancel.
+        var pendingApprovals = await _bookings.FindPendingApprovalRequestsAsync(
+            [booking.Id], cancellationToken);
+        foreach (var approval in pendingApprovals)
+        {
+            approval.Withdraw(nowUtc);
+        }
+
         // FR-8.1, rows only — nothing sends anything yet (CLAUDE.md §7), and
         // UQ_Notifications_Once is what makes the eventual send idempotent
         // (FR-9.4, AC-6). Same arrangement BlackoutCascade uses.

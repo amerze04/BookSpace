@@ -44,6 +44,11 @@ internal sealed class FakeApprovalBookingRepository : IBookingRepository
 
     public int ApproveAsyncCallCount { get; private set; }
 
+    // Hardening pass, P2: what the handler told the procedure about the
+    // caller's role, so a test can assert it matches ApprovalReach's own
+    // classification.
+    public bool? ApproveAsyncCallerIsTenantAdmin { get; private set; }
+
     public Task<Booking?> FindForApprovalAsync(
         Guid bookingId, ApprovalReach reach, CancellationToken cancellationToken)
     {
@@ -60,11 +65,20 @@ internal sealed class FakeApprovalBookingRepository : IBookingRepository
     public Task<ApprovalRequest?> FindApprovalRequestAsync(Guid bookingId, CancellationToken cancellationToken) =>
         Task.FromResult(ExistingApprovalRequest);
 
+    // Unused by approve/reject — a decision transitions the existing request
+    // via Decide(), it never withdraws one. Not exercised by this file's
+    // tests.
+    public Task<IReadOnlyList<ApprovalRequest>> FindPendingApprovalRequestsAsync(
+        IReadOnlyCollection<Guid> bookingIds, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<ApprovalRequest>>([]);
+
     public Task<BookingApprovalOutcome> ApproveAsync(
-        Guid bookingId, Guid approverUserId, DateTime nowUtc, CancellationToken cancellationToken)
+        Guid bookingId, Guid approverUserId, bool callerIsTenantAdmin, DateTime nowUtc,
+        CancellationToken cancellationToken)
     {
         ApproveAsyncCallCount++;
         ApprovedBookingId = bookingId;
+        ApproveAsyncCallerIsTenantAdmin = callerIsTenantAdmin;
         return Task.FromResult(_outcome);
     }
 

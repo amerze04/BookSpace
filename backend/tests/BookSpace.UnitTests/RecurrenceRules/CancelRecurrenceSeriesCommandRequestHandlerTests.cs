@@ -41,10 +41,11 @@ public class CancelRecurrenceSeriesCommandRequestHandlerTests
         return rule;
     }
 
-    private static Booking Occurrence(Guid recurrenceRuleId, DateTime starts, DateTime ends) =>
+    private static Booking Occurrence(
+        Guid recurrenceRuleId, DateTime starts, DateTime ends, BookingStatus status = BookingStatus.Confirmed) =>
         new(
             Guid.NewGuid(), OrgId, ResourceId, Owner, recurrenceRuleId,
-            starts, ends, 1, "Standup", BookingStatus.Confirmed, Owner, NowUtc);
+            starts, ends, 1, "Standup", status, Owner, NowUtc);
 
     private static CancelRecurrenceSeriesCommandRequestHandler Handler(
         FakeRecurrenceRuleRepository recurrenceRules,
@@ -81,6 +82,34 @@ public class CancelRecurrenceSeriesCommandRequestHandlerTests
         Assert.Equal(NowUtc, response.CancelledAtUtc);
         Assert.Equal([first.Id, second.Id], response.CancelledBookingIds);
         Assert.Equal(1, bookings.SaveChangesCount);
+    }
+
+    // Hardening pass, P2: "a booking that is no longer Pending cannot have an
+    // actionable Pending ApprovalRequest", applied to every occurrence a
+    // whole-series cancel touches — the same invariant the single-booking
+    // cancel and the blackout cascade each enforce for their own shape of
+    // cancellation.
+    [Fact]
+    public async Task WithdrawsThePendingApprovalRequestOfEveryPendingOccurrenceItCancels()
+    {
+        var rule = Rule();
+        var confirmedOccurrence = Occurrence(rule.Id, NowUtc.AddDays(1), NowUtc.AddDays(1).AddHours(1));
+        var pendingOccurrence = Occurrence(
+            rule.Id, NowUtc.AddDays(8), NowUtc.AddDays(8).AddHours(1), BookingStatus.Pending);
+        var approval = new ApprovalRequest(Guid.NewGuid(), pendingOccurrence.Id, NowUtc, null);
+
+        var recurrenceRules = new FakeRecurrenceRuleRepository { Cancellable = rule };
+        var bookings = new FakeSeriesBookingRepository
+        {
+            CancellableOccurrences = [confirmedOccurrence, pendingOccurrence],
+            PendingApprovalRequests = [approval],
+        };
+
+        await Handler(recurrenceRules, bookings, Owner, Role.Member).Handle(
+            new CancelRecurrenceSeriesCommandRequest(rule.Id), CancellationToken.None);
+
+        Assert.Equal(ApprovalDecision.Withdrawn, approval.Decision);
+        Assert.Equal(NowUtc, approval.DecidedAtUtc);
     }
 
     [Fact]

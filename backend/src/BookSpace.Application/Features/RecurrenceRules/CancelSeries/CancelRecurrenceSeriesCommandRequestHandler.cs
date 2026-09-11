@@ -91,6 +91,17 @@ public sealed class CancelRecurrenceSeriesCommandRequestHandler
             occurrence.Cancel(actorUserId, reason, nowUtc);
         }
 
+        // Hardening pass, P2: the same invariant CancelBookingCommandRequestHandler
+        // enforces for a single booking, applied to every occurrence this
+        // cascade just cancelled — a Pending occurrence's approval request
+        // must not outlive it as an actionable Pending row.
+        var pendingApprovals = await _bookings.FindPendingApprovalRequestsAsync(
+            occurrences.Select(o => o.Id).ToList(), cancellationToken);
+        foreach (var approval in pendingApprovals)
+        {
+            approval.Withdraw(nowUtc);
+        }
+
         // One summary notification for the whole series (owner's answer,
         // 2026-09-08), not one per occurrence — addressed to the series
         // owner and suppressed on self-cancel, exactly as the single-booking

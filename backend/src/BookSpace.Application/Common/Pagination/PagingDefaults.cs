@@ -14,4 +14,14 @@ public static class PagingDefaults
     // A ceiling, not a suggestion: PageSize above this is a validation failure,
     // not silently clamped. Clamping hides the bug from whoever wrote the client.
     public const int MaxPageSize = 100;
+
+    // Hardening pass, P3: (Page - 1) * PageSize is plain int arithmetic in
+    // ToPagedResultAsync, and with PageSize at its own maximum, a Page past
+    // roughly 21.4 million overflows int and wraps to a negative offset —
+    // which SQL Server's OFFSET clause rejects outright, an unhandled
+    // SqlException reaching the client as a 500 rather than a 400 naming the
+    // field. No realistic result set gets anywhere near this many pages;
+    // rejecting is the same "ceiling, not a suggestion" philosophy
+    // MaxPageSize already applies, not a new one.
+    public const int MaxPage = 100_000;
 }

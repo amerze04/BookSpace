@@ -81,21 +81,49 @@ internal sealed class BookingRepository : IBookingRepository
 
             AddParameters(command, booking);
 
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-
-            // The procedure always returns exactly one row, on every path
-            // including its refusals. No row means the text changed and this
-            // translation did not — better to say so than to guess.
-            if (!await reader.ReadAsync(cancellationToken))
+            try
             {
-                throw new InvalidOperationException(
-                    "dbo.CreateBooking returned no result row.");
+                await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+                // The procedure always returns exactly one row, on every path
+                // including its refusals. No row means the text changed and this
+                // translation did not — better to say so than to guess.
+                if (!await reader.ReadAsync(cancellationToken))
+                {
+                    throw new InvalidOperationException(
+                        "dbo.CreateBooking returned no result row.");
+                }
+
+                var resultCode = reader.GetString(0);
+                var remainingCapacity = reader.IsDBNull(1) ? (int?)null : reader.GetInt32(1);
+
+                // Hardening pass, P1: the status the procedure actually stored,
+                // which can differ from booking.Status when RequiresApproval was
+                // true under the lock — see BookingCreationOutcome.ActualStatus.
+                var actualStatus = reader.IsDBNull(2) ? (BookingStatus?)null : ParseStatus(reader.GetString(2));
+
+                return new BookingCreationOutcome(Parse(resultCode), remainingCapacity, actualStatus);
             }
-
-            var resultCode = reader.GetString(0);
-            var remainingCapacity = reader.IsDBNull(1) ? (int?)null : reader.GetInt32(1);
-
-            return new BookingCreationOutcome(Parse(resultCode), remainingCapacity);
+            catch (SqlException ex) when (IsPrimaryKeyViolation(ex))
+            {
+                // Hardening pass, P1/2 — the ambiguous-commit case.
+                // IUnitOfWork's execution strategy retries this whole delegate
+                // on a transient failure, and booking.Id is minted once by the
+                // caller specifically so a retry re-inserts the *same* row
+                // rather than a second one (IUnitOfWork's own header). That
+                // means a retry can only ever hit PK_Bookings if a *previous*
+                // attempt's INSERT already committed on the server before
+                // this client learned the outcome — a dropped connection
+                // after commit, not a genuine duplicate. Rather than let that
+                // constraint violation surface as an unhandled 500 for an
+                // operation that, from the caller's perspective, already
+                // succeeded, read the row back and report the same Created
+                // outcome the first attempt would have. See
+                // ReadBackAlreadyCreatedAsync for the one case this
+                // deliberately still throws: the row exists but does not
+                // match what this call actually asked for.
+                return await ReadBackAlreadyCreatedAsync(connection, command.Transaction, booking, cancellationToken);
+            }
         }
         finally
         {
@@ -106,6 +134,64 @@ internal sealed class BookingRepository : IBookingRepository
         }
     }
 
+    // Hardening pass, P1/2. Error 2627 is a unique-constraint/PK violation —
+    // checked by number, not message text, since SQL Server's message is
+    // locale-dependent. dbo.CreateBooking's only unique key is PK_Bookings, so
+    // there is nothing else this number could mean on this specific INSERT.
+    private static bool IsPrimaryKeyViolation(SqlException ex) => ex.Number == 2627;
+
+    // Reads back the row a PK violation on retry implies already exists, and
+    // reports it as this call's own outcome — but only if it is genuinely the
+    // *same* logical booking, not merely a Guid that happens to collide.
+    // ResourceId/StartsAtUtc/EndsAtUtc/Quantity all matching is what makes
+    // that distinction rather than assuming it: a real mismatch means
+    // something worse than a retry is going on, and this deliberately does
+    // not paper over that — it rethrows and lets the original 500 stand,
+    // which is at least an honest signal that something needs investigating.
+    private static async Task<BookingCreationOutcome> ReadBackAlreadyCreatedAsync(
+        System.Data.Common.DbConnection connection,
+        System.Data.Common.DbTransaction? transaction,
+        NewBooking booking,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT ResourceId, StartsAtUtc, EndsAtUtc, Quantity, Status
+            FROM dbo.Bookings WHERE Id = @BookingId;
+            """;
+        command.Parameters.Add(new SqlParameter("@BookingId", SqlDbType.UniqueIdentifier) { Value = booking.Id });
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            // The PK violation said this row exists; it does not, a moment
+            // later, in the same transaction. Something stranger than a retry
+            // is happening — surface it rather than guess.
+            throw new InvalidOperationException(
+                $"dbo.CreateBooking reported a primary key violation for booking {booking.Id}, "
+                + "but no row with that id could be read back.");
+        }
+
+        var matches = reader.GetGuid(0) == booking.ResourceId
+            && reader.GetDateTime(1) == booking.StartsAtUtc
+            && reader.GetDateTime(2) == booking.EndsAtUtc
+            && reader.GetInt32(3) == booking.Quantity;
+
+        if (!matches)
+        {
+            throw new InvalidOperationException(
+                $"Booking {booking.Id} already exists but does not match the request that just tried to "
+                + "create it — a genuine id collision, not a retry of the same operation.");
+        }
+
+        return new BookingCreationOutcome(
+            BookingCreationResult.Created,
+            RemainingCapacity: null,
+            ParseStatus(reader.GetString(4)));
+    }
+
     // ---- The approval re-check (WP-5 Phase 3, decision 0023 inherited whole) ----
     //
     // Same shape as CreateAsync above, for the same reasons: raw ADO because
@@ -114,7 +200,11 @@ internal sealed class BookingRepository : IBookingRepository
     // in the ambient transaction so a business rejection here rolls back
     // together with whatever else IUnitOfWork's delegate staged.
     public async Task<BookingApprovalOutcome> ApproveAsync(
-        Guid bookingId, Guid approverUserId, DateTime nowUtc, CancellationToken cancellationToken)
+        Guid bookingId,
+        Guid approverUserId,
+        bool callerIsTenantAdmin,
+        DateTime nowUtc,
+        CancellationToken cancellationToken)
     {
         var connection = _context.Database.GetDbConnection();
         var openedHere = connection.State != ConnectionState.Open;
@@ -137,6 +227,8 @@ internal sealed class BookingRepository : IBookingRepository
             { Value = approverUserId });
             command.Parameters.Add(new SqlParameter("@NowUtc", SqlDbType.DateTime2)
             { Scale = 0, Value = nowUtc });
+            command.Parameters.Add(new SqlParameter("@CallerIsTenantAdmin", SqlDbType.Bit)
+            { Value = callerIsTenantAdmin });
 
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
@@ -420,6 +512,16 @@ internal sealed class BookingRepository : IBookingRepository
     public Task<ApprovalRequest?> FindApprovalRequestAsync(Guid bookingId, CancellationToken cancellationToken) =>
         _context.ApprovalRequests.FirstOrDefaultAsync(a => a.BookingId == bookingId, cancellationToken);
 
+    // Hardening pass, P2. Filtered to Pending in the query, not just by
+    // convention: a booking that was Confirmed (never had a live request) or
+    // whose request was already Approved/Rejected/Expired must not be
+    // touched by a cancellation path calling Withdraw on this list.
+    public async Task<IReadOnlyList<ApprovalRequest>> FindPendingApprovalRequestsAsync(
+        IReadOnlyCollection<Guid> bookingIds, CancellationToken cancellationToken) =>
+        await _context.ApprovalRequests
+            .Where(a => bookingIds.Contains(a.BookingId) && a.Decision == ApprovalDecision.Pending)
+            .ToListAsync(cancellationToken);
+
     // ---- The rows derived from a booking (WP-4 Phase 1c) ----
     //
     // Plain EF adds. They carry no capacity claim, so none of the procedure's
@@ -540,10 +642,23 @@ internal sealed class BookingRepository : IBookingRepository
             $"dbo.CreateBooking returned an unrecognised result code '{resultCode}'."),
     };
 
+    // Hardening pass, P1. Against the known set, exactly like Parse/
+    // ParseApproval above: an unrecognised value means the procedure and this
+    // file have drifted, and that should fail loudly rather than silently map
+    // to a guessed status.
+    private static BookingStatus ParseStatus(string status) => status switch
+    {
+        "Pending" => BookingStatus.Pending,
+        "Confirmed" => BookingStatus.Confirmed,
+        _ => throw new InvalidOperationException(
+            $"dbo.CreateBooking returned an unrecognised ActualStatus '{status}'."),
+    };
+
     private static BookingApprovalResult ParseApproval(string resultCode) => resultCode switch
     {
         "Approved" => BookingApprovalResult.Approved,
         "BookingNotPending" => BookingApprovalResult.BookingNotPending,
+        "ApproverNotEligible" => BookingApprovalResult.ApproverNotEligible,
         "ResourceNotFound" => BookingApprovalResult.ResourceNotFound,
         "ResourceArchived" => BookingApprovalResult.ResourceArchived,
         "BlackoutPeriod" => BookingApprovalResult.BlackoutPeriod,
