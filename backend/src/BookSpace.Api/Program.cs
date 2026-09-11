@@ -78,6 +78,20 @@ try
 
     builder.Services.AddAuthorization(options => options.AddBookSpacePolicies());
 
+    // Frontend origin(s) only — never AllowAnyOrigin. The access token travels
+    // as an Authorization header and the refresh token in the request body
+    // (no cookies anywhere in this API), so the policy needs no
+    // AllowCredentials(). "Cors:AllowedOrigins" is empty by default
+    // (appsettings.json) and set to the Angular dev server in
+    // appsettings.Development.json.
+    const string FrontendCorsPolicy = "Frontend";
+    var corsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+        ?? [];
+    builder.Services.AddCors(options => options.AddPolicy(FrontendCorsPolicy, policy => policy
+        .WithOrigins(corsOrigins)
+        .AllowAnyHeader()
+        .AllowAnyMethod()));
+
     // Enums on the wire as their names, not their ordinals (WP-3 Phase 3).
     //
     // Forced by DayOfWeek, the first enum this API ever serializes: an
@@ -136,6 +150,11 @@ try
     }
 
     app.UseHttpsRedirection();
+
+    // Must run before authentication/authorization: a preflight OPTIONS
+    // request carries no Authorization header, so CORS has to be resolved
+    // first or the browser's preflight never gets past auth to see it.
+    app.UseCors(FrontendCorsPolicy);
 
     // Authentication must run before authorization — it's what puts the
     // principal on the context that the policies then evaluate.
