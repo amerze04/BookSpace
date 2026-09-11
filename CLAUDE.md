@@ -1879,3 +1879,56 @@ the time this phase started.
 **All four Week-4 acceptance criteria are met, all seven FR/task items are
 checked, and every decision this package touched is written up.** WP-5 is
 complete.
+
+### WP-6 — Angular Foundation & Auth — **Planned**
+Source doc: `docs/Work Packages - Week 5 and 6.pdf` (week 5, frontend track),
+which carries WP-6 and WP-7 together.
+**Plan: [`docs/wp6-plan.md`](docs/wp6-plan.md)**, approved 2026-09-11 before
+any code was written — the same process every backend WP has gone through.
+Two shape questions were settled with the owner first: the refresh token
+stays body-based and client-held (no backend change — recorded as an amendment
+to [`0011`](docs/decisions/0011-refresh-token-hashing-and-rotation.md) rather
+than a new decision, since the token model itself didn't change), and state
+management is Angular signals plus plain injectable services, no state
+library. The plan doc also lists, phase by phase, which screens need a design
+before that phase can start.
+
+- [ ] Set up the Angular app with standalone components and sensible routing.
+- [ ] Build login; store and refresh tokens correctly on the client.
+- [ ] Add an HTTP interceptor that attaches auth and handles token refresh.
+- [ ] Add route guards so unauthenticated users can't reach protected pages.
+- [ ] Establish a state-management approach and stick to it.
+- [ ] Handle API errors gracefully in the UI.
+
+Acceptance criteria:
+- [ ] A user logs in through the UI and reaches an authenticated area.
+- [ ] Protected routes are inaccessible without a valid session.
+- [ ] Token refresh happens transparently via the interceptor.
+- [ ] API errors surface as clear user feedback, not silent failures.
+
+Planned phasing — detail, screen-by-screen design notes, and reasoning in
+`docs/wp6-plan.md`:
+1. **Foundations + auth core** — app conventions, `AuthService` (login/logout,
+   signal-based session state, client-side JWT claim decoding since no `/me`
+   endpoint exists), login page wired to the real API. Needs the Login screen
+   design.
+2. **Interceptor & session lifecycle** — bearer-token attachment, single-flight
+   silent refresh on 401, logout wiring, clean failure on an expired/reused
+   refresh token. No new screens — this is WP-6's hard problem, the frontend
+   analogue of the backend's concurrency work.
+3. **Route guards & authenticated shell** — functional `CanActivateFn` guards,
+   `returnUrl` redirect, the real authenticated shell (nav chrome, signed-in
+   indicator, logout, a role-aware nav item). Needs the shell design, in both
+   its member and approver-visible states.
+4. **Error handling, tests, AC sweep** — global `ProblemDetails` → UI feedback
+   mapping, `vitest` coverage for the auth service/interceptor/guards, manual
+   walkthrough of all four ACs, write-up. Needs the error toast/banner design
+   and a validation-state addendum to the Login screen.
+
+Notes:
+- WP-6 builds no booking-facing screens (resource lists, availability, the
+  booking form, the calendar, the approval queue) — those are WP-7. This
+  package is only the shell WP-7's screens will sit inside.
+- The decoded-JWT-claims rule is load-bearing from phase 1 onward: claims read
+  client-side are for UI/nav convenience only, never an authorization
+  boundary — the backend is the only place a permission is actually enforced.

@@ -109,6 +109,14 @@ cookie strategy now would be designing for a client whose hosting model is
 undecided. Worth revisiting at M4 — it is a change to two handlers and the
 controller, not to the token model.
 
+**Revisited 2026-09-11, at WP-6 (the Angular app landing).** Answer unchanged:
+stays body-based, client-held. An httpOnly cookie is still the more secure
+option against XSS, but adopting it now would mean backend work
+(`AllowCredentials`, `Set-Cookie` on three endpoints, a CSRF story) inside a
+work package scoped as frontend-only (`docs/wp6-plan.md` §3). Nothing about
+the trade-off itself has changed — this just records that the revisit
+happened and the owner's call was "not this week."
+
 ## Consequences
 
 - `FR-2.4` is enforced at the refresh boundary: a deactivated user or suspended
