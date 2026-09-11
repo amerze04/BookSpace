@@ -134,4 +134,33 @@ public static class ReasonCodes
     // the start, exactly as BlackoutPeriodElapsed is (decision 0019) — booking
     // the room you are already sitting in is the ordinary case.
     public const string BookingInThePast = "BookingInThePast";
+
+    // ---- Recurring series (WP-5, FR-5.1 / FR-5.4) ----
+
+    // ErrorKind.RuleViolation. Every occurrence RecurrenceExpansion produced for
+    // this series was either skipped (decision 0008's spring-forward gap) or
+    // refused (BookingEligibility, or dbo.CreateBooking itself, per occurrence)
+    // — so the request reserved nothing. Carries the same per-occurrence
+    // breakdown a successful response would, via AppException.Extensions.
+    public const string NoOccurrencesCreated = "NoOccurrencesCreated";
+
+    // ErrorKind.NotFound (WP-5 Phase 2, FR-5.3). No such series visible to
+    // this caller — id, cross-tenant, or another member's, all identical
+    // (AC-4), following BookingNotFound's reasoning one level up.
+    public const string RecurrenceRuleNotFound = "RecurrenceRuleNotFound";
+
+    // ErrorKind.RuleViolation. The series is already Cancelled — a second
+    // cancellation is refused rather than treated as idempotent, mirroring
+    // BookingNotCancellable: there is an actor and a time to overwrite.
+    public const string RecurrenceRuleNotCancellable = "RecurrenceRuleNotCancellable";
+
+    // ---- Approvals (WP-5 Phase 3, FR-7.1-7.5, AC-5) ----
+
+    // ErrorKind.RuleViolation. Approve or reject called on a booking that is
+    // not (or no longer) Pending — already decided, already cancelled
+    // (closing WP-4 loose end 1, decision 0002's amendment), or never Pending
+    // at all. dbo.ApproveBooking's own guard fires this atomically with its
+    // lock; reject's is the same predicate (Booking.CanBeRejected) checked in
+    // the handler, since rejecting needs no lock to begin with.
+    public const string BookingNotPending = "BookingNotPending";
 }

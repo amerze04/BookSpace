@@ -64,6 +64,10 @@ public class BookSpaceDbContext : DbContext
         // behavior applies: no tenant context matches zero rows.
         modelBuilder.Entity<AvailabilityWindow>().HasQueryFilter(w => w.OrgId == _currentTenant.OrgId);
         modelBuilder.Entity<BlackoutPeriod>().HasQueryFilter(b => b.OrgId == _currentTenant.OrgId);
+        // Decision 0025: the same gap D1 closed above, found while building
+        // WP-5 Phase 2's cancel endpoint — RecurrenceRules was reachable by id
+        // alone until now.
+        modelBuilder.Entity<RecurrenceRule>().HasQueryFilter(r => r.OrgId == _currentTenant.OrgId);
 
         // CLAUDE.md §4.3: every instant is datetime2(0)/time(0) — set once here
         // instead of a HasPrecision(0) call on every DateTime/TimeOnly property

@@ -10,10 +10,13 @@ internal sealed class NotificationConfiguration : IEntityTypeConfiguration<Notif
     {
         builder.ToTable("Notifications", t =>
         {
+            // Widened by decision 0026: RecurrenceRuleId alone is now a valid
+            // anchor (SeriesCancelled), not only RecurrenceRuleId +
+            // OccurrenceDate together (RecurrenceOccurrenceSkipped).
             t.HasCheckConstraint("CK_Notifications_HasContext",
-                "[BookingId] IS NOT NULL OR ([RecurrenceRuleId] IS NOT NULL AND [OccurrenceDate] IS NOT NULL)");
+                "[BookingId] IS NOT NULL OR [RecurrenceRuleId] IS NOT NULL");
             t.HasCheckConstraint("CK_Notifications_Kind",
-                "[Kind] IN ('Confirmed','Rejected','Cancelled','Reminder','ApprovalRequested','NoShowReleased','RecurrenceOccurrenceSkipped')");
+                "[Kind] IN ('Confirmed','Rejected','Cancelled','Reminder','ApprovalRequested','NoShowReleased','RecurrenceOccurrenceSkipped','SeriesCancelled')");
         });
         builder.HasKey(n => n.Id).HasName("PK_Notifications");
 

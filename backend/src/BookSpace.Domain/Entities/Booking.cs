@@ -180,6 +180,28 @@ public class Booking : IAuditable, ITenantOwned
         Status is BookingStatus.Pending or BookingStatus.Confirmed
         && EndsAtUtc > nowUtc;
 
+    // WP-5 Phase 3, FR-7.2. Needs no lock and no procedure, per the owner's
+    // answer to wp5-plan.md's shape question 7: rejecting removes a claim
+    // rather than adding one, so by CLAUDE.md §4.1's own logic there is
+    // nothing for dbo.CreateBooking's locking protocol to protect — the same
+    // reasoning that already keeps Cancel and CancelForBlackout on plain EF.
+    //
+    // Guarded by CanBeRejected, mirroring CanBeCancelled's shape: the handler
+    // asks the predicate first for a reason code (BookingNotPending), and this
+    // re-checks it as the domain's own invariant rather than trusting the
+    // call site.
+    public bool CanBeRejected() => Status == BookingStatus.Pending;
+
+    public void Reject(Guid actorUserId, DateTime nowUtc)
+    {
+        if (!CanBeRejected())
+            throw new InvalidOperationException($"Booking {Id} in status {Status} cannot be rejected.");
+
+        Status = BookingStatus.Rejected;
+        UpdatedAtUtc = nowUtc;
+        UpdatedByUserId = actorUserId;
+    }
+
     public void CheckIn(DateTime nowUtc)
     {
         if (Status != BookingStatus.Confirmed)

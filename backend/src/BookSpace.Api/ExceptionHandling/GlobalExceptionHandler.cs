@@ -48,6 +48,19 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
         };
         problemDetails.Extensions["reasonCode"] = reasonCode;
 
+        // WP-5: the general case FluentValidation's special-case below always
+        // was — an AppException that needs to hand the client more than a
+        // reason code (NoOccurrencesCreatedException's per-occurrence
+        // breakdown). Empty for every exception that doesn't opt in, so this
+        // changes nothing for the 20-odd existing subclasses.
+        if (exception is AppException { Extensions.Count: > 0 } appExceptionWithExtensions)
+        {
+            foreach (var (key, value) in appExceptionWithExtensions.Extensions)
+            {
+                problemDetails.Extensions[key] = value;
+            }
+        }
+
         if (exception is FluentValidation.ValidationException validationException)
         {
             problemDetails.Extensions["errors"] = validationException.Errors

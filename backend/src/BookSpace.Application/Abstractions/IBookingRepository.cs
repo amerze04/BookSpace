@@ -39,6 +39,18 @@ public interface IBookingRepository
     // rather than opening its own.
     Task<BookingCreationOutcome> CreateAsync(NewBooking booking, CancellationToken cancellationToken);
 
+    // ---- The approval re-check (WP-5 Phase 3, FR-7.5, AC-5, decision 0023
+    // inherited whole) ----
+    //
+    // Calls dbo.ApproveBooking, which takes the same UPDLOCK/HOLDLOCK range
+    // lock over the same index as dbo.CreateBooking and re-checks the
+    // capacity, blackout and archived-resource rules a *moment* has passed
+    // since the request was created. Never throws for a business rejection,
+    // on the same reasoning as CreateAsync: a since-taken slot is an answer,
+    // not a fault.
+    Task<BookingApprovalOutcome> ApproveAsync(
+        Guid bookingId, Guid approverUserId, DateTime nowUtc, CancellationToken cancellationToken);
+
     // ---- The reads (WP-4 Phase 2a, FR-4.4) ----
     //
     // Both take a BookingOwnerFilter the *caller* resolved, rather than reading
@@ -101,6 +113,56 @@ public interface IBookingRepository
         Guid bookingId,
         BookingOwnerFilter owner,
         CancellationToken cancellationToken);
+
+    // ---- The whole-series cancel (WP-5 Phase 2, FR-5.3, decision 0002) ----
+
+    // Every occurrence of a series still worth cancelling: Pending or
+    // Confirmed, and not yet ended — decision 0002's window, the same
+    // EndsAtUtc > nowUtc test the single-booking cancel and the blackout
+    // cascade both apply, reapplied here per occurrence rather than per
+    // booking. A past or already-terminal occurrence is left alone, exactly
+    // as it would be if a client tried to cancel it individually.
+    //
+    // Tracked, for the same reason FindForCancellationAsync is: the caller
+    // mutates each one through Booking.Cancel.
+    Task<IReadOnlyList<Booking>> FindOccurrencesToCancelAsync(
+        Guid recurrenceRuleId,
+        DateTime nowUtc,
+        CancellationToken cancellationToken);
+
+    // ---- The approval reach (WP-5 Phase 3, FR-7.1-7.5, decision 0018 reapplied) ----
+
+    // The tracked booking, for a decision — same shape as
+    // FindForCancellationAsync, and tracked for the same reason: the caller
+    // (approve or reject) mutates ApprovalRequest and, for a reject, Booking
+    // itself through EF; an approve's own status change instead goes through
+    // dbo.ApproveBooking, but the booking is still loaded once, tracked,
+    // ahead of it.
+    //
+    // Null covers every not-reachable case at once — no such id, another
+    // tenant's id, a resource this Approver is not assigned to — so the
+    // handler answers with one indistinguishable BookingNotFound (AC-4), on
+    // exactly BookingNotFoundException's reasoning: a 403 would confirm the
+    // booking exists.
+    Task<Booking?> FindForApprovalAsync(
+        Guid bookingId, ApprovalReach reach, CancellationToken cancellationToken);
+
+    // Which resources this user is an assigned approver for (decision 0018),
+    // for building an Approver's ApprovalReach and for widening the
+    // GET /bookings?scope=tenant queue to them. Raw SQL against
+    // ResourceApprovers rather than a LINQ projection: it is an EF *owned*
+    // collection with no queryable DbSet of its own, the same shape
+    // BookingRepository.CreateAsync's own header names as a reason to go
+    // around EF's normal query surface.
+    Task<IReadOnlyList<Guid>> FindApprovableResourceIdsAsync(
+        Guid approverUserId, CancellationToken cancellationToken);
+
+    // The tracked decision record for a booking already confirmed reachable —
+    // callers load the booking first via FindForApprovalAsync, so this never
+    // has to repeat the reach check. Null would mean a Pending booking with no
+    // ApprovalRequest, a state FR-7.1's own create path never produces; a
+    // handler finding null here has a data-integrity bug, not a client error.
+    Task<ApprovalRequest?> FindApprovalRequestAsync(Guid bookingId, CancellationToken cancellationToken);
 
     // ---- The rows derived from a booking (WP-4 Phase 1c) ----
     //
@@ -191,5 +253,33 @@ public enum BookingCreationResult
     SlotUnavailable,
 
     // Units free throughout, but fewer than were asked for.
+    CapacityExceeded,
+}
+
+// dbo.ApproveBooking's answer, shaped like BookingCreationOutcome for the same
+// reason: RemainingCapacity is the log-only figure the two capacity refusals
+// split on (decision 0016), null wherever the question did not arise.
+public sealed record BookingApprovalOutcome(BookingApprovalResult Result, int? RemainingCapacity);
+
+// dbo.ApproveBooking's result codes — deliberately not ReasonCodes strings,
+// same reasoning as BookingCreationResult: the mapping to a client-facing code
+// is the handler's job, so a wire-contract change never reaches into SQL.
+public enum BookingApprovalResult
+{
+    Approved,
+
+    // The booking was not found, or was found but not Pending — decision 0002's
+    // amendment flagged this exact gap (a cancelled Pending booking's
+    // ApprovalRequest survives), and this is what closes it: the guard is
+    // atomic with the lock inside the procedure, not a separate check the
+    // handler could race.
+    BookingNotPending,
+
+    // The remaining four mirror BookingCreationResult exactly — the whole
+    // point of decision 0023 being inherited rather than reinvented.
+    ResourceNotFound,
+    ResourceArchived,
+    BlackoutPeriod,
+    SlotUnavailable,
     CapacityExceeded,
 }

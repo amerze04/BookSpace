@@ -35,9 +35,16 @@ internal sealed class RecurrenceRuleConfiguration : IEntityTypeConfiguration<Rec
         builder.Property(r => r.CreatedByUserId).IsRequired();
         builder.Property(r => r.UpdatedAtUtc).IsRequired();
 
+        // Composite same-org FK (decision 0025, following 0014's/0006's
+        // technique): OrgId is denormalized from the owning Resource, and
+        // this is what makes the two values physically unable to disagree.
+        builder.HasIndex(r => new { r.OrgId, r.ResourceId })
+            .HasDatabaseName("IX_RecurrenceRules_OrgId_ResourceId");
+
         builder.HasOne<Resource>().WithMany()
-            .HasForeignKey(r => r.ResourceId)
-            .HasConstraintName("FK_RecurrenceRules_Resources")
+            .HasForeignKey(r => new { r.OrgId, r.ResourceId })
+            .HasPrincipalKey(res => new { res.OrgId, res.Id })
+            .HasConstraintName("FK_RecurrenceRules_Resources_SameOrg")
             .OnDelete(DeleteBehavior.NoAction);
 
         builder.HasOne<User>().WithMany()

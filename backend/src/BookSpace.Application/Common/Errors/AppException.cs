@@ -26,11 +26,31 @@ namespace BookSpace.Application.Common.Errors;
 // which the client must never learn).
 public abstract class AppException : Exception
 {
+    private static readonly IReadOnlyDictionary<string, object?> NoExtensions =
+        new Dictionary<string, object?>();
+
     protected AppException(ErrorKind kind, string reasonCode, string message)
+        : this(kind, reasonCode, message, extensions: null)
+    {
+    }
+
+    // WP-5: the general form behind the three-argument constructor above,
+    // added for NoOccurrencesCreatedException rather than special-cased the
+    // way GlobalExceptionHandler already special-cases
+    // FluentValidation.ValidationException for its per-field errors. Every
+    // existing subclass keeps calling the three-argument overload and gets
+    // Extensions empty — this is additive, not a new requirement on the
+    // hierarchy.
+    protected AppException(
+        ErrorKind kind,
+        string reasonCode,
+        string message,
+        IReadOnlyDictionary<string, object?>? extensions)
         : base(message)
     {
         Kind = kind;
         ReasonCode = reasonCode;
+        Extensions = extensions ?? NoExtensions;
     }
 
     public ErrorKind Kind { get; }
@@ -39,4 +59,12 @@ public abstract class AppException : Exception
     // client branches on this, so changing one is a breaking API change.
     // Subclasses pass a ReasonCodes constant; they never inline a literal.
     public string ReasonCode { get; }
+
+    // Structured data beyond the reason code, for the rare failure that needs
+    // to hand the client more than a message could carry — WP-5's
+    // NoOccurrencesCreated is the first user, reporting the same
+    // per-occurrence breakdown a successful series-creation response would
+    // have. Copied onto ProblemDetails.Extensions by GlobalExceptionHandler,
+    // generically, alongside reasonCode. Empty for every other exception.
+    public IReadOnlyDictionary<string, object?> Extensions { get; }
 }

@@ -363,6 +363,8 @@ public class AvailabilityWindowExpansionTests
         public DateTime ToLocal(DateTime utc) =>
             DateTime.SpecifyKind(utc + _offset, DateTimeKind.Unspecified);
 
+        public bool IsInvalidLocalTime(DateTime resourceLocal) => false;
+
         private DateTime ToUtc(DateTime resourceLocal) =>
             DateTime.SpecifyKind(resourceLocal - _offset, DateTimeKind.Utc);
     }

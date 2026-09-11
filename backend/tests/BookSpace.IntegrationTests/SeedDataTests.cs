@@ -84,7 +84,9 @@ public class SeedDataTests : IAsyncLifetime
         // current tenant. TenantBypassScope covers RLS only, not the EF filter.
         Assert.Equal(20, await _context.AvailabilityWindows.IgnoreQueryFilters().CountAsync());
         Assert.Equal(2, await _context.BlackoutPeriods.IgnoreQueryFilters().CountAsync());
-        Assert.Equal(2, await _context.RecurrenceRules.CountAsync());
+        // Decision 0025: RecurrenceRules joined the tenant-filtered tables in
+        // WP-5 Phase 2, same reasoning as the three above.
+        Assert.Equal(2, await _context.RecurrenceRules.IgnoreQueryFilters().CountAsync());
 
         // WP-4 Phase 3: this was 0 from WP-1 until 2026-09-08, because
         // dbo.CreateBooking did not exist and CLAUDE.md §4.1 admits no other way

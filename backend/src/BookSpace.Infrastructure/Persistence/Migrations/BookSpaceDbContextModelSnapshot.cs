@@ -347,9 +347,9 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
 
                     b.ToTable("Notifications", null, t =>
                         {
-                            t.HasCheckConstraint("CK_Notifications_HasContext", "[BookingId] IS NOT NULL OR ([RecurrenceRuleId] IS NOT NULL AND [OccurrenceDate] IS NOT NULL)");
+                            t.HasCheckConstraint("CK_Notifications_HasContext", "[BookingId] IS NOT NULL OR [RecurrenceRuleId] IS NOT NULL");
 
-                            t.HasCheckConstraint("CK_Notifications_Kind", "[Kind] IN ('Confirmed','Rejected','Cancelled','Reminder','ApprovalRequested','NoShowReleased','RecurrenceOccurrenceSkipped')");
+                            t.HasCheckConstraint("CK_Notifications_Kind", "[Kind] IN ('Confirmed','Rejected','Cancelled','Reminder','ApprovalRequested','NoShowReleased','RecurrenceOccurrenceSkipped','SeriesCancelled')");
                         });
                 });
 
@@ -453,6 +453,9 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
                     b.Property<int?>("OccurrenceCount")
                         .HasColumnType("int");
 
+                    b.Property<Guid>("OrgId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<Guid>("ResourceId")
                         .HasColumnType("uniqueidentifier");
 
@@ -484,11 +487,12 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("CreatedByUserId");
 
-                    b.HasIndex("ResourceId");
-
                     b.HasIndex("UpdatedByUserId");
 
                     b.HasIndex("UserId");
+
+                    b.HasIndex("OrgId", "ResourceId")
+                        .HasDatabaseName("IX_RecurrenceRules_OrgId_ResourceId");
 
                     b.ToTable("RecurrenceRules", null, t =>
                         {
@@ -840,13 +844,6 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasConstraintName("FK_RecurrenceRules_CreatedBy");
 
-                    b.HasOne("BookSpace.Domain.Entities.Resource", null)
-                        .WithMany()
-                        .HasForeignKey("ResourceId")
-                        .OnDelete(DeleteBehavior.NoAction)
-                        .IsRequired()
-                        .HasConstraintName("FK_RecurrenceRules_Resources");
-
                     b.HasOne("BookSpace.Domain.Entities.User", null)
                         .WithMany()
                         .HasForeignKey("UpdatedByUserId")
@@ -859,6 +856,14 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.NoAction)
                         .IsRequired()
                         .HasConstraintName("FK_RecurrenceRules_Users");
+
+                    b.HasOne("BookSpace.Domain.Entities.Resource", null)
+                        .WithMany()
+                        .HasForeignKey("OrgId", "ResourceId")
+                        .HasPrincipalKey("OrgId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired()
+                        .HasConstraintName("FK_RecurrenceRules_Resources_SameOrg");
                 });
 
             modelBuilder.Entity("BookSpace.Domain.Entities.RefreshToken", b =>

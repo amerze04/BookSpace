@@ -233,6 +233,54 @@ public class BookingReadEndpointTests
         }
     }
 
+    // WP-5 Phase 3 (loose end 4): a Pending booking's detail carries the
+    // ApprovalRequest an approver would act on, not just Status = Pending.
+    [Fact]
+    public async Task Get_CarriesTheApprovalDetailForAPendingBooking()
+    {
+        var resource = await CreateBookableResourceAsync(requiresApproval: true);
+
+        try
+        {
+            var client = await AuthenticatedClientAsync(AcmeMember);
+            var created = await CreateBookingAsync(client, resource, At(9), At(10));
+
+            var body = await GetAsync(client, created.Id);
+
+            Assert.NotNull(body.Approval);
+            Assert.Equal(ApprovalDecision.Pending, body.Approval.Decision);
+            Assert.Null(body.Approval.DecidedAtUtc);
+            Assert.Null(body.Approval.DecidedByUserId);
+            Assert.NotEqual(Guid.Empty, body.Approval.ApprovalRequestId);
+        }
+        finally
+        {
+            await CleanUpAsync(resource);
+        }
+    }
+
+    // The ordinary case — no approval gate at all — carries no Approval,
+    // matching the resource's own CreateBooking response.
+    [Fact]
+    public async Task Get_LeavesApprovalNullWhenTheResourceNeverRequiredOne()
+    {
+        var resource = await CreateBookableResourceAsync();
+
+        try
+        {
+            var client = await AuthenticatedClientAsync(AcmeMember);
+            var created = await CreateBookingAsync(client, resource, At(9), At(10));
+
+            var body = await GetAsync(client, created.Id);
+
+            Assert.Null(body.Approval);
+        }
+        finally
+        {
+            await CleanUpAsync(resource);
+        }
+    }
+
     // FR-3.5: an archived resource keeps its history readable. Filtering
     // archived resources out of the join would erase a member's own past
     // bookings, which is why the projection deliberately does not.
@@ -507,11 +555,15 @@ public class BookingReadEndpointTests
     // per-field error, not a 403 — ErrorKind has no Forbidden and inventing one
     // for a query-string filter is heavier than the problem — and not a quietly
     // narrowed 200, which would answer a different question than was asked.
+    //
+    // **AcmeApprover is refused only for `userId` here** — WP-5 Phase 3
+    // (decision 0018) widened `scope=tenant` to an Approver, resource-restricted
+    // rather than ignored. See List_LetsAnApproverRequestTheTenantScope below
+    // for that positive case.
     [Theory]
     [InlineData(AcmeMember, "userId")]
     [InlineData(AcmeMember, "scope")]
     [InlineData(AcmeApprover, "userId")]
-    [InlineData(AcmeApprover, "scope")]
     public async Task List_RefusesAnAdminOnlyParameterFromANonAdmin(string email, string parameter)
     {
         var client = await AuthenticatedClientAsync(email);
@@ -544,6 +596,126 @@ public class BookingReadEndpointTests
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal("ValidationFailed", await ReasonCodeAsync(response));
+    }
+
+    // ---- The approver queue (WP-5 Phase 3, decision 0018) -------------------
+
+    [Fact]
+    public async Task List_LetsAnApproverSeeAPendingBookingOnTheirOwnResource()
+    {
+        var gated = await CreateBookableResourceAsync(requiresApproval: true);
+
+        try
+        {
+            var member = await AuthenticatedClientAsync(AcmeMember);
+            var created = await CreateBookingAsync(member, gated, At(9), At(10));
+
+            var approver = await AuthenticatedClientAsync(AcmeApprover);
+            var page = await ListAsync(approver, "?scope=tenant");
+
+            var row = Assert.Single(page.Items, r => r.Id == created.Id);
+            Assert.Equal(created.UserId, row.UserId);
+            Assert.Equal(BookingStatus.Pending, row.Status);
+        }
+        finally
+        {
+            await CleanUpAsync(gated);
+        }
+    }
+
+    // The restriction is by resource, not by status or ownership: a resource
+    // this Approver is not assigned to stays invisible to them even under
+    // scope=tenant, unlike a TenantAdmin's unrestricted sweep.
+    [Fact]
+    public async Task List_HidesBookingsOnAResourceTheApproverDoesNotApprove()
+    {
+        var ungated = await CreateBookableResourceAsync();
+
+        try
+        {
+            var member = await AuthenticatedClientAsync(AcmeMember);
+            var created = await CreateBookingAsync(member, ungated, At(9), At(10));
+
+            var approver = await AuthenticatedClientAsync(AcmeApprover);
+            var page = await ListAsync(approver, "?scope=tenant");
+
+            Assert.DoesNotContain(page.Items, r => r.Id == created.Id);
+        }
+        finally
+        {
+            await CleanUpAsync(ungated);
+        }
+    }
+
+    // An Approver's own-scope default is untouched by the widening — still
+    // exactly their own bookings, same as any other role.
+    [Fact]
+    public async Task List_AnApproversDefaultScopeIsStillTheirOwnBookings()
+    {
+        var gated = await CreateBookableResourceAsync(requiresApproval: true);
+
+        try
+        {
+            var member = await AuthenticatedClientAsync(AcmeMember);
+            await CreateBookingAsync(member, gated, At(9), At(10));
+
+            var approver = await AuthenticatedClientAsync(AcmeApprover);
+            var page = await ListAsync(approver, string.Empty);
+
+            Assert.Empty(page.Items);
+        }
+        finally
+        {
+            await CleanUpAsync(gated);
+        }
+    }
+
+    // Cross-tenant isolation still holds under the widened scope: the tenant
+    // filter runs before the resource restriction, never after it.
+    [Fact]
+    public async Task List_AnApproversTenantScopeNeverReachesAnotherTenant()
+    {
+        var globexGated = await CreateBookableResourceAsync(requiresApproval: true, admin: GlobexAdmin);
+
+        try
+        {
+            var globexMember = await AuthenticatedClientAsync(GlobexMember);
+            var created = await CreateBookingAsync(globexMember, globexGated, At(9), At(10));
+
+            var acmeApprover = await AuthenticatedClientAsync(AcmeApprover);
+            var page = await ListAsync(acmeApprover, "?scope=tenant");
+
+            Assert.DoesNotContain(page.Items, r => r.Id == created.Id);
+        }
+        finally
+        {
+            await CleanUpAsync(globexGated, admin: GlobexAdmin);
+        }
+    }
+
+    // WP-5 Phase 3 (loose end 3): the queue is the first reader of this
+    // endpoint who does not already know whose booking each row is.
+    [Fact]
+    public async Task List_CarriesTheBookersNameOnEachRow()
+    {
+        var resource = await CreateBookableResourceAsync();
+
+        try
+        {
+            var member = await AuthenticatedClientAsync(AcmeMember);
+            var created = await CreateBookingAsync(member, resource, At(9), At(10));
+
+            var expectedName = await ScalarAsync<string>(
+                "SELECT FullName FROM dbo.Users WHERE Id = @p0;", created.UserId);
+
+            var row = (await ListAsync(member, $"?resourceId={resource}")).Items.Single();
+
+            Assert.Equal(expectedName, row.UserName);
+        }
+        finally
+        {
+            await CleanUpAsync(resource);
+        }
     }
 
     // ---- The filters -------------------------------------------------------

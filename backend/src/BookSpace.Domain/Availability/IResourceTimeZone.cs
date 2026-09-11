@@ -52,4 +52,17 @@ public interface IResourceTimeZone
     // Returns DateTimeKind.Unspecified, which is what a wall clock is in .NET
     // and what the two methods above demand back (CLAUDE.md §4.3).
     DateTime ToLocal(DateTime utc);
+
+    // Whether this resource-local wall-clock time never happened — true only
+    // inside a clocks-forward gap. Added in WP-5 for RecurrenceExpansion:
+    // decision 0008 skips a spring-forward occurrence rather than resolving it
+    // to an instant, which is a different answer from what ToUtcEarliest gives
+    // (the transition instant) and has to be asked for explicitly before that
+    // method is called at all.
+    //
+    // False for an ordinary local time *and* for one inside a clocks-back
+    // ambiguous hour — both of those already name a real instant, which
+    // ToUtcEarliest/ToUtcLatest resolve without needing to be told anything.
+    // Only the gap has nothing to resolve to.
+    bool IsInvalidLocalTime(DateTime resourceLocal);
 }

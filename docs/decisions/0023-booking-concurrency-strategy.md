@@ -4,6 +4,11 @@
 Decided (2026-09-07), implemented the same day in WP-4 Phase 1b
 (`AddCreateBookingProcedure`). **Evidence extended 2026-09-08** (WP-4 Phase 3)
 with the HTTP-level figures and the measured deadlock/retry data.
+**Evidence extended again 2026-09-09** (WP-5 Phase 4) with `dbo.ApproveBooking`
+inheriting the strategy: the same weakening technique confirms its distinct
+race (two decisions on one row, not two inserts into a range) actually needs
+the lock, and the same deadlock-counter method finds contention even more
+routine here than at create time.
 
 ## Context
 
@@ -218,6 +223,69 @@ difference**: every deadlock was absorbed, no test failed, and the only place a
 strategy's backoff and nothing else. The suite's own guard is that every
 response must be 201 or 409, so a 1205 that escaped the retry would fail a test
 rather than slow one down.
+### At the procedure level, for `dbo.ApproveBooking` (2026-09-09, WP-5 Phase 4)
+
+`dbo.ApproveBooking` inherits this record's strategy whole (§ above), but it
+guards a genuinely different race than a create does: two *decisions* on one
+existing row (`WITH (UPDLOCK)`, a point lookup by primary key), not two
+*inserts* into a shared range. Worth measuring separately rather than assumed,
+the same reasoning that made WP-4 measure at two levels rather than one.
+
+Measured the same way as Phase 1b's: removing both hints
+(`WITH (UPDLOCK)` on the point lookup, `WITH (UPDLOCK, HOLDLOCK)` on the
+overlap read) from `AddApproveBookingProcedure`'s migration body — never
+committed or shipped — and running `ApproveBookingProcedureTests`' full 14
+tests against the weakened, freshly-migrated database.
+
+| Test | With the lock | Without it |
+|---|---|---|
+| 2 simultaneous decisions on one booking | 1 Approved | **2 Approved** |
+| 10 simultaneous decisions on one booking | 1 Approved | **7 Approved** |
+
+Two approvers deciding the same booking at the same instant both confirmed it,
+and seven of ten simultaneous decisions on one booking all reported Approved —
+exactly the failure mode the `UPDLOCK` point lookup exists to rule out. The
+other 12 tests in the file passed either way, including
+`ApproveRacingAConcurrentCancelOfTheSameBooking_TheyNeverBothWin` and
+`ConcurrentApprovalsOfDifferentPendingBookingsExactlyFillingAPool_AllSucceed` —
+recorded rather than tidied away, on the same reasoning §"At the HTTP level"
+gives for its own two non-detecting rows: a lock-order race can pass by timing
+even when genuinely unsafe, so a single weakened run not failing there is not
+evidence the guarantee is unneeded, only that this run didn't happen to hit the
+interleaving. The two same-row tests are the ones this weakening reliably
+defeats, which is what makes them the meaningful pair.
+
+**1205 fires on every single run here, more consistently than at create
+time.** Four runs with the lock in place, reading the same `_Total` deadlock
+counter either side of each:
+
+| Run | Deadlocks | Result | Wall clock |
+|---|---|---|---|
+| 1 | +8 | 14 of 14 passed | 16 s |
+| 2 | +5 | 14 of 14 passed | 16 s |
+| 3 | +5 | 14 of 14 passed | 15 s |
+| 4 | +5 | 14 of 14 passed | 17 s |
+
+Twenty-three deadlocks across four runs of fourteen tests, **every run
+producing at least five** — where Phase 1b's four `dbo.CreateBooking` runs
+included one with zero. The weakened run above took **3 seconds** for the same
+14 tests (no blocking to wait on, hence the smaller counts it produced instead
+of the correct rejection); the correct, locked version takes five to six times
+as long, for the same reason WP-4's HTTP-level runs did — the difference is
+retry backoff, not correctness. Every one of the twenty-three was absorbed:
+all four runs were 14 of 14 green, and the suite's own guard (an explicit
+`Assert.Equal` on the exact outcome distribution, not a bare success check)
+would have caught a 1205 that escaped `IUnitOfWork`'s retry.
+
+The likely reason contention is *more* consistent here than at create time:
+`TenSimultaneousApprovalsOfTheSameBooking_ExactlyOneSucceeds` and
+`ConcurrentApprovalsOfDifferentPendingBookingsExactlyFillingAPool_AllSucceed`
+both start every racer from the same `TaskCompletionSource` gate, same as
+`dbo.CreateBooking`'s own ten-way test — but the point-lookup lock here is
+narrower than a range lock, so contenders queue tightly on one row with
+essentially nothing to interleave around, which turns out to produce a
+conflict on this configuration on every run rather than most of them.
+
 ## Alternatives considered
 
 **`sp_getapplock` keyed on the resource id.** The work package names it first,

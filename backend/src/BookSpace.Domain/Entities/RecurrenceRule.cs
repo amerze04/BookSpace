@@ -13,9 +13,23 @@ namespace BookSpace.Domain.Entities;
 // case is also enforced in the DB (CK_RecurrenceRules_MaxSpan); the
 // OccurrenceCount case can only be checked here, since "implied span" for
 // Monthly recurrence isn't a clean single SQL expression across frequencies.
-public class RecurrenceRule : IAuditable
+//
+// OrgId is denormalized from the owning Resource (decision 0025, following
+// 0014's and 0006's precedent) so this table sits inside all three CLAUDE.md
+// §4.2 isolation mechanisms instead of being reachable by id alone — which,
+// before 0025, it was: WP-5 Phase 2's cancel endpoint is the first thing that
+// ever loads a RecurrenceRule directly rather than only creating one scoped
+// by the resource it belongs to, and that is exactly the shape 0014 already
+// closed for AvailabilityWindows and BlackoutPeriods. Like BlackoutPeriod and
+// unlike AvailabilityWindow, a RecurrenceRule is not part of the Resource
+// aggregate — Resource has no navigation to it — so the constructor stays
+// public and takes OrgId from the resource its caller already loaded; the
+// composite FK (OrgId, ResourceId) is what makes the two physically unable
+// to disagree.
+public class RecurrenceRule : IAuditable, ITenantOwned
 {
     public Guid Id { get; private set; }
+    public Guid OrgId { get; private set; }
     public Guid ResourceId { get; private set; }
     public Guid UserId { get; private set; }
     public RecurrenceFrequency Frequency { get; private set; }
@@ -41,6 +55,7 @@ public class RecurrenceRule : IAuditable
 
     public RecurrenceRule(
         Guid id,
+        Guid orgId,
         Guid resourceId,
         Guid userId,
         RecurrenceFrequency frequency,
@@ -58,6 +73,14 @@ public class RecurrenceRule : IAuditable
             throw new ArgumentOutOfRangeException(nameof(intervalValue), "IntervalValue must be greater than zero.");
         if (string.IsNullOrWhiteSpace(timeZoneId))
             throw new ArgumentException("TimeZoneId is required.", nameof(timeZoneId));
+        // No CK_RecurrenceRules constraint backs this — unlike AvailabilityWindow,
+        // which CK_AvailabilityWindows_Window enforces at the DB too — so it is
+        // stated here only. An occurrence is one calendar day's pair of local
+        // times (RecurrenceExpansion, WP-5); FR-5.1 never asks for one that
+        // crosses midnight, and nothing upstream computes what "the next day"
+        // would even mean for a Monthly rule's occurrence date.
+        if (localEndTime <= localStartTime)
+            throw new ArgumentException("LocalEndTime must be after LocalStartTime.", nameof(localEndTime));
         // CK_RecurrenceRules_EndCondition: exactly one of EndDate / OccurrenceCount
         if ((endDate is null) == (occurrenceCount is null))
             throw new ArgumentException("Exactly one of EndDate or OccurrenceCount must be set.");
@@ -67,6 +90,7 @@ public class RecurrenceRule : IAuditable
             throw new ArgumentException("A recurrence series cannot run more than two years past its StartDate.");
 
         Id = id;
+        OrgId = orgId;
         ResourceId = resourceId;
         UserId = userId;
         Frequency = frequency;
@@ -84,11 +108,37 @@ public class RecurrenceRule : IAuditable
         UpdatedByUserId = createdByUserId;
     }
 
+    Guid? ITenantOwned.OrgId => OrgId;
+
+    // WP-5 Phase 2, FR-5.3: a series already cancelled has nothing left to
+    // cancel again — the same reasoning Booking.CanBeCancelled states for a
+    // second booking cancel, applied one level up. Stated as a predicate so
+    // the handler can refuse with a reason code (RecurrenceRuleNotCancellable)
+    // instead of catching Cancel's exception.
+    public bool CanBeCancelled() => Status == RecurrenceStatus.Active;
+
     public void Cancel(Guid actorUserId, DateTime nowUtc)
     {
+        if (!CanBeCancelled())
+            throw new InvalidOperationException($"RecurrenceRule {Id} in status {Status} cannot be cancelled.");
+
         Status = RecurrenceStatus.Cancelled;
         UpdatedAtUtc = nowUtc;
         UpdatedByUserId = actorUserId;
+    }
+
+    // The date of the occurrence at this zero-based index in the series — WP-5's
+    // RecurrenceExpansion walks the whole series with this rather than
+    // re-deriving the daily/weekly/monthly stepping, which is also what
+    // ComputeImpliedEndDate below uses for the span cap. One implementation,
+    // two callers, so the two can never compute a different date for the same
+    // index.
+    public DateOnly OccurrenceDate(int index)
+    {
+        if (index < 0)
+            throw new ArgumentOutOfRangeException(nameof(index), "index must not be negative.");
+
+        return StepDate(Frequency, StartDate, IntervalValue * index);
     }
 
     // Decision #7 span cap: for an EndDate-bound rule this is just EndDate;
@@ -106,12 +156,18 @@ public class RecurrenceRule : IAuditable
             return endDate.Value;
 
         var steps = intervalValue * (occurrenceCount!.Value - 1);
-        return frequency switch
+        return StepDate(frequency, startDate, steps);
+    }
+
+    // steps is already IntervalValue-scaled — the caller multiplies by
+    // IntervalValue before this is reached, so this method only knows how to
+    // walk a plain count of days/weeks/months.
+    private static DateOnly StepDate(RecurrenceFrequency frequency, DateOnly startDate, int steps) =>
+        frequency switch
         {
             RecurrenceFrequency.Daily => startDate.AddDays(steps),
             RecurrenceFrequency.Weekly => startDate.AddDays(steps * 7),
             RecurrenceFrequency.Monthly => startDate.AddMonths(steps),
             _ => throw new ArgumentOutOfRangeException(nameof(frequency))
         };
-    }
 }

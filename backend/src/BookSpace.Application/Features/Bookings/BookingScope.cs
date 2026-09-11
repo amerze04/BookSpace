@@ -22,8 +22,10 @@ public enum BookingScope
     // TenantAdmin, who is a member of their tenant before they are its admin.
     Own,
 
-    // Every booking in the caller's tenant, whoever owns it. TenantAdmin only —
-    // a plain member sending it gets ValidationFailed, not a quietly narrowed
-    // answer (see ListBookingsQueryRequestValidator).
+    // Every booking in the caller's tenant, whoever owns it — TenantAdmin
+    // unrestricted, or (WP-5 Phase 3, decision 0018) an Approver restricted to
+    // the resources they are assigned to approve. A plain member sending it
+    // gets ValidationFailed, not a quietly narrowed answer (see
+    // ListBookingsQueryRequestValidator and BookingReadRules).
     Tenant,
 }

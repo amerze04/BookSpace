@@ -178,6 +178,55 @@ internal sealed class FakeBookingRepository : IBookingRepository
 
         return Task.FromResult(Cancellable);
     }
+
+    // ---- The whole-series cancel (WP-5 Phase 2) — unused by this file's
+    // single-booking tests, so a fixed empty answer is enough to satisfy the
+    // interface. CancelRecurrenceSeriesCommandRequestHandlerTests exercises
+    // this properly via FakeSeriesBookingRepository instead.
+    public Task<IReadOnlyList<Booking>> FindOccurrencesToCancelAsync(
+        Guid recurrenceRuleId,
+        DateTime nowUtc,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<Booking>>([]);
+
+    // ---- Approvals (WP-5 Phase 3) — the decision itself (ApproveAsync,
+    // FindForApprovalAsync) is unused by this file's single-booking tests, and
+    // stays unsupported: ApproveBookingCommandRequestHandlerTests and
+    // RejectBookingCommandRequestHandlerTests exercise those properly via
+    // FakeApprovalBookingRepository instead. The other two are called
+    // unconditionally-or-conditionally by handlers this file *does* exercise —
+    // GetBookingQueryRequestHandler always asks FindApprovalRequestAsync, and
+    // ListBookingsQueryRequestHandler asks FindApprovableResourceIdsAsync for
+    // an Approver's scope=tenant read — so both need a real, settable answer
+    // rather than a throw.
+    public Task<BookingApprovalOutcome> ApproveAsync(
+        Guid bookingId, Guid approverUserId, DateTime nowUtc, CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
+    public Task<Booking?> FindForApprovalAsync(
+        Guid bookingId, ApprovalReach reach, CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
+    // Defaults to empty, matching an Approver assigned to nothing rather than
+    // throwing — the ordinary case for a test that never sets it.
+    public IReadOnlyList<Guid> ApprovableResourceIds { get; set; } = [];
+
+    public Guid? RequestedApprovableResourcesFor { get; private set; }
+
+    public Task<IReadOnlyList<Guid>> FindApprovableResourceIdsAsync(
+        Guid approverUserId, CancellationToken cancellationToken)
+    {
+        RequestedApprovableResourcesFor = approverUserId;
+
+        return Task.FromResult(ApprovableResourceIds);
+    }
+
+    // Null by default — "this booking's resource never required approval" —
+    // which is what every existing detail test here wants.
+    public ApprovalRequest? ExistingApprovalRequest { get; set; }
+
+    public Task<ApprovalRequest?> FindApprovalRequestAsync(Guid bookingId, CancellationToken cancellationToken) =>
+        Task.FromResult(ExistingApprovalRequest);
 }
 
 // Runs the delegate straight through. The real implementation's job — a

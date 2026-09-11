@@ -29,13 +29,17 @@ namespace BookSpace.Application.Features.Bookings.GetBooking;
 //
 // ResourceName is denormalized on, exactly as on the list row (owner's call,
 // 2026-09-08), so a client rendering one booking needs no second request to name
-// the thing that was booked.
+// the thing that was booked. **UserName joins it in WP-5 Phase 3** (loose end 3),
+// same reasoning, same id-and-name-no-email shape as ApproverDetail.
 //
-// **No approval detail**, deliberately, even for a Pending booking: the
-// ApprovalRequest row exists (FR-7.1) but nothing can act on it until WP-5's
-// approve/reject endpoints, and the shape it should take on the wire is that
-// package's to decide alongside the approver queue. Status = Pending already
-// tells a client the booking is waiting.
+// **Approval, added in WP-5 Phase 3** (loose end 4), closes the gap this file
+// used to defer: an approver deciding a Pending booking, or a client checking
+// what became of one, reads it here rather than on a separate endpoint. Null
+// for a booking whose resource never required approval; present and carrying
+// Decision = Pending for the whole time an approver could still act, and
+// present with the decision afterward too — the row is never withdrawn, so a
+// client polling this endpoint sees the outcome, not just that a request was
+// once open.
 //
 // The status and both enums serialize as names, not ordinals — Program.cs
 // registered JsonStringEnumConverter app-wide in WP-3 Phase 3.
@@ -44,6 +48,7 @@ public sealed record GetBookingQueryResponse(
     Guid ResourceId,
     string ResourceName,
     Guid UserId,
+    string UserName,
     Guid? RecurrenceRuleId,
     DateTime StartsAtUtc,
     DateTime EndsAtUtc,
@@ -55,4 +60,5 @@ public sealed record GetBookingQueryResponse(
     DateTime? CancelledAtUtc,
     string? CancellationReason,
     DateTime CreatedAtUtc,
-    DateTime UpdatedAtUtc);
+    DateTime UpdatedAtUtc,
+    GetBookingApprovalDetail? Approval = null);

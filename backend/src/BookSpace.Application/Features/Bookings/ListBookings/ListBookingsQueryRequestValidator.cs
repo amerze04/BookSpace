@@ -5,11 +5,12 @@ using FluentValidation;
 
 namespace BookSpace.Application.Features.Bookings.ListBookings;
 
-// Paging, sorting, the range filter, and the two admin-only parameters.
+// Paging, sorting, the range filter, and the two restricted parameters.
 //
 // **This validator has a dependency**, which is a first in this codebase: it
-// injects ICurrentUser to refuse a plain member sending `userId` or
-// `scope=tenant`. That works because AddApplication registers each
+// injects ICurrentUser to refuse a plain member sending `userId` at all, or
+// `scope=tenant` unless they are also an Approver (WP-5 Phase 3, decision
+// 0018's queue). That works because AddApplication registers each
 // IValidator<T> by type through DI rather than as an instance, so constructor
 // injection is activated normally.
 //
@@ -78,10 +79,14 @@ public sealed class ListBookingsQueryRequestValidator : AbstractValidator<ListBo
             .When(q => q.UserId.HasValue)
             .WithMessage("Only a TenantAdmin may filter bookings by userId.");
 
+        // Widened in WP-5 Phase 3 (decision 0018's approver queue): an Approver
+        // may also ask for scope=tenant, resource-restricted by the handler
+        // (BookingReadRules), never member-restricted — userId above stays
+        // TenantAdmin-only.
         RuleFor(q => q.Scope)
-            .Must(_ => IsTenantAdmin(currentUser))
+            .Must(_ => IsTenantAdmin(currentUser) || IsApprover(currentUser))
             .When(q => q.Scope != BookingScope.Own)
-            .WithMessage("Only a TenantAdmin may request a scope other than Own.");
+            .WithMessage("Only a TenantAdmin or an Approver may request a scope other than Own.");
 
         // Refused rather than given a precedence rule. `scope=tenant` says "do
         // not restrict by owner" and `userId` says "restrict to this one", so
@@ -98,6 +103,9 @@ public sealed class ListBookingsQueryRequestValidator : AbstractValidator<ListBo
 
     private static bool IsTenantAdmin(ICurrentUser currentUser) =>
         currentUser.IsInRole(Role.TenantAdmin);
+
+    private static bool IsApprover(ICurrentUser currentUser) =>
+        currentUser.IsInRole(Role.Approver);
 
     private static bool CarryAZone(DateTime? value) =>
         value!.Value.Kind != DateTimeKind.Unspecified;

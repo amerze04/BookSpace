@@ -1,6 +1,7 @@
 using BookSpace.Application.Abstractions;
 using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Messaging;
+using BookSpace.Domain.Enums;
 
 namespace BookSpace.Application.Features.Bookings.ListBookings;
 
@@ -13,6 +14,14 @@ namespace BookSpace.Application.Features.Bookings.ListBookings;
 // admin, and the difference is in which rows come back rather than in whether
 // the route may be called at all. The decision itself is BookingReadRules';
 // this handler only supplies the caller.
+//
+// **WP-5 Phase 3 made this handler async** for the approver queue (decision
+// 0018): resolving an Approver's `scope=tenant` reach needs one repository
+// call — which resources this caller may approve for — that BookingReadRules
+// deliberately does not make itself, so it stays the pure function every other
+// Rules class in this codebase is. Only fetched when the query could actually
+// use it (scope=tenant, not already a TenantAdmin, and the caller holds
+// Approver), the same gate BookingApprovalReach uses one door over.
 public sealed class ListBookingsQueryRequestHandler
     : IRequestHandler<ListBookingsQueryRequest, PagedResult<ListBookingsQueryResponse>>
 {
@@ -25,7 +34,7 @@ public sealed class ListBookingsQueryRequestHandler
         _currentUser = currentUser;
     }
 
-    public Task<PagedResult<ListBookingsQueryResponse>> Handle(
+    public async Task<PagedResult<ListBookingsQueryResponse>> Handle(
         ListBookingsQueryRequest request,
         CancellationToken cancellationToken)
     {
@@ -42,11 +51,20 @@ public sealed class ListBookingsQueryRequestHandler
             ?? throw new InvalidOperationException(
                 "No authenticated user: GET /bookings answers about a specific member (FR-4.4).");
 
+        var isTenantAdmin = BookingReadRules.CanSeeOtherMembersBookings(_currentUser);
+
+        IReadOnlyCollection<Guid>? approverResourceIds = null;
+        if (!isTenantAdmin && request.Scope == BookingScope.Tenant && _currentUser.IsInRole(Role.Approver))
+        {
+            approverResourceIds = await _bookings.FindApprovableResourceIdsAsync(callerUserId, cancellationToken);
+        }
+
         var owner = BookingReadRules.ResolveOwnerFilter(
             callerUserId,
-            BookingReadRules.CanSeeOtherMembersBookings(_currentUser),
+            isTenantAdmin,
             request.UserId,
-            request.Scope);
+            request.Scope,
+            approverResourceIds);
 
         // The validator has already refused any value not on the whitelist, so
         // this cannot fail here; the return value is ignored rather than
@@ -55,6 +73,6 @@ public sealed class ListBookingsQueryRequestHandler
         // query a plain wire shape.
         SortOption.TryParse(request.Sort, BookingSortFields.All, out var sort);
 
-        return _bookings.ListAsync(request, owner, sort, cancellationToken);
+        return await _bookings.ListAsync(request, owner, sort, cancellationToken);
     }
 }

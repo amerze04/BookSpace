@@ -105,11 +105,15 @@ FR-1.2 requires isolation that cannot be bypassed by forgetting a filter.
 Three mechanisms, all required:
 
 - Global query filters on `Users`, `Resources`, `Bookings`,
-  `AvailabilityWindows`, `BlackoutPeriods` in `OnModelCreating`
+  `AvailabilityWindows`, `BlackoutPeriods`, `RecurrenceRules` in
+  `OnModelCreating` — `RecurrenceRules` joined the other five in WP-5 Phase 2
+  (decision `0025`), found the same way `AvailabilityWindows`/`BlackoutPeriods`
+  were in WP-3 (`0014`): reachable by resource is not automatically reachable
+  *only* through its resource, once something loads it by its own id.
 - `OrgId` set in `SaveChangesAsync` for added `ITenantOwned` entities
 - SQL Server row-level security via a connection interceptor calling
   `sp_set_session_context`, with `Security.TenantAccessPolicy` covering the
-  same five tables
+  same six tables
 
 Use `FirstOrDefaultAsync`, not `DbSet.Find()` — `Find` returns tracked entities
 without querying and bypasses query filters. `IgnoreQueryFilters()` is allowed
@@ -564,6 +568,14 @@ index; when a new decision doc is added, add its one-liner here too.
     runs of six tests, no blackout write involved), every one absorbed by the
     retry, visible only as wall clock. That is the record's point 4 measured
     rather than argued, and why its "usually blocks" wording is the honest one.
+    **Evidence extended again 2026-09-09** (WP-5 Phase 4) for
+    `dbo.ApproveBooking`'s own distinct race — two decisions on one existing
+    row, not two inserts into a range: without the lock, two simultaneous
+    approvals of the same booking both reported Approved, and seven of ten
+    did. Every one of four runs of the correct procedure deadlocked at least
+    once (+8, +5, +5, +5 across fourteen tests each), more consistently than
+    `dbo.CreateBooking`'s own measurement, and every deadlock was absorbed by
+    the retry.
 
 **All four of WP-3's up-front decisions are now numbered records**: D1 →
 [`0014`](docs/decisions/0014-child-table-tenant-scoping.md) (Phase 1),
@@ -572,24 +584,47 @@ D2 → [`0020`](docs/decisions/0020-bookable-interval-semantics.md) and
 D3 → [`0021`](docs/decisions/0021-daylight-saving-for-availability-ranges.md)
 (both Phase 5). Nothing in `docs/wp3-plan.md` is still awaiting promotion.
 
-**Still open** — flag before building the affected feature, don't decide
-silently:
+24. [`0024`](docs/decisions/0024-dst-fallback-recurrence-policy.md) — the DST
+    **fall-back** case for a recurring occurrence (clocks go back, a local
+    wall-clock time is ambiguous rather than nonexistent) resolves to the
+    **earlier** of its two candidate UTC instants, for **both** the
+    occurrence's start and its end — not `0021`'s start-earlier/end-later split,
+    which is a property of a *range* allowed to stretch to 25 hours, whereas an
+    occurrence's nominal duration should not silently grow by an hour. No
+    occurrence is skipped (unlike spring-forward, `0008`): both instants are
+    real, so there is always something to create the `Booking` from, and no new
+    `Notifications` anchor is needed. Mechanically this is
+    `IResourceTimeZone.ToUtcEarliest`, already built in WP-3 Phase 5 — the gap
+    was the policy, not the code. **Settled by the repo owner 2026-09-08**, the
+    first decision of WP-5, before any of its code was written.
 
-- The DST **fall-back** case for a recurring booking **occurrence** (clocks go
-  back, a local time occurs twice and is ambiguous rather than nonexistent).
-  See the Notes section of `0008` for why it's a genuinely separate question
-  from spring-forward. `0021` resolves it for availability *ranges* — a range
-  absorbs a missing or repeated hour by being shorter or longer — and leaves
-  the *occurrence* case, an instant which has to land somewhere, exactly as
-  open as it was. **WP-5 owns it** — reassigned from WP-4 on 2026-09-07: WP-4
-  creates one-off bookings from explicit UTC instants supplied by the client
-  (which is what the availability endpoint already answers in), so no ambiguous
-  local time arises anywhere in it, and nothing WP-4 builds can answer the
-  question. Recurrence — where a rule expands a *wall-clock* time and has to
-  resolve the one that occurs twice — is WP-5's first task.
-  This is now the only open item — the
-  `ResourceType` question raised on 2026-09-03 was settled on 2026-09-04 and is
-  recorded in `0005`'s amendment.
+**§9's "Still open" list is now empty.** The DST fall-back case above was its
+last item, reassigned from WP-4 to WP-5 on 2026-09-07 and settled the next day:
+WP-4 creates one-off bookings from explicit UTC instants supplied by the
+client, so no ambiguous local time ever arose in anything it built; recurrence
+— where a rule expands a *wall-clock* time and has to resolve the one that
+occurs twice — is where the question finally had to be answered, and `0024` is
+that answer. The `ResourceType` question raised on 2026-09-03 was settled
+separately on 2026-09-04 and is recorded in `0005`'s amendment.
+
+25. [`0025`](docs/decisions/0025-recurrence-rule-tenant-scoping.md) —
+    `RecurrenceRules` gets its own `OrgId`, joining the global query filters,
+    RLS predicate and a composite same-org FK against `Resources` — the same
+    fix `0014` gave `AvailabilityWindows`/`BlackoutPeriods` in WP-3, applied
+    here because it was missing entirely. Not an open question: a bug found
+    while building WP-5 Phase 2's cancel endpoint, the first thing that ever
+    loaded a `RecurrenceRule` by a caller-supplied id rather than only
+    creating one scoped by its resource. Without the fix, a `TenantAdmin`'s
+    dropped owner filter (decision `0002`'s reach) would have had no tenant
+    restriction under it at all. **Found and fixed 2026-09-09**, confirmed
+    with the owner before implementation.
+26. [`0026`](docs/decisions/0026-notifications-series-anchor.md) — widens
+    `CK_Notifications_HasContext` so `RecurrenceRuleId` alone (no
+    `OccurrenceDate`) is a valid anchor, for WP-5 Phase 2's whole-series-cancel
+    notification (`NotificationKind.SeriesCancelled`) — one summary row for
+    the series, not tied to any single occurrence's date. A strict widening of
+    decision `0008`'s original constraint; every row that satisfied it before
+    still does. **Decided and implemented 2026-09-09.**
 
 If a task needs a decision that isn't listed above and isn't in this log,
 **stop and ask** rather than picking silently — same rule as always, this
@@ -1670,38 +1705,148 @@ Notes:
   **WP-5**: a one-off booking is created from explicit UTC instants, so no
   ambiguous local time arises in anything WP-4 builds.
 
-### WP-5 — Recurrence, Approvals & Time Correctness — **Not started**
+### WP-5 — Recurrence, Approvals & Time Correctness — **Done** (2026-09-09)
 Source doc: `docs/Work Packages - Week 4.pdf` (week 4, backend track).
-**Start here: [`docs/wp5-plan.md`](docs/wp5-plan.md)** — written 2026-09-08 at
-the close of WP-4 as a handoff brief, deliberately **not yet a plan**. It carries
-what already exists that WP-5 builds on, the five settled decisions it inherits,
-the one genuinely open decision it owns, the five loose ends WP-4 handed it
-(one of which is a live correctness bug if ignored), the traps that have each
-already cost time once, and the shape questions to settle with the owner before
-any code. The phasing gets written into that file and approved first, as WP-3's
-and WP-4's were.
+**Plan: [`docs/wp5-plan.md`](docs/wp5-plan.md)**, approved 2026-09-08 after all
+seven of its shape questions were put to the owner in one sitting (the same
+process WP-3 and WP-4 each went through). The one genuinely open decision it
+owned — the DST fall-back policy for a recurring occurrence, §9's last open
+item — is now [`0024`](docs/decisions/0024-dst-fallback-recurrence-policy.md):
+an ambiguous local time resolves to the **earlier** of its two candidate UTC
+instants, for both an occurrence's start and its end.
 
-Test baseline at handoff: **879 unit + 406 integration, 0 failed**.
+**Phase 1 ("creating a series") is done**, in two chunks: **1a, the pure
+`RecurrenceExpansion`** (`RecurrenceRule.OccurrenceDate(int)`,
+`IResourceTimeZone.IsInvalidLocalTime`, and a same-day `LocalEndTime >
+LocalStartTime` constructor guard that `RecurrenceRule` was missing entirely
+before this); **1b, the write path — done 2026-09-09**:
+`POST /recurrence-rules` on `TenantMember`, calling `dbo.CreateBooking` once
+per occurrence inside its own `IUnitOfWork` (never one transaction for the
+whole series, per `0007`), reporting every occurrence as created, skipped
+(DST), or refused (FR-5.4) — and a new `AppException.Extensions` mechanism so
+the all-refused 422 (`NoOccurrencesCreated`) can carry the same breakdown a
+success would have. See wp5-plan.md §9 for what 1b found while building it,
+including a real staging-order bug (an approval/notification pair for a
+declined occurrence lingering into the next occurrence's save) and — raised
+by the owner after reviewing this chunk, fixed the same day — a
+compensating-delete fix so an all-refused series leaves **no** trace at all:
+neither an orphaned `RecurrenceRule` row nor a stray spring-forward-skip
+notification for an occurrence from a series the client was told reserved
+nothing.
 
-- [ ] Create recurring bookings (daily/weekly/monthly) with interval and end
-      condition. FR-5.1.
-- [ ] Make each occurrence independently viewable and cancellable. FR-5.2.
-- [ ] Support cancelling one occurrence or the whole remaining series. FR-5.3.
-- [ ] Surface collisions/blackout conflicts at creation — never drop them
-      silently. FR-5.4.
-- [ ] Implement the approval workflow: Pending → approve/reject → notify;
-      re-check availability at approval time. FR-7.1–FR-7.5.
-- [ ] Store all times as UTC; render in the correct local zone. FR-6.1.
-- [ ] Define and implement DST-transition behavior for recurring bookings. FR-6.2.
+**Phase 2 ("occurrence view/cancel and whole-series cancel") is done,
+2026-09-09.** Per-occurrence view/cancel fell out of Phase 1 for free — an
+occurrence *is* a `Booking` with `RecurrenceRuleId` set, so `GET /bookings/{id}`
+and `POST /bookings/{id}/cancel` already worked; this phase closed the one gap
+(`RecurrenceRuleId` added to `ListBookingsQueryResponse`) and built
+`POST /recurrence-rules/{id}/cancel`: cancels the rule and every occurrence
+still holding a live claim (decision `0002`'s `EndsAtUtc > now` window,
+reapplied per occurrence), one summary notification rather than one per
+occurrence (`NotificationKind.SeriesCancelled`), through plain EF — no
+`IUnitOfWork`, on the same reasoning that already keeps the single-booking
+cancel and `BlackoutCascade` out of `dbo.CreateBooking`'s territory.
+
+**Found and fixed while building it**: `RecurrenceRules` had no tenant
+isolation at all — no `OrgId`, no query filter, no RLS — a WP-1 gap that
+Phase 1's create path never exposed (it only ever creates a rule, scoped
+implicitly through its resource) but Phase 2's cancel-by-id endpoint would
+have, immediately: a `TenantAdmin`'s dropped owner filter had nothing under it
+restricting it to their own tenant. Fixed as `0025`, applying decision `0014`'s
+exact pattern. `0026` is the smaller, related schema change Phase 2 needed
+regardless: widening `CK_Notifications_HasContext` so a `SeriesCancelled`
+notification can anchor to a `RecurrenceRuleId` alone, with no single
+occurrence date to hang it on.
+
+**Phase 3 ("approvals") is done, 2026-09-09.** `dbo.ApproveBooking` inherits
+`0023`'s four-part lock design whole, over the Pending row's own status guard;
+`Booking.Reject`/`CanBeRejected`; `POST /bookings/{id}/approve` and
+`.../reject` on `TenantMember`, reachable by a TenantAdmin over any Pending
+booking in their tenant or by an assigned `Approver` (`ApprovalReach`, decision
+0018) — never both an owner and a resource restriction at once, since the two
+roles widen along different axes. Proved at both levels before the endpoint
+was written, mirroring WP-4's `dbo.CreateBooking` split:
+`ApproveBookingProcedureTests` (14 tests, including two decisions racing the
+same booking and an approval racing a concurrent cancel) at the procedure
+level, `BookingApprovalEndpointTests` (18 tests) through the real pipeline.
+`GET /bookings?scope=tenant` is now also valid for an `Approver`, restricted to
+the resources they are assigned to approve
+(`BookingOwnerFilter.AnyOwnerRestrictedToResources`) rather than to a member —
+the queue widens by resource, `userId` stays TenantAdmin-only. `ListBookingsQueryResponse`
+and `GetBookingQueryResponse` both gained the booker's `UserName` (denormalized
+the same way `ResourceName` already was), and `GetBookingQueryResponse` gained
+an `Approval` section (`GetBookingApprovalDetail`) carrying the request's
+outcome, not just that one exists — closing WP-4's loose ends 3 and 4.
+
+Found while building it: the retry-safety hazard Phase 1 found for a
+declined-and-retried occurrence reappears here in a new shape — a 1205 retry
+re-entering `IUnitOfWork`'s delegate can find an `ApprovalRequest` already
+decided in memory from the aborted attempt, so `ApproveBookingCommandRequestHandler`
+guards `Decide()` with `if (approvalRequest.Decision == ApprovalDecision.Pending)`
+before calling it, proved directly by a dedicated unit test.
+
+Test baseline: **1039 unit + 468 integration tests pass, 0 failed** (879 + 406
+at WP-4 handoff; 978 + 430 at Phase 2).
+
+- [x] Create recurring bookings (daily/weekly/monthly) with interval and end
+      condition. FR-5.1. **Done 2026-09-09** (Phase 1):
+      `POST /recurrence-rules` on `TenantMember`.
+- [x] Make each occurrence independently viewable and cancellable. FR-5.2.
+      **Done 2026-09-09** (Phase 2) — free from Phase 1's `RecurrenceRuleId`
+      anchoring, plus `RecurrenceRuleId` added to `ListBookingsQueryResponse`
+      (previously detail-only).
+- [x] Support cancelling one occurrence or the whole remaining series. FR-5.3.
+      **Done 2026-09-09** (Phase 2): `POST /recurrence-rules/{id}/cancel`.
+- [x] Surface collisions/blackout conflicts at creation — never drop them
+      silently. FR-5.4. **Done 2026-09-09** (Phase 1): every occurrence is
+      reported created, skipped (DST), or refused, with its reason code; an
+      all-refused series is a 422 (`NoOccurrencesCreated`) carrying the same
+      breakdown, never a 201 with an empty list.
+- [x] Implement the approval workflow: Pending → approve/reject → notify;
+      re-check availability at approval time. FR-7.1–FR-7.5. **Done
+      2026-09-09** (Phase 3).
+- [x] Store all times as UTC; render in the correct local zone. FR-6.1.
+      **Already true by construction** (§4.3's standing rule, in force since
+      WP-1) — nothing WP-5 built is a second time-handling path: recurrence
+      expands local wall-clock time to UTC once, in `RecurrenceExpansion`, and
+      every stored instant is `datetime2(0)` UTC like every other table.
+      Checked off here rather than left blank because Phase 4's AC sweep
+      confirmed it holds for the tables this package added, not because
+      anything new had to be built.
+- [x] Define and implement DST-transition behavior for recurring bookings.
+      FR-6.2. **Done in Phase 1** (2026-09-09): spring-forward skips the
+      occurrence (`0008`), fall-back resolves to the earlier of the two
+      candidate instants for both ends (`0024`), both against real
+      `America/New_York` tzdata in `RecurrenceExpansionTests`.
 
 Acceptance criteria:
-- [ ] A recurring series is created, and single occurrences and the whole series
-      can each be cancelled.
-- [ ] Conflicting occurrences are surfaced at creation.
-- [ ] Approval re-checks availability, so approving a since-taken slot fails
-      safely. AC-5.
-- [ ] The DST edge case resolves per the documented policy with no crash or
-      silent duplicate. AC-3.
+- [x] A recurring series is created, and single occurrences and the whole series
+      can each be cancelled. **Met 2026-09-09** (Phases 1–2).
+- [x] Conflicting occurrences are surfaced at creation. **Met 2026-09-09**
+      (Phase 1).
+- [x] Approval re-checks availability, so approving a since-taken slot fails
+      safely. AC-5. **Met 2026-09-09** (Phase 3):
+      `ApproveBookingProcedureTests` proves the capacity re-check under the
+      same lock `dbo.CreateBooking` uses, and the reason codes
+      (`SlotUnavailable`, `CapacityExceeded`, `BlackoutPeriod`,
+      `ResourceArchived`) reuse WP-3/WP-4's existing exceptions unchanged.
+- [x] The DST edge case resolves per the documented policy with no crash or
+      silent duplicate. AC-3. **Met** — proved at the layer this codebase
+      always proves DST correctness (WP-3's D3/`0021` set the precedent):
+      pure-function tests against **real** `America/New_York` tzdata, not a
+      fixed-offset fake, in `RecurrenceExpansionTests`
+      (`Expand_SkipsAnOccurrenceWhoseLocalStartFallsInTheSpringForwardGap`,
+      its end-only sibling, `Expand_OtherOccurrencesInTheSameSeriesAreUnaffectedByOneSkippedDate`
+      — the "no duplicate" half, since a skip is a `RecurrenceOccurrenceOutcome`
+      with no `Booking` behind it rather than two occurrences landing on one
+      instant — and `Expand_ResolvesAnAmbiguousOccurrenceUsingTheEarlierInstantForBothEnds`).
+      The write path's own mechanics (a skip enqueues its own notification and
+      creates no booking; a series that skips every occurrence still reports
+      each one, per FR-5.4) are covered separately, with a fake outcome, in
+      `CreateRecurrenceSeriesCommandRequestHandlerTests`. No HTTP-level DST
+      test exists deliberately — `CreateRecurrenceSeriesEndpointTests` keeps
+      its resources in UTC, the same choice `CreateBookingEndpointTests`
+      already made, so the write-path proof and the DST-correctness proof
+      don't have to agree with each other to pass.
 
 Notes: its two hard problems and both open decisions are **already settled** —
 materialization horizon [`0007`](docs/decisions/0007-recurrence-materialization-horizon.md),
@@ -1714,11 +1859,23 @@ occurrence, and [`0023`](docs/decisions/0023-booking-concurrency-strategy.md) is
 **inherited whole** — `dbo.ApproveBooking` needs the same capacity check under
 the same locks over the same index for FR-7.5/AC-5, so it is not a second
 strategy to invent.
-**What does not exist yet and WP-5 must build**: `dbo.ApproveBooking`, any
-approval transition on `Booking` (it has `Cancel`, `CancelForBlackout`,
-`CheckIn` and `MarkNoShow`, and nothing for approve or reject), the recurrence
-expansion, and the approver queue read. `RecurrenceRule` and
-`Bookings.RecurrenceRuleId` already exist and are unused —
-`dbo.CreateBooking` already takes `@RecurrenceRuleId`.
-The genuinely open one is §9's DST **fall-back** case for an occurrence, which
-this package owns.
+**Phase 4 ("AC sweep and documentation") is done, 2026-09-09, and closes
+WP-5.** No new production code — per the plan, this phase confirms rather than
+builds: all four acceptance criteria checked above, each against the specific
+tests that prove it rather than by assertion; decision
+[`0023`](docs/decisions/0023-booking-concurrency-strategy.md) extended a
+second time with `dbo.ApproveBooking`'s own measured concurrency evidence
+(no new decision record, per the plan — `0023` already says the procedure
+inherits the strategy whole, so this phase adds evidence to it exactly as
+WP-4 Phase 3 did); and this section's own tick-off. Final test baseline:
+**1039 unit + 468 integration tests pass, 0 failed** — unchanged from Phase
+3's handoff, since Phase 4 added no new application code, only the
+temporary, reverted procedure weakening that produced `0023`'s figures.
+
+§9's DST **fall-back** case, the one item this package owned that was still
+open at handoff, was answered by `0024` in Phase 1 — nothing was left open by
+the time this phase started.
+
+**All four Week-4 acceptance criteria are met, all seven FR/task items are
+checked, and every decision this package touched is written up.** WP-5 is
+complete.

@@ -61,6 +61,20 @@ public class AppExceptionCatalogueTests
             (ReasonCodes.BlackoutPeriod, ErrorKind.RuleViolation),
         [typeof(SlotUnavailableException)] = (ReasonCodes.SlotUnavailable, ErrorKind.Conflict),
         [typeof(CapacityExceededException)] = (ReasonCodes.CapacityExceeded, ErrorKind.Conflict),
+
+        // WP-5 Phase 1b.
+        [typeof(NoOccurrencesCreatedException)] =
+            (ReasonCodes.NoOccurrencesCreated, ErrorKind.RuleViolation),
+
+        // WP-5 Phase 2.
+        [typeof(RecurrenceRuleNotFoundException)] =
+            (ReasonCodes.RecurrenceRuleNotFound, ErrorKind.NotFound),
+        [typeof(RecurrenceRuleNotCancellableException)] =
+            (ReasonCodes.RecurrenceRuleNotCancellable, ErrorKind.RuleViolation),
+
+        // WP-5 Phase 3.
+        [typeof(BookingNotPendingException)] =
+            (ReasonCodes.BookingNotPending, ErrorKind.RuleViolation),
     };
 
     // AuthenticationException is excluded deliberately, and it is the one

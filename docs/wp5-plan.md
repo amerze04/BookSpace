@@ -1,26 +1,30 @@
 # WP-5 — Recurrence, Approvals & Time Correctness
 
-Source doc: `docs/Work Packages - Week 4.pdf` (week 4, backend track), which
-carries WP-4 and WP-5 together. **That PDF is the authority on scope** — the task
-list in CLAUDE.md §12 is copied from it, and anything not in it is a gap to flag
+Source: `docs/Work Packages - Week 4.pdf` (week 4, backend track), which carries
+WP-4 and WP-5 together. **That PDF is the authority on scope** — the task list
+in CLAUDE.md §12 is copied from it, and anything not in it is a gap to flag
 rather than something to add on judgment (CLAUDE.md §11).
 
 ---
 
 ## Status
 
-**Not started. This document is the handoff brief only — it is not yet a plan.**
-Written 2026-09-08 at the close of WP-4, for a fresh session to start from.
+**In progress — Phases 1 and 2 done, 2026-09-09.** All seven shape questions
+below were put to the repo owner on 2026-09-08, before any WP-5 code was
+written — the same process WP-3 and WP-4 each went through, and the one this
+document's own §6 asked for. Their answers are recorded in "Settled before
+planning" and the architecture and phasing that follow are built on them. The
+one genuinely open decision (the DST fall-back policy) is closed as `0024`,
+the first thing this package decided.
 
-The plan itself gets written the way WP-3's and WP-4's were: read the source doc,
-settle the shape questions in §6 below with the owner, then write the phasing
-into this file and get it approved **before any code**. Do not skip that step;
-both previous packages found real design problems during it (WP-4 found the
-peak-vs-sum bug in CLAUDE.md §4.1 before writing a line).
-
-**Test baseline to compare against: 879 unit + 406 integration, 0 failed.**
-`dotnet build` is clean. WP-4 is complete and its changes are in the working
-tree, uncommitted, for the owner to review.
+**Test baseline: 978 unit + 430 integration tests pass, 0 failed.** `dotnet
+build` is clean across the solution. `POST /recurrence-rules` and
+`POST /recurrence-rules/{id}/cancel` both exist and work end to end, through a
+real SQL Server, the first with a real `dbo.CreateBooking` call per occurrence.
+Phase 2 also found and fixed a real pre-existing tenant-isolation gap —
+`RecurrenceRules` had none at all — recorded as
+[`0025`](decisions/0025-recurrence-rule-tenant-scoping.md); see Phase 2's entry
+in §9 for the full story.
 
 ---
 
@@ -53,194 +57,765 @@ Acceptance criteria:
 
 ## 2. What already exists that WP-5 builds on
 
-Most of the hard groundwork is done. Read this before assuming something needs
-building.
+Most of the hard groundwork is done. Confirmed against the actual code, not
+just the header comments, before writing this plan.
 
 | Piece | Where | Note |
 |---|---|---|
-| `RecurrenceRule` entity | `Domain/Entities/RecurrenceRule.cs` | frequency, interval, local start/end time, start/end date, occurrence count, IANA `TimeZoneId`, `Status`, `Cancel(...)`, and `ComputeImpliedEndDate` |
+| `RecurrenceRule` entity | `Domain/Entities/RecurrenceRule.cs` | frequency, interval, local start/end time, start/end date, occurrence count, IANA `TimeZoneId`, `Status`, `Cancel(actorUserId, nowUtc)` (unconditional today — see §7), `ComputeImpliedEndDate` |
 | `RecurrenceStatus` | `Domain/Enums/` | `Active`, `Cancelled` — only two |
-| `Bookings.RecurrenceRuleId` | schema + `NewBooking` | nullable, **always null today**; the create path already accepts it |
-| `dbo.CreateBooking` | `AddCreateBookingProcedure` | takes `@RecurrenceRuleId`; every occurrence goes through it |
-| `ApprovalRequest` entity | `Domain/Entities/` | `Decide(...)`, `Expire(...)`; rows are **written** by WP-4's create path |
-| Approvers on a resource | WP-3 Phase 3 | eligibility settled by `0018`; `Resource.ApproverUserIds` |
-| `IResourceTimeZone` | `Domain/Availability/` | `ToUtcEarliest` / `ToUtcLatest` / `ToLocal`, with the DST rules `0021` fixed |
-| `AvailabilityCalculator` + `BookingEligibility` | `Domain/Availability/` | the same question "may this interval be booked" that each occurrence asks |
-| `NotificationKind.RecurrenceOccurrenceSkipped` | `Domain/Enums/` | already declared for `0008`, with the second anchor on `Notifications` |
-| `Notifications` second anchor | schema | `RecurrenceRuleId` + `OccurrenceDate`, for the one kind with no `BookingId` |
-| `IUnitOfWork` | `Infrastructure/Persistence/` | the transactional boundary; **its delegate must be safe to run twice** |
-| Seeded recurrence rule | `SeedData` | one weekly standup per tenant, running to the two-year boundary, **with no occurrences materialized** |
+| `Bookings.RecurrenceRuleId` | schema + `NewBooking` | nullable, **always null today** — `CreateBookingCommandRequestHandler` passes it as `RecurrenceRuleId: null` explicitly, with a comment naming WP-5 |
+| `dbo.CreateBooking` | `AddCreateBookingProcedure` migration | takes `@RecurrenceRuleId = NULL` as an optional parameter already; every occurrence goes through it unchanged |
+| `IBookingRepository.CreateAsync` / `NewBooking` | `Application/Abstractions/IBookingRepository.cs` | the exact port a per-occurrence create reuses; `NewBooking.RecurrenceRuleId` just needs a real value |
+| `ApprovalRequest` entity | `Domain/Entities/ApprovalRequest.cs` | `Decide(decision, decidedByUserId, nowUtc, note)`, `Expire(nowUtc)` — both already guard `Decision != Pending`; rows are **written** by WP-4's create path (`CreateBookingCommandRequestHandler.StageApprovalAsync`) |
+| Approvers on a resource | WP-3 Phase 3 | `Resource.ApproverUserIds` (computed over an EF owned collection, `ResourceApprovers` table); eligibility rules in `0018` |
+| `IResourceTimeZone` | `Domain/Availability/IResourceTimeZone.cs` | `ToUtcEarliest` / `ToUtcLatest` / `ToLocal`; `SystemResourceTimeZone` is the Infrastructure implementation, with the gap-walk and ambiguous-offset logic `0024` reuses as-is |
+| `BookingEligibility` + `AvailabilityCalculator` | `Domain/Availability/` | "may this exact interval be booked, and why not" — the pure function every occurrence's pre-check calls, unchanged |
+| `Notification.ForSkippedOccurrence` | `Domain/Entities/Notification.cs` | **already implemented**, not just declared — the dual-anchor factory for `RecurrenceOccurrenceSkipped` exists and is ready to call |
+| `IUnitOfWork` | `Infrastructure/Persistence/UnitOfWork.cs` | the transactional boundary; **its delegate must be safe to run twice** (1205 retry) |
+| `ICurrentUser.IsInRole(Role)` | `Application/Abstractions/ICurrentUser.cs` | first read in WP-4 Phase 2a; WP-5's approver reach reuses it for `Role.Approver` |
+| `BookingOwnerFilter` / `BookingReadRules` / `BookingScope` | `Application/Features/Bookings/` | the "who may see whose bookings" machinery `GET /bookings` already has; the approver queue extends rather than replaces it (§5.3 below) |
+| Seeded recurrence rule | `SeedData.cs` | one weekly standup per tenant (`Weekly`, interval 1, `StartDate` 2026-08-24, `EndDate` = `StartDate + 2y`), **no occurrences materialized** — the comment there still says why |
+| Seeded bookings | `SeedData.cs` (WP-4 Phase 3) | three per tenant through `dbo.CreateBooking`, including one `Pending` on the approval-gated 3D Printer with its `ApprovalRequest` row — the approver queue has something to read on day one |
 
-**What does not exist and WP-5 must build:** `dbo.ApproveBooking`, any
-approve/reject transition on `Booking` (it has `Cancel`, `CancelForBlackout`,
-`CheckIn`, `MarkNoShow` — and **nothing for approval**), the recurrence expansion
-itself, the approver queue read, and every endpoint in §1.
+**What does not exist and WP-5 must build:** `dbo.ApproveBooking`, `Booking.Reject(...)`
+(there is `Cancel`, `CancelForBlackout`, `CheckIn`, `MarkNoShow` — nothing for a
+decision), `RecurrenceExpansion` (the application-layer wall-clock expansion
+CLAUDE.md §4.3 requires), `IRecurrenceRuleRepository`, the approver queue's
+resource-scoping, and every endpoint in §1.
 
 ---
 
 ## 3. The decisions WP-5 inherits, already settled
 
-Read these before designing anything; four of WP-5's five hard questions are
-already answered and the reasoning is not to be revisited.
-
 - [`0007`](decisions/0007-recurrence-materialization-horizon.md) — a series is
   **fully materialized at creation**, **best-effort per occurrence** (not
-  atomic), capped at **two calendar years** past its own `StartDate`. There is
-  deliberately **no background top-up job**; CLAUDE.md §7 says so explicitly.
+  atomic), capped at **two calendar years** past its own `StartDate`. No
+  background top-up job. **Load-bearing for the create-series architecture in
+  §5.1**: best-effort-per-occurrence means each occurrence gets its own
+  `IUnitOfWork.ExecuteAsync`, never one transaction wrapping the whole series.
 - [`0008`](decisions/0008-dst-spring-forward-policy.md) — an occurrence whose
-  local time falls in a **spring-forward gap is skipped, not shifted**. The user
-  is told immediately in the series-creation response **and** again by email 14
-  days before the date, through the existing Reminder dispatch job — no new job.
-  This is why `Notifications` has a second anchor.
+  local time falls in a spring-forward gap is **skipped**, reported immediately
+  in the creation response, and reported again 14 days ahead by email via the
+  existing Reminder job. `Notification.ForSkippedOccurrence` already exists.
 - [`0001`](decisions/0001-blackout-vs-recurring-series.md) — a blackout has
   **absolute priority** over a series: it cancels every occurrence it overlaps,
-  at any status, and the owner is notified. **Already implemented** by WP-3's
-  `BlackoutCascade`, which will start cancelling real series occurrences the
-  moment WP-5 creates them — so it is worth re-reading that code rather than
-  assuming it needs changing.
+  at any status, and the owner is notified. Already implemented by
+  `BlackoutCascade`, unchanged by WP-5 — it starts cancelling real series
+  occurrences the moment they exist.
 - [`0003`](decisions/0003-availability-timezone.md) — availability is expressed
-  in the **resource's** timezone, not the booker's.
+  in the **resource's** timezone. **Consequence for series creation**: a
+  `RecurrenceRule` expands in the resource's `TimeZoneId`, not a client-supplied
+  one — see smaller call 1 in §5.1.
 - [`0002`](decisions/0002-tenant-admin-cancellation.md), as amended by WP-4 —
   the cancellation window is `EndsAtUtc`, a TenantAdmin's reach is the same
   owner filter the reads use, a second cancellation is refused, and
-  self-cancellation enqueues no notification. FR-5.3's "cancel the whole
-  remaining series" has to decide how these four apply per occurrence.
-- [`0023`](decisions/0023-booking-concurrency-strategy.md) — **`dbo.ApproveBooking`
-  inherits the whole design.** FR-7.5 and AC-5 need the same capacity check at
-  approval time, so it takes the same locks, in the same order, over the same
-  index. Read this record before writing that procedure; do not invent a second
-  strategy.
-
-### The one genuinely open decision — and WP-5 owns it
-
-**The DST fall-back case for a recurring occurrence.** When the clocks go back, a
-local wall-clock time occurs **twice** and is ambiguous rather than nonexistent.
-`0008` covers spring-forward (the time that does not exist); `0021` covers a
-*range* absorbing a repeated hour by being an hour longer. Neither answers this:
-an **instant** has to land somewhere, and there are two candidates.
-
-This is now the **only** open item in CLAUDE.md §9. It was reassigned from WP-4
-on 2026-09-07, because WP-4 creates bookings from explicit UTC instants supplied
-by the client, so no ambiguous local time ever arises in it. Recurrence — where
-a rule expands a *wall-clock* time — is where it finally has to be answered, and
-that is WP-5's first task.
-
-Note that `IResourceTimeZone` already offers `ToUtcEarliest` and `ToUtcLatest`,
-so the mechanism exists; what is missing is the *policy*, and it must be written
-up as a numbered decision record (`0024`) rather than chosen silently in code.
+  self-cancellation enqueues no notification. §5.2 applies all four per
+  occurrence when cancelling a whole series.
+- [`0023`](decisions/0023-booking-concurrency-strategy.md) — `dbo.ApproveBooking`
+  inherits the concurrency design: same locks, same order, same index. §5.3
+  works out *why* a re-check is needed even though a `Pending` booking already
+  holds its capacity claim from creation — it is not a redundant formality.
+- [`0024`](decisions/0024-dst-fallback-recurrence-policy.md) — **new, decided
+  2026-09-08.** A recurring occurrence's ambiguous (fall-back) local time
+  resolves to the **earlier** UTC instant, for both its start and its end —
+  not `0021`'s start-earlier/end-later split, which is a *range's* rule. This
+  was CLAUDE.md §9's last open item; it is now closed.
 
 ---
 
-## 4. Loose ends WP-5 explicitly inherits from WP-4
+## 4. Loose ends WP-5 inherits from WP-4, and how this plan closes them
 
-These were flagged rather than fixed, deliberately. The first one is a live
-correctness bug if WP-5 ignores it.
+**Status as of Phase 4 (2026-09-09), closing WP-5**: 1, 3 and 4 are closed. 2
+and 5 remain open — both were explicitly out of this package's scope from the
+start, not something Phase 4's AC sweep found lacking.
 
 1. **A cancelled `Pending` booking keeps its `ApprovalRequests` row at
-   `Pending`.** Nothing withdraws it. **The approve path must check the
-   booking's status**, or an approver can approve a cancelled booking. AC-5
-   already requires re-checking availability at approval time, so this check
-   belongs beside that one. Recorded in `0002`'s amendment and in
-   `docs/wp4-plan.md`.
-2. **Nothing writes `BookingStatus.Completed`.** That gap is load-bearing in
-   three places now — `Booking.CanBeCancelled`, `CanBeCancelledForBlackout`, and
-   the blackout cascade's reach — all of which test `EndsAtUtc` rather than
-   status precisely because an attended meeting is still `Confirmed`. It is in
-   **no** work package. Worth raising with the mentor before WP-5 adds a fourth
-   dependency on it.
-3. **Read DTOs carry `UserId` but no owner name**, so an admin using
-   `scope=tenant` sees opaque GUIDs. WP-5's approver queue is the first screen
-   where that is actively unhelpful — an approver needs to know *who* asked.
-   `ApproverDetail`'s id-and-name-no-email shape is the precedent.
-4. **`GET /bookings/{id}` carries no approval detail** for a `Pending` booking.
-   WP-5 owns approvals, so the wire shape belongs with the approver queue.
-5. **Reminder rows (FR-8.3) are written by nothing.** Booking creation is the
-   natural writer, but nothing dispatches them and cancelling would then have to
-   void them. Deferred to the notifications package; if WP-5's source doc asks
-   for reminders, that deferral needs revisiting with the owner.
+   `Pending`.** ~~§5.3's approve/reject design closes this directly~~ **Closed
+   in Phase 3**: both approve and reject check `Booking.Status == Pending`
+   before doing anything else, so a cancelled (or otherwise no-longer-Pending)
+   booking is refused with `BookingNotPending` rather than silently approved —
+   asserted directly by `Approve_RefusesACancelledBooking`.
+2. **Nothing writes `BookingStatus.Completed`.** Still unchanged by WP-5, and
+   still worth raising with the mentor — not in this package's scope, and
+   nothing in Phase 4's AC sweep depended on it.
+3. **Read DTOs carry `UserId` but no owner name.** **Closed in Phase 3**:
+   `ListBookingsQueryResponse` and `GetBookingQueryResponse` both gained
+   `UserName`, following `ApproverDetail`'s id-and-name-no-email precedent —
+   the approver queue is exactly the screen this bit, and now reads it
+   directly rather than needing a lookup per row.
+4. **`GET /bookings/{id}` carries no approval detail for a `Pending` booking.**
+   **Closed in Phase 3**: `GetBookingQueryResponse` gained `Approval`
+   (`GetBookingApprovalDetail`) once `ApproveBooking`/`RejectBooking` existed
+   to act on it — present once a resource ever required approval, carrying the
+   decision once made, not withdrawn afterward.
+5. **Reminder rows (FR-8.3) are written by nothing.** Still deferred to the
+   notifications package; WP-5's source doc does not ask for reminders beyond
+   the one `0008` already specifies (which is built), and Phase 4 did not
+   revisit it.
 
 ---
 
-## 5. Traps a fresh session must know before touching this
+## 5. Architecture
 
-Every one of these has already cost time once.
+### 5.1 Creating a recurring series (FR-5.1, FR-5.4)
 
-- **`member2@acme.test` is unusable in an integration test.**
-  `AuthenticationEndpointTests.Refresh_UserDeactivatedSinceLogin` deactivates it
-  permanently by design. A test using it **passes alone and fails only in a full
-  run**, with a 401 on *login*. Use `approver@acme.test` as a second Acme
-  account.
-- **The seed now writes six bookings** (WP-4 Phase 3), so any new test asserting
-  a tenant-wide booking count starts from three per tenant, not zero.
-  `TenantIsolationTests` and `SeedDataTests` assert those exact numbers.
-- **`IUnitOfWork`'s delegate must be safe to run twice.** The execution strategy
-  replays it on a 1205, so ids are minted and entities staged *before* it opens.
-  A series of 100 occurrences inside one unit of work would replay all 100 —
-  which is one reason `0007` chose best-effort-per-occurrence rather than atomic.
-- **Deadlocks (1205) are routine at contention**, measured in `0023`: sixteen
-  across four runs of six tests. They are absorbed by the retry, but anything
-  calling `dbo.CreateBooking` **must** be inside `IUnitOfWork` — a raw
-  connection with no execution strategy is a configuration production never
-  runs in.
-- **Recurrence expands in the application layer, in local wall-clock time**,
-  then converts to UTC (CLAUDE.md §4.3). Do **not** use SQL Server's
-  `AT TIME ZONE`: it takes Windows zone ids and will not match what .NET
-  produces from the IANA id in the column.
-- **A stored `TimeZoneId` is an IANA id and only an IANA id.** On Windows
-  `TimeZoneInfo` resolves Windows ids too, so "can we find it" is not a
-  sufficient check — `ITimeZoneCatalog.IsKnownIanaId` also requires
-  `TryConvertIanaIdToWindowsId` to succeed.
-- **Availability windows cannot cross midnight** (`CK_AvailabilityWindows_Window`
-  requires `ClosesAt > OpensAt`), and `23:59:59` means the following midnight
-  (`0022`). An overnight recurring booking meets both facts at once.
-- **Booking writes go through the procedure. Reads and cancels do not.** §4.1
-  governs writes that *add* demand against capacity. Cancelling a series
-  reduces demand, so it is EF plus `SaveChanges`, like WP-4's single cancel —
-  no procedure, no lock.
-- **Verify the tests can fail.** Every WP-4 chunk did: the lock hints removed,
-  the owner filter disabled, the notification suppression removed, both
-  isolation mechanisms bypassed. For WP-5 the equivalents are the approval
-  re-check (AC-5) and the DST policy (AC-3). Never commit the weakened version.
-- **Enums serialize as their names app-wide** (`JsonStringEnumConverter`), and
-  integration tests must opt in via `Support/TestJson.cs` to read them back.
+**New port:** `IRecurrenceRuleRepository` (`Add`, `SaveChangesAsync`) —
+`RecurrenceRule` is a plain EF entity with no capacity claim of its own, so it
+needs no procedure, matching `IBookingRepository`'s `AddApprovalRequest` /
+`AddNotifications`.
+
+**New pure function, `RecurrenceExpansion`, in `BookSpace.Domain`** (alongside
+`BookingEligibility` — same reasoning: no EF, no clock beyond what is passed
+in, and it is the one place a rule's occurrence dates and instants are computed,
+so a second implementation would drift). Signature, shape not final text:
+
+```csharp
+public static IReadOnlyList<RecurrenceOccurrence> Expand(RecurrenceRule rule, IResourceTimeZone zone);
+
+public sealed record RecurrenceOccurrence(
+    DateOnly OccurrenceDate,
+    RecurrenceOccurrenceOutcome Outcome,   // Instant | SkippedSpringForwardGap
+    UtcInterval? Interval);                // null iff Outcome is the skip
+```
+
+Walks `StartDate` forward by `Frequency`/`IntervalValue` until `EndDate` (or
+`OccurrenceCount`) is exhausted — the same stepping `RecurrenceRule
+.ComputeImpliedEndDate` already does for the span cap, reused rather than
+re-derived. For each date: resolve `LocalStartTime`/`LocalEndTime` to UTC via
+`zone.ToUtcEarliest` for **both** ends per `0024`, unless
+`zone`'s underlying `TimeZoneInfo.IsInvalidTime(localStart)` is true, in which
+case the occurrence is `SkippedSpringForwardGap` per `0008` and no interval is
+produced. (Testing the gap needs the zone's own predicate, not
+`IResourceTimeZone` — `SystemResourceTimeZone` already exposes the wrapped
+`TimeZoneInfo` internally; whether that needs a one-line addition to the
+interface or can be inferred by catching the specific instant is a Phase 1
+detail, not a design question.)
+
+**The handler, in sequence** (`CreateRecurrenceSeriesCommandRequestHandler`,
+mirroring `CreateBookingCommandRequestHandler`'s division of labour):
+
+1. Load the resource (`ResourceNotFoundException` on a missing/cross-tenant id,
+   AC-4), reject archived (`ResourceArchivedException`).
+2. `resource.AllowsBookingDuration(LocalEndTime - LocalStartTime)` — one check,
+   since every occurrence shares the same nominal duration
+   (`BookingDurationOutOfRangeException`).
+3. Construct the `RecurrenceRule` — its constructor already enforces the
+   interval/end-condition/two-year-cap rules (`CK_RecurrenceRules_*`, decision
+   `0007`), so nothing here re-derives them. `Add` it and `SaveChangesAsync`
+   through `IRecurrenceRuleRepository` **before** any occurrence, since
+   `Bookings.RecurrenceRuleId` is a real FK.
+4. `RecurrenceExpansion.Expand(rule, zone)` — the full occurrence list, still
+   in memory, nothing written yet.
+5. **One up-front snapshot read** of blackout intervals and booked quantities
+   across the whole series span (the same two `IAvailabilityRepository` calls
+   the single-booking handler makes, just over a wider range) — cheap relative
+   to up to ~730 occurrences each needing their own pair of queries, and safe
+   to share across occurrences precisely because occurrences of **one** rule
+   never overlap each other in time (a rule produces at most one occurrence per
+   step), so an earlier occurrence in this same loop cannot change a later
+   one's eligibility answer. It is advisory, exactly as the single-booking
+   pre-check is — `dbo.CreateBooking` remains the authority per occurrence.
+6. For each occurrence with a real `Interval` (i.e. not a spring-forward skip):
+   - `BookingEligibility.Evaluate(...)` against the snapshot. A refusal here
+     (`OutsideAvailability` / `BlackoutPeriod` / `SlotUnavailable` /
+     `CapacityExceeded`) is recorded as **refused, with reason**, and
+     `dbo.CreateBooking` is **not called** for it — the pre-check answer is
+     confident enough to skip a doomed round trip, matching the single-booking
+     handler's own reasoning for why it pre-checks at all.
+   - Otherwise, its own `IUnitOfWork.ExecuteAsync` (never one for the whole
+     series — see decision `0007` above): mint the occurrence's `Booking` id
+     before entering it, call `dbo.CreateBooking` with this rule's id, stage the
+     `ApprovalRequest` (if `RequiresApproval`) and `Notifications` exactly as
+     WP-4 does, `SaveChangesAsync`. If the procedure itself refuses — the
+     snapshot was stale, which can happen for a long series racing a genuinely
+     concurrent booking — that occurrence is recorded as **refused** with the
+     procedure's reason rather than aborting the remaining occurrences
+     (decision `0007`'s best-effort guarantee, applied to a failure the
+     pre-check did not catch).
+   - A spring-forward skip is recorded as **skipped**, and a
+     `Notification.ForSkippedOccurrence` is enqueued (14 days ahead,
+     `SendAtUtc = occurrenceDate - 14d`, via the existing Reminder job — `0008`
+     unchanged) in the same save as the *next* real occurrence's transaction,
+     or its own trivial one if none follows — a Phase 1 detail.
+7. Build the response from the three buckets: created (with `bookingId`),
+   skipped (DST), refused (with reason code) — FR-5.4's "never drop silently"
+   is the created/skipped/refused partition itself, not a side effect of it.
+
+**The empty-series wire question (settled answer to shape question 2).** If
+every occurrence is skipped or refused, the endpoint must not return 201 with
+an empty `created` list — the owner's answer was that this is a 409/422.
+Concretely: a new `NoOccurrencesCreatedException` (`ErrorKind.RuleViolation`,
+422 — chosen over 409 because the common case is every occurrence landing
+outside availability, which is a rule refusal, not a race; the rare case where
+every occurrence loses a race is still describable as "nothing could be
+booked") carrying the same per-occurrence breakdown as a successful response
+would have. This needs one small, general mechanism `0016` does not yet have:
+`AppException` currently has no way to attach structured data to a response
+beyond the reason code (the one exception, `FluentValidation.ValidationException`,
+is special-cased in `GlobalExceptionHandler` for per-field errors). Rather than
+special-casing this one exception the same way, Phase 1 adds an optional
+`IReadOnlyDictionary<string, object?> Extensions` to `AppException` (empty by
+default) that `GlobalExceptionHandler` copies onto `ProblemDetails.Extensions`
+generically — a small generalization of the existing special case, usable by
+this exception and nothing forces it to be used by any other. **A smaller call
+to make explicit when Phase 1 is scoped**, not a question for the owner: it
+follows directly from the chosen wire shape and does not reopen `0016`'s
+design.
+
+**Smaller calls taken here, to flag rather than re-ask:**
+
+1. **The series' timezone is always the resource's `TimeZoneId`**, never a
+   client-supplied one, per `0003`. `RecurrenceRule`'s constructor still takes
+   a `timeZoneId` parameter (used freely by `SeedData` today), but the
+   command handler always passes `resource.TimeZoneId` — the endpoint's
+   request DTO has no timezone field at all, so there is nothing for a client
+   to get wrong.
+2. **`Title` is shared by every occurrence in the series** — one field on the
+   create-series request, copied onto every `NewBooking`, exactly as `Quantity`
+   is. No per-occurrence override; nothing in FR-5.1 asks for one.
+3. **The pre-check snapshot is taken once, not refreshed per occurrence.**
+   Justified above (occurrences of one rule cannot overlap each other), and it
+   is the same trade the single-booking handler already makes at a smaller
+   scale — the procedure is what actually decides.
+
+### 5.2 Cancelling a whole series (FR-5.2, FR-5.3)
+
+**Per-occurrence cancel needs almost nothing new.** An occurrence *is* a
+`Booking` with `RecurrenceRuleId` set, so `GET /bookings/{id}` and
+`POST /bookings/{id}/cancel` already view and cancel one occurrence
+independently, unchanged, the moment `RecurrenceRuleId` is populated. The only
+gap (WP-4 loose end 3 in `docs/wp4-plan.md`) is that the list row doesn't carry
+`RecurrenceRuleId` — worth adding now that it can be non-null, additively.
+
+**Whole-series cancel is new**: `POST /recurrence-rules/{id}/cancel`, reusing
+`0002`'s reach (owner, or a TenantAdmin in the same tenant) via the same
+owner-filter pattern `BookingReadRules` already established for bookings,
+generalized to `RecurrenceRule.UserId`.
+
+Sequence, all through EF and **one `SaveChangesAsync`, no `IUnitOfWork`** —
+cancelling never adds demand against `Resources.Capacity`, the same argument
+that already keeps the single-booking cancel and `BlackoutCascade` out of
+`dbo.CreateBooking`'s territory (CLAUDE.md §4.1):
+
+1. Load the rule via the reach filter → `RecurrenceRuleNotFoundException` (404)
+   if not visible — same byte-identical-for-three-cases shape as
+   `BookingNotFoundException`.
+2. Refuse if already `Cancelled` — **`RecurrenceRuleNotCancellableException`**
+   (422), for the same reason a second booking cancel is refused rather than
+   idempotent (`0002` amendment 3): `RecurrenceRule.Cancel` records an actor and
+   a time, so a repeat would overwrite who ended the series.
+3. `RecurrenceRule.Cancel(actorUserId, nowUtc)` — the entity already has this
+   method; it just needs the not-already-cancelled guard added (it is
+   unconditional today, per §2's table).
+4. Find every `Booking` with this `RecurrenceRuleId`, `Status` in
+   `Pending`/`Confirmed`, `EndsAtUtc > nowUtc` — `0002`'s window, applied per
+   occurrence, exactly as if each were cancelled individually — and call
+   `Booking.Cancel(actorUserId, "Series cancelled", nowUtc)` on each. A
+   self-cancel enqueues no notification, same rule as the single cancel.
+5. **One summary notification**, per the owner's answer to shape question 3 —
+   not one per occurrence. Addressed to the series owner (or nobody, if the
+   owner is the actor, mirroring `0002`'s self-cancel suppression), naming the
+   series and how many occurrences it freed.
+
+**A schema consequence this choice forces, found while designing it rather
+than guessed at:** `CK_Notifications_HasContext` currently requires
+`RecurrenceRuleId` to be paired with `OccurrenceDate` — built for `0008`'s one
+specific occurrence, not a whole series. A "series cancelled" summary has no
+single occurrence date to anchor to. This needs:
+
+- A new `NotificationKind.SeriesCancelled`.
+- `OccurrenceDate` becomes **optional whenever `RecurrenceRuleId` is set**, so
+  `CK_Notifications_HasContext` becomes "exactly one of `BookingId` or
+  `RecurrenceRuleId` is set" rather than "`BookingId`, or `RecurrenceRuleId` +
+  `OccurrenceDate`" — a genuine migration, not just a new enum value.
+- A new `Notification` factory, `ForSeriesCancelled(id, recurrenceRuleId,
+  recipientUserId, sendAtUtc, createdByUserId, nowUtc)`, alongside
+  `ForBooking` and `ForSkippedOccurrence`.
+
+### 5.3 Approvals (FR-7.1–FR-7.5, AC-5)
+
+**Why a capacity re-check is needed even though `Pending` already holds its
+claim.** WP-4 established that a `Pending` booking counts toward
+`dbo.CreateBooking`'s peak from the moment it is created — nothing "steals"
+capacity from an existing `Pending` row through the ordinary create path,
+because every later create is checked against the peak that already includes
+it. The genuine race is **cancellation freeing capacity that is then
+legitimately reused**: member A books an approval-gated, capacity-1 room and
+gets `Pending`; A (or an admin) cancels it, freeing the unit; member B then
+books the same slot and it is `Confirmed`; an approver, unaware A's request is
+already dead, tries to approve it. Approving without a re-check would flip A's
+booking to `Confirmed` over B's already-`Confirmed` one — the literal
+double-booking FR-4.2 exists to prevent, arriving through the one door that
+does not otherwise pass through the lock. `Booking.Status != Pending` alone
+(closing WP-4's loose end 1) catches the case where A's booking was actually
+cancelled; the capacity re-check is what catches B's slot being taken by a
+*different*, still-live booking that never touched A's row at all.
+
+**`dbo.ApproveBooking`** — the same four-part design as `dbo.CreateBooking`
+(`0023`), with one structural difference: the row already exists, so the
+overlap read excludes it by id rather than inserting a new one.
+
+```
+dbo.ApproveBooking(@BookingId, @NowUtc)
+  -- read the Pending booking (ResourceId, Quantity) WITH (UPDLOCK) — also the
+  -- Status != Pending guard, atomically with the lock, not as a separate read
+  -- IF not found or not Pending: RETURN 'BookingNotPending'
+  -- read Resources for Capacity/IsArchived, same fail-closed guard as CreateBooking
+  -- re-check BlackoutPeriods WITH (HOLDLOCK), same as CreateBooking
+  -- overlap read WITH (UPDLOCK, HOLDLOCK), same predicate as CreateBooking,
+  --   AND Id <> @BookingId  -- excludes its own already-counted row
+  -- peak + this booking's own Quantity > capacity?
+  --   RETURN 'SlotUnavailable' / 'CapacityExceeded', same split as CreateBooking
+  -- UPDATE Bookings SET Status = 'Confirmed', UpdatedAtUtc = @NowUtc,
+  --   UpdatedByUserId = @ApproverUserId WHERE Id = @BookingId
+  -- RETURN 'Approved'
+```
+
+Reuses `IX_Bookings_Resource_Start` and the exact peak arithmetic — no new
+index, no new arithmetic to defend. `IBookingRepository` gains
+`ApproveAsync(bookingId, approverUserId, nowUtc)` returning a
+`BookingApprovalOutcome` shaped like `BookingCreationOutcome`.
+
+**The handler** (`ApproveBookingCommandRequestHandler`):
+
+1. Load the booking through the **approval reach** (below) →
+   `BookingNotFoundException` if not reachable — same 404-not-403 shape as
+   cancel, for the same reason (confirming existence leaks who is using what).
+2. `_unitOfWork.ExecuteAsync`: call `dbo.ApproveBooking`; on `Approved`, load
+   and `ApprovalRequest.Decide(Approved, approverUserId, nowUtc, note)` (EF,
+   same transaction), enqueue a `Confirmed` notification to the booker
+   (`NotificationKind.Confirmed` already exists and already means "your
+   booking is confirmed" — reused, not duplicated), `SaveChangesAsync`.
+3. On `BookingNotPending` / `SlotUnavailable` / `CapacityExceeded` /
+   `BlackoutPeriod` / `ResourceArchived`, throw the **matching existing
+   exception** — all but `BookingNotPending` are already declared and thrown
+   by WP-4's create path; AC-5 is satisfied by *reusing* those reason codes,
+   not inventing parallel ones. `BookingNotPending` (422, `RuleViolation`) is
+   the one genuinely new code.
+
+**Reject needs no procedure**, per the owner's answer to shape question 7:
+rejecting removes a claim rather than adding one, so by CLAUDE.md §4.1's own
+logic it needs no lock — the same reasoning that already keeps the single
+booking cancel and `BlackoutCascade` on plain EF. New domain method
+`Booking.Reject(actorUserId, nowUtc)` (guarded by `Status == Pending`,
+transitions to `Rejected`), called after `ApprovalRequest.Decide(Rejected, ...)`,
+one `SaveChangesAsync`, `NotificationKind.Rejected` reused for the booker.
+
+**The approval reach — occurrence-level, per shape question 6.** A
+TenantAdmin may act on any `Pending` booking in their tenant (the same sweeping
+reach `0002` already gives them over cancellation); an `Approver` may act only
+on a `Pending` booking whose resource lists them in `ApproverUserIds` (`0018`).
+Each `Pending` occurrence of a series has its own `ApprovalRequest`, so
+"reject one occurrence, leave the rest pending" is simply calling this
+endpoint on that occurrence's booking id — no series-aware branching needed in
+the approve/reject handlers at all.
+
+**The approver queue — extending `GET /bookings`, per shape question 4.**
+`BookingScope.Tenant` currently validates as TenantAdmin-only
+(`ListBookingsQueryRequestValidator`). This widens to admit `Approver` too, but
+an `Approver` (not also a `TenantAdmin`) gets an **additional** restriction the
+repository applies: `ResourceId IN (resources this caller approves for)`. That
+resource set does not exist as a queryable projection today —
+`Resource.ApproverUserIds` is a computed property over a private-field owned
+collection (`ResourceApprovers`), which is why `GET /resources/{id}` already
+needed a second query rather than a projection (WP-3 Phase 3's finding). The
+new repository method resolving "which resource ids is this user an approver
+for" is a small, targeted query against that table; whether it goes through a
+raw parameterized `SELECT ResourceId FROM ResourceApprovers WHERE UserId = @id`
+(same class of documented deviation `BookingRepository.CreateAsync` already
+takes, for the same reason — the shape EF's owned-collection mapping does not
+project cleanly) or a `Set<Resource.ApproverAssignment>()` query is a Phase 3
+detail to resolve against what EF actually allows, not a design question.
+
+**DTOs gain the booker's name** (loose end 3): `ListBookingsQueryResponse` and
+`GetBookingQueryResponse` add `userName` (or `userFirstName`/`userLastName` —
+a Phase 3 detail) beside `userId`, following `ApproverDetail`'s
+id-and-name-no-email shape rather than adding email. `GetBookingQueryResponse`
+also gains an approval section (decision id, requested/expires timestamps,
+decision if any) when `RecurrenceRuleId` is irrelevant to it — a `Pending`
+booking's detail is where an approver actually decides, so the wire shape
+belongs there (loose end 4).
 
 ---
 
-## 6. Shape questions to settle with the owner before writing the plan
+## 6. API surface
 
-Not answers — these are the questions WP-3 and WP-4 each settled up front, in
-the same spirit. Several are genuinely the owner's call.
+| Route | Policy | Notes |
+|---|---|---|
+| `POST /recurrence-rules` | `TenantMember` | 201 with created/skipped/refused occurrences if ≥1 created; 422 `NoOccurrencesCreated` with the same breakdown if none were |
+| `POST /recurrence-rules/{id}/cancel` | `TenantMember` | owner or TenantAdmin (0002); cancels remaining occurrences + the rule itself |
+| `POST /bookings/{id}/approve` | `TenantMember` | TenantAdmin (any pending in tenant) or an assigned Approver (0018) |
+| `POST /bookings/{id}/reject` | `TenantMember` | same reach as approve |
+| `GET /bookings?scope=tenant` | `TenantMember` | now also valid for `Approver`, resource-restricted; unchanged for TenantAdmin |
 
-1. **The DST fall-back policy** (the open decision, §3). Earlier instant or
-   later? Consistently, or per some rule? Needs decision record `0024`.
-2. **What the series-creation response looks like.** `0008` requires that
-   skipped occurrences are reported *in the response*, and FR-5.4 requires
-   collisions and blackout conflicts surfaced at creation and never dropped
-   silently. So one response has to carry created occurrences, skipped ones, and
-   refused ones — is a partial success a 201, a 207-ish shape, or something else?
-3. **Cancelling "the whole remaining series"** — what "remaining" means
-   (`EndsAtUtc` per occurrence, per `0002`'s window?), whether the
-   `RecurrenceRule` moves to `Cancelled`, and whether one notification is sent or
-   one per occurrence.
-4. **Whether editing a series exists at all.** FR-5.1–5.3 name create and
-   cancel, not edit. If it is out of scope, say so in the plan rather than
-   leaving it ambiguous.
-5. **The approver queue's shape** — is it `GET /bookings?scope=tenant&status=Pending`
-   (which WP-4's admin scope already almost provides), or its own endpoint? And
-   does an Approver see the whole tenant or only resources they approve for?
-6. **Reject vs cancel.** `BookingStatus` has both `Rejected` and `Cancelled`.
-   A rejected booking presumably becomes `Rejected` — confirm, and confirm
-   whether an approver can reject an occurrence of a series independently.
-7. **Whether `dbo.ApproveBooking` is one procedure or two operations.** Approve
-   needs the locked capacity re-check; reject does not add demand and so, by
-   §4.1's own logic, does not need the procedure at all.
+`GET /bookings/{id}`, `GET /bookings`, `POST /bookings/{id}/cancel` are
+unchanged in route and policy — WP-5 only widens their reach and DTOs, per
+§5.3.
+
+New `TenantMember`-not-`TenantAdmin`-only policy note: unlike WP-3/WP-4's
+admin-only writes, `POST /recurrence-rules` is a **member** action (a member
+books their own recurring slot, same as a one-off), which is why it sits on
+`TenantMember` rather than a new policy — the approval reach is the part that
+needs a role check, done inside the handler exactly as `0002`'s cancellation
+reach already is, not on the controller attribute.
 
 ---
 
-## 7. Suggested first move
+## 7. New reason codes
 
-Read the source PDF, then bring §6 to the owner in one pass — that is what WP-4
-did (four shape answers in one sitting, before any code), and it is why its plan
-survived contact. Write the phasing into this document, get it approved, and only
-then start. Deliver in small reviewable chunks with control returned between
-them, as WP-3 and WP-4 both did at the owner's request.
+| Code | Kind | Status | Meaning |
+|---|---|---|---|
+| `NoOccurrencesCreated` | RuleViolation | 422 | Every occurrence in a series request was skipped or refused |
+| `RecurrenceRuleNotFound` | NotFound | 404 | No such series visible to this caller — id, cross-tenant, or another member's, all identical (AC-4) |
+| `RecurrenceRuleNotCancellable` | RuleViolation | 422 | The series is already cancelled |
+| `BookingNotPending` | RuleViolation | 422 | Approve/reject called on a booking that is not (or no longer) `Pending` |
+
+Everything else approval can refuse — `SlotUnavailable`, `CapacityExceeded`,
+`BlackoutPeriod`, `ResourceArchived`, `ResourceNotFound` — reuses WP-3/WP-4's
+existing codes and exception subclasses unchanged, per §5.3.
+
+---
+
+## 8. Schema changes
+
+Two migrations, both hand-written `migrationBuilder.Sql(...)` per CLAUDE.md §5:
+
+1. **`AddApproveBookingProcedure`** — `dbo.ApproveBooking`, sketched in §5.3.
+2. **`WidenNotificationsRecurrenceAnchor`** — `NotificationKind.SeriesCancelled`
+   added to `CK_Notifications_Kind`; `CK_Notifications_HasContext` loosened so
+   `RecurrenceRuleId` no longer requires `OccurrenceDate` alongside it.
+
+No change to `RecurrenceRules`, `Bookings`, or `ApprovalRequests` — every
+column §5 needs already exists.
+
+---
+
+## 9. Phasing
+
+Four phases, each a slice reviewable and defensible on its own, matching the
+delivery style WP-3 and WP-4 used. Chunk boundaries inside a phase are settled
+at the start of that phase.
+
+### Phase 1 — Creating a series (FR-5.1, FR-5.4)
+
+Two chunks: **1a** the pure Domain expansion (no DB, no endpoint — reviewable
+on its own, same reasoning WP-4 Phase 1a split out `BookingEligibility`
+first); **1b** the write path built on it.
+
+#### 1a — `RecurrenceExpansion`. Done 2026-09-09.
+
+907 unit tests pass (28 new), `dotnet build` clean across the solution
+(integration tests project also rebuilt clean; the integration suite itself
+was not run — no code in this chunk touches EF, RLS or the procedure, so
+nothing here could regress it, but that is not the same as having watched it
+pass). Delivered: `RecurrenceExpansion.Expand(rule, zone)` and
+`RecurrenceOccurrence`/`RecurrenceOccurrenceOutcome` in
+`BookSpace.Domain/Availability/`; `RecurrenceRule.OccurrenceDate(int index)`,
+extracted alongside a shared `StepDate` helper so `ComputeImpliedEndDate`'s
+span-cap arithmetic and the expansion loop can never compute a different date
+for the same index; `IResourceTimeZone.IsInvalidLocalTime` and its
+`SystemResourceTimeZone` implementation.
+
+Two things found while building it, neither anticipated by §5.1 above:
+
+- **`RecurrenceRule` had no constructor guard against `LocalEndTime <=
+  LocalStartTime`, and nothing in the schema backs one either** — unlike
+  `AvailabilityWindow`, which `CK_AvailabilityWindows_Window` enforces at the
+  DB. Every existing caller (`SeedData`, the unit tests) already passes a
+  same-day pair, so this was a live gap rather than a deliberate omission:
+  before this chunk, a rule with `LocalEndTime <= LocalStartTime` would
+  construct successfully and only fail later, inside `Booking`'s own
+  `EndsAtUtc > StartsAtUtc` guard, as an unhandled `ArgumentException` (a 500)
+  when the first occurrence was expanded. Added the same check `RecurrenceRule`
+  already makes for `IntervalValue` and the end-condition pair — same file,
+  same defense-in-depth reasoning. **Smaller call, not asked of the owner**:
+  an overnight recurring booking (`LocalEndTime` on the next calendar day) is
+  out of scope — FR-5.1 does not ask for one, nothing upstream defines what
+  "the next day" would mean for a `Monthly` rule's occurrence date, and the
+  fix is a one-line same-day requirement rather than new machinery. 1b's
+  validator restates this as a 400, the same way `CreateBookingCommandRequestValidator`
+  restates `CK_Bookings_Interval` — this constructor guard is the
+  defense-in-depth backstop, not the client-facing rejection.
+- **A clocks-forward gap has to be tested at both ends of an occurrence, not
+  just the start.** Decision `0008`'s wording names `LocalStartTime`, but a
+  gap is up to a few hours wide (`SystemResourceTimeZone`'s own bound is
+  four), so a start just before the gap and an end just inside it is a real
+  case — tested explicitly
+  (`Expand_SkipsAnOccurrenceWhoseLocalEndFallsInTheGapEvenThoughStartDoesNot`).
+  This is why `IsInvalidLocalTime` was added to the interface rather than
+  inferred from `ToUtcEarliest`'s behavior: that method never throws for a
+  gap, it returns the transition instant instead (per D3/`0021`'s
+  range-absorption rule), which is a different question from "did this
+  local time ever happen."
+
+Also verified, per the project's own rule that a test able to pass
+unconditionally proves nothing: `Expand_ResolvesAnAmbiguousOccurrenceUsingTheEarlierInstantForBothEnds`
+and its sibling with an unambiguous end both assert against real
+`America/New_York` tzdata (2026-11-01 fall-back), not a fixed-offset fake —
+the fake cannot make `0024`'s "earlier for both ends" claim, only a real zone
+with an actual ambiguous hour can.
+
+#### 1b — the write path. Done 2026-09-09.
+
+947 unit tests pass (36 new), 418 integration tests pass (12 new, one with an
+added assertion). Delivered
+as planned: `IRecurrenceRuleRepository` + its Infrastructure implementation
+(a plain EF add, registered in DI); the `AppException.Extensions`
+generalization and `GlobalExceptionHandler`'s generic copy onto
+`ProblemDetails.Extensions`; `NoOccurrencesCreatedException` and
+`ReasonCodes.NoOccurrencesCreated`; `RecurrenceOccurrenceReport` (shared
+between the success response and the exception, per §5.1's design);
+`POST /recurrence-rules` on `TenantMember`, its handler, validator and DTOs;
+unit tests for the handler's three-bucket partition and the validator's shape
+rules; integration tests for the happy path, approval routing, a series
+hitting a blackout mid-run, the all-refused 422 case, and the usual
+structured-error/authorization sweep.
+
+Four things found while building it, none anticipated by §5.1's sketch:
+
+- **Staging the approval request and notifications inside vs. outside
+  `IUnitOfWork`'s delegate is not the same question here as it is for a
+  single booking.** `CreateBookingCommandRequestHandler` stages both
+  *before* the delegate opens, because a 1205 retry would otherwise re-run an
+  unconditional `Add` and double-insert. A series has something that handler
+  doesn't: a *next* occurrence to fall through to. Staging unconditionally
+  before the delegate meant a declined attempt (no exception, just "not
+  Created") left a tracked-but-unsaved `ApprovalRequest`/`Notification` in
+  the `DbContext` that the *next* occurrence's `SaveChangesAsync` would then
+  try to flush — inserting an `ApprovalRequest` against a `BookingId` that
+  was never created, a foreign-key violation waiting to happen the first
+  time a real request declined mid-series. Fixed by staging only *inside*
+  the delegate, and only after confirming `Created` — retry-safe because the
+  pre-built instances (constructed once, before the delegate, with their ids
+  already fixed) are the same object reference on every retry, and EF's
+  `Add` on an already-tracked instance is a no-op rather than a duplicate.
+  Covered by `ReportsAnOccurrenceTheProcedureDeclinesAndStillCreatesTheRest`
+  and `ADeclinedOccurrenceOnAnApprovalGatedResourceStagesNoApprovalRequest`.
+- **Persisting the `RecurrenceRule` row up front, unconditionally, had a real
+  consequence §5.1 didn't settle, raised by the owner after reviewing this
+  chunk and fixed the same day (2026-09-09): an all-refused series left an
+  orphaned, `Active` `RecurrenceRule` row with zero occurrences.** The
+  alternative first considered — deferring the `Add` until the first
+  occurrence actually succeeds — is unsafe for the same reason as the point
+  above (an `Add` staged for conditional flushing has to survive a 1205
+  retry of *that* occurrence without double-adding, which only works cleanly
+  for entities scoped to one occurrence's own delegate, not one shared
+  across the whole loop). The fix taken instead is a compensating delete: if
+  the loop ends with nothing created, `IRecurrenceRuleRepository.Remove`
+  removes the rule before `NoOccurrencesCreatedException` is thrown — safe
+  unconditionally, because reaching that branch is exactly the condition
+  under which nothing else in the database references the row yet. The
+  companion half of the same bug — a spring-forward skip's decision-0008
+  notification surviving an all-refused series, which would have emailed
+  someone 14 days later about an occurrence from a series they were told
+  reserved nothing — is fixed by the same restructuring: skipped-occurrence
+  notifications are built as plain objects during the loop and only ever
+  staged (`AddNotifications`) once the series' overall outcome is known to
+  include at least one created occurrence, so an all-refused series never
+  adds them at all rather than having to undo an insert. Both halves proved
+  able to fail (the compensating delete was commented out; exactly the two
+  unit tests below and one integration test failed, nothing else did, then
+  the fix was restored). Pinned by `TheRuleIsRemovedAgainWhenEveryOccurrenceIsRefused`,
+  `ASkippedOccurrencesNotificationIsNeverPersistedWhenEveryOccurrenceIsRefused`,
+  and the integration test's added `RecurrenceRules` count assertion.
+- **The `AppException.Extensions` generalization is additive by
+  construction, not just by intent** — a new protected constructor overload,
+  with the existing three-argument one delegating to it with `extensions:
+  null`. No existing exception subclass needed to change, and
+  `AppExceptionCatalogueTests.Construct`'s reflection-based instantiation
+  (which passes `null` for every reference-type constructor argument) meant
+  `NoOccurrencesCreatedException`'s constructor had to tolerate a null
+  `occurrences` list rather than assume the handler always supplies one.
+- **`RecurrenceRule` had no guard against `LocalEndTime <= LocalStartTime`
+  before this chunk** (recorded in Phase 1a's entry above, since the
+  constructor change landed there) — restated here because 1b is where a
+  client-facing 400 for it was actually added, in
+  `CreateRecurrenceSeriesCommandRequestValidator`, mirroring how
+  `CreateBookingCommandRequestValidator` restates `CK_Bookings_Interval`.
+
+One thing intentionally **not** done in this chunk, unlike WP-4's pattern of
+weakening a guarantee to prove its test can fail: there is no single
+"guarantee" here to weaken the way `dbo.CreateBooking`'s lock is. The nearest
+analogue — the retry-safety of the staging design above — is exercised
+directly by the two tests named for it, but proving *that* a synthetic 1205
+mid-series would misbehave without the fix would need real contention, which
+is out of scope until Phase 3 gives `dbo.ApproveBooking` (and, by extension,
+this design) its own concurrency proof.
+
+### Phase 2 — Occurrence view/cancel and whole-series cancel (FR-5.2, FR-5.3)
+
+**Done 2026-09-09.** 978 unit tests pass (23 new), 430 integration tests pass
+(12 new, plus 2 existing files gaining an assertion each). Delivered as
+planned: `RecurrenceRuleId` added to `ListBookingsQueryResponse` (per-occurrence
+view/cancel needed nothing else — an occurrence *is* a `Booking` with
+`RecurrenceRuleId` set, so `GET /bookings/{id}` and `POST /bookings/{id}/cancel`
+already worked the moment Phase 1 started populating it);
+`POST /recurrence-rules/{id}/cancel`, its handler and validator;
+`RecurrenceRule.CanBeCancelled()` and the not-already-cancelled guard on
+`Cancel`; `IRecurrenceRuleRepository.FindForCancellationAsync` and
+`IBookingRepository.FindOccurrencesToCancelAsync`; `Notification.ForSeriesCancelled`;
+the `WidenNotificationsRecurrenceAnchor` migration; unit tests for the handler
+(who may cancel, the notification asymmetry, the refusals) and the validator;
+integration tests for the happy path, an already-individually-cancelled
+occurrence being left untouched, the freed slot being bookable again, the
+notification asymmetry, and the AC-4 sweep.
+
+**Found and fixed while building it, before any of the above was written**:
+`RecurrenceRules` had no tenant isolation at all — no `OrgId`, no EF query
+filter, no RLS predicate. Phase 1 never exposed this (it only ever creates a
+rule, scoped implicitly through the resource it belongs to); this phase's
+cancel-by-id endpoint is the first thing that loads an *existing*
+`RecurrenceRule` by a caller-supplied id, and with decision `0002`'s reach — a
+`TenantAdmin`'s owner filter dropped entirely — the query would have had zero
+tenant restriction under it. Raised with the owner before writing any of
+Phase 2's feature code (the owner chose to fix it in the same pass rather than
+as a separate step or a documented stopgap), fixed as
+[`0025`](decisions/0025-recurrence-rule-tenant-scoping.md) by applying decision
+`0014`'s exact pattern: `OrgId` denormalized from the owning `Resource`, a
+composite same-org FK, the query filter, and the RLS predicate. Migration
+`AddRecurrenceRuleTenantScoping`, verified by a real revert and re-apply
+against the dev database, same as `0014`'s was.
+`CancelRecurrenceSeriesEndpointTests.Cancel_RefusesAnAdminReachingIntoAnotherTenant`
+is the test that would have caught the gap, and now does; `SeedDataTests` and
+`TenantIsolationTests` needed the same `IgnoreQueryFilters()` treatment their
+`AvailabilityWindows`/`BlackoutPeriods` assertions already had, since both had
+been reading `RecurrenceRules` with no filter to ignore.
+
+**A second, smaller schema change fell out of the design rather than being
+anticipated**: the owner's answer to shape question 3 (one summary
+notification for the whole series, not one per occurrence) meant
+`SeriesCancelled` needed to anchor to a `RecurrenceRuleId` alone, with no
+single occurrence date — decision `0008`'s original
+`CK_Notifications_HasContext` required `RecurrenceRuleId` *and*
+`OccurrenceDate` together, built for its one specific kind
+(`RecurrenceOccurrenceSkipped`). Widened as
+[`0026`](decisions/0026-notifications-series-anchor.md), a strict widening
+verified the same way.
+
+**One design choice worth recording**: the notification is enqueued directly
+via `IBookingRepository.AddNotifications`, the same port Phase 1 already uses
+for skipped-occurrence notifications, rather than adding an equivalent method
+to `IRecurrenceRuleRepository`. Both repositories share the same scoped
+`DbContext`, so this is purely a question of which port a call site reaches
+through — `IBookingRepository` already generalized past "rows derived from a
+booking" once Phase 1 used it for a rule-anchored notification, so a second
+non-booking notification through the same port extends a precedent rather
+than setting a new one.
+
+### Phase 3 — Approvals (FR-7.1–FR-7.5, AC-5)
+
+**Done 2026-09-09**, in the same shape planned above and in the same two-level
+proof `dbo.CreateBooking` got in WP-4: the procedure-level concurrent test
+(`ApproveBookingProcedureTests`, 14 tests — two decisions racing the same
+booking, an approval racing a concurrent cancel, and the capacity arithmetic
+proved with decision 0017's raw-SQL carve-out, since a Pending booking already
+reserves its units in full and no legitimate app path can produce an
+over-capacity approval to refuse) shown passing before the HTTP-level one
+(`BookingApprovalEndpointTests`, 18 tests) was written, mirroring WP-4 Phase
+1b/3's split. Test baseline: **1039 unit + 468 integration tests pass, 0
+failed**.
+
+Delivered as planned: `Booking.Reject`/`CanBeRejected`; `dbo.ApproveBooking`
+and its migration (`AddApproveBookingProcedure`), mirroring `dbo.CreateBooking`
+'s exact four-part lock design over the Pending row's own status guard;
+`IBookingRepository.ApproveAsync`/`FindForApprovalAsync`/
+`FindApprovableResourceIdsAsync`/`FindApprovalRequestAsync`; `ApprovalReach`
+and the internal `BookingApprovalReach.ResolveAsync` (TenantAdmin-wide,
+Approver-own-resources, per 0018) — deliberately not a pure `…Rules` class
+like `BookingReadRules`, since resolving an Approver's resource set genuinely
+needs a repository call; `BookingNotPendingException` (422, closing WP-4's
+loose end 1); `POST /bookings/{id}/approve` and `.../reject`, their handlers
+and validators; `GET /bookings?scope=tenant` opened to `Approver`
+(`BookingOwnerFilter.AnyOwnerRestrictedToResources`, composing with the
+existing owner filter rather than replacing it); and the booker-name
+(`UserName`, denormalized the same way `ResourceName` already was) and
+approval-detail (`GetBookingApprovalDetail`, its own type per decision 0015 —
+`CreateBooking`'s `BookingApprovalDetail` only ever needs a Pending decision,
+this one carries the outcome too) DTO additions on both `ListBookingsQueryResponse`
+and `GetBookingQueryResponse`, closing loose ends 3 and 4.
+
+Two things found while building it, neither anticipated by the sketch above:
+
+- **The retry-safety hazard reappeared, one door over from Phase 1's.**
+  `ApproveBookingCommandRequestHandler` builds the confirmation notification
+  once, before `IUnitOfWork`'s delegate opens, and stages it only inside the
+  delegate after `ApproveAsync` confirms success — the same pattern Phase 1
+  already needed. New this time: a second guard on `ApprovalRequest.Decide`
+  itself (`if (approvalRequest.Decision == ApprovalDecision.Pending)`), because
+  a 1205 retry re-enters the delegate with an identity-mapped
+  `ApprovalRequest` that a first pass may have already decided in memory —
+  calling `Decide()` again would throw on a decision that is no longer
+  Pending. Proved directly by
+  `DoesNotReapplyADecisionAlreadyRecordedInMemory`.
+- **`RecurrenceRules`' tenant-scoping fix from Phase 2 was not the last gap of
+  its kind.** Nothing new needed fixing here, but the approver queue's
+  resource restriction is the same shape of question Phase 2's cancel
+  endpoint asked — "does this caller's reach stop where it should" — and
+  passing it cleanly on the first attempt (verified by
+  `List_AnApproversTenantScopeNeverReachesAnotherTenant`) is evidence 0025's
+  fix, and the discipline of checking every new caller-supplied-id read
+  against AC-4 by hand, both held.
+
+### Phase 4 — AC sweep and documentation
+
+**Done 2026-09-09.** No new production code — the plan's own framing held:
+this phase confirms rather than builds. Final test baseline: **1039 unit +
+468 integration tests pass, 0 failed**, unchanged from Phase 3's handoff.
+
+**The AC sweep.** All four of WP-5's acceptance criteria are met, each
+checked in CLAUDE.md §12 against the specific tests that prove it rather than
+by assertion:
+
+- A recurring series is created, and single occurrences and the whole series
+  can each be cancelled — met by Phases 1–2, unchanged.
+- Conflicting occurrences are surfaced at creation — met by Phase 1, unchanged.
+- AC-5 (approval re-checks availability) — met by Phase 3's
+  `ApproveBookingProcedureTests` and `BookingApprovalEndpointTests`, unchanged.
+- **AC-3 (the DST edge case)** — the one item this phase actually had to go
+  looking for evidence of, rather than just restate. It was never unproven,
+  only unchecked: Phase 1's `RecurrenceExpansionTests` already asserts
+  spring-forward's skip and fall-back's earlier-instant resolution against
+  real `America/New_York` tzdata, and `CreateRecurrenceSeriesCommandRequestHandlerTests`
+  already covers the write path's own mechanics (a skip creates no booking and
+  enqueues its own notification) with a faked outcome. No HTTP-level DST test
+  was added, deliberately, matching the precedent
+  `CreateRecurrenceSeriesEndpointTests`'/`CreateBookingEndpointTests`' own
+  headers already state: resources in an HTTP-level fixture stay in UTC so the
+  write-path proof and the DST-correctness proof do not have to agree with
+  each other to pass. FR-6.1 and FR-6.2 were checked off the same way — both
+  were already true by construction (§4.3's standing rule; `0008`/`0024`),
+  and this phase is what confirmed rather than assumed it.
+
+**Decision `0023`'s evidence extension** — the one thing this phase actually
+measured. `dbo.ApproveBooking`'s two lock hints were removed from
+`AddApproveBookingProcedure`'s migration body (never committed), and
+`ApproveBookingProcedureTests`' full 14 tests run against the freshly-migrated,
+weakened database: two simultaneous decisions on the same booking both
+reported Approved, and seven of ten did — the point-lookup `UPDLOCK`'s exact
+job, defeated. The hints were then restored and the full suite re-confirmed
+green. A second pass measured SQL Server's `_Total` deadlock counter either
+side of four runs of the *correct* procedure: **every run deadlocked at least
+once** (+8, +5, +5, +5 across fourteen tests each — twenty-three total,
+absorbed by the retry every time), more consistently than
+`dbo.CreateBooking`'s own four-run measurement, which included one run with
+none. Written into
+[`0023`](decisions/0023-booking-concurrency-strategy.md) as a second "Evidence
+extended" pass rather than a new record, exactly as the plan called for.
+
+**Documentation**: CLAUDE.md §12's WP-5 section is ticked complete, its status
+line changed to Done; this file's Phase 3 and Phase 4 sections were rewritten
+from plan into completion report as each landed; the loose-ends table in §4
+above shows three of five items closed, with the remaining two explicitly out
+of scope rather than missed.
+
+**WP-5 is complete.**
+
+---
+
+## 10. Suggested next step
+
+This plan is what CLAUDE.md's own process asks be approved before code — the
+same checkpoint WP-3's and WP-4's plans passed through. Once confirmed, Phase 1
+starts, delivered in small reviewable chunks with control returned between
+them.
