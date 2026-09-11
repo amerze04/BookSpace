@@ -29,6 +29,30 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
     // against a concrete flow instead of a guess.
     //
     // See docs/decisions/0013-tenant-isolation-mechanism.md.
+    //
+    // **Hardening-pass review, 2026-09-11: reconfirmed, not changed.** An
+    // independent review asked whether block predicates should be added now.
+    // Re-checked against current code rather than re-guessed: SeedData
+    // (src/BookSpace.Infrastructure/Persistence/SeedData.cs) and
+    // AuthenticationUserRepository both already enter TenantBypassScope,
+    // which is the *same* TenantBypass=1 flag a block predicate would also
+    // have to check — so both named exceptions above are already covered by
+    // one mechanism, not two. The full write-side trust boundary as it
+    // stands: (1) BookSpaceDbContext.SaveChangesAsync validates every
+    // ITenantOwned entity's OrgId against ICurrentTenant before it can be
+    // added or modified (§4.2 mechanism 2); (2) dbo.CreateBooking/
+    // dbo.ApproveBooking read Resources through the RLS-filtered table before
+    // deciding anything, so a connection with no session context fails
+    // closed (decision 0023) rather than relying on a block predicate to
+    // stop its own INSERT/UPDATE; (3) decision 0017's raw-SQL test fixtures
+    // are test-only, set a real per-row OrgId session context before
+    // writing, and are the one place CLAUDE.md §4.1 itself carves out as
+    // exempt from the stored-procedure gate. Nothing outside those three
+    // writes to a tenant-owned table. Still deliberately filter-only: adding
+    // block predicates today would be validated against these three flows as
+    // a guess, not against the real SysAdmin/TenantAdmin provisioning write
+    // path this comment already said to wait for — that path still does not
+    // exist, so the original reasoning stands unchanged.
     public partial class AddTenantIsolationRls : Migration
     {
         /// <inheritdoc />

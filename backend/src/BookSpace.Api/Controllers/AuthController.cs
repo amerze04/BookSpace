@@ -5,6 +5,7 @@ using BookSpace.Application.Features.Authentication.Refresh;
 using BookSpace.Application.Messaging;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace BookSpace.Api.Controllers;
 
@@ -34,7 +35,10 @@ public sealed class AuthController : ControllerBase
     // lands at M4.
     public sealed record RefreshRequest(string RefreshToken);
 
+    // Hardening pass, P2 security: credential-stuffing/guessing throttle.
+    // See Program.cs's AddRateLimiter for the policy itself.
     [HttpPost("login")]
+    [EnableRateLimiting("login")]
     [ProducesResponseType<LoginCommandResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
@@ -44,7 +48,11 @@ public sealed class AuthController : ControllerBase
         return Ok(result);
     }
 
+    // Hardening pass, P2 security: throttles guessing at refresh tokens.
+    // A higher limit than login's, deliberately — a real client refreshes
+    // routinely as part of normal use, not just when a person is typing.
     [HttpPost("refresh")]
+    [EnableRateLimiting("refresh")]
     [ProducesResponseType<RefreshTokenCommandResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]

@@ -81,7 +81,17 @@ internal sealed class RecordingPasswordHasher : IPasswordHasher
     // The password that Verify accepts; anything else fails.
     public string CorrectPassword { get; set; } = "Passw0rd!";
 
+    // Hardening pass, P2 security: every hash Verify was actually asked to
+    // check against, in call order — what lets a test prove the
+    // nonexistent-user path in LoginCommandRequestHandler still calls Verify
+    // (against its fixed dummy hash) rather than short-circuiting before it.
+    public List<string> VerifiedAgainst { get; } = [];
+
     public string Hash(string password) => $"hash::{password}";
 
-    public bool Verify(string passwordHash, string password) => password == CorrectPassword;
+    public bool Verify(string passwordHash, string password)
+    {
+        VerifiedAgainst.Add(passwordHash);
+        return password == CorrectPassword;
+    }
 }

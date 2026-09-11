@@ -18,11 +18,17 @@ namespace BookSpace.Application.Abstractions;
 // resting on the unstated fact that both resolve the same request-scoped
 // DbContext, which is true and much too easy to break.
 //
-// One SaveChangesAsync covers all of it. No explicit transaction is needed and
-// none is used: SaveChanges is already transactional, so CLAUDE.md §5's
-// "wrap the unit of work in CreateExecutionStrategy().ExecuteAsync(...)" does
-// not apply — that rule exists for callers who would otherwise reach for
-// BeginTransaction, and this is not one.
+// **Hardening pass, P0 — this is now one of the callers §5's rule is about.**
+// LockBookingRangeAsync calls a stored procedure (dbo.LockBookingsForBlackout)
+// and SaveChangesAsync writes through EF, and both have to land in the same
+// transaction as each other and be replayable together after a 1205 retry —
+// exactly the shape that forces IUnitOfWork.ExecuteAsync rather than a bare
+// SaveChangesAsync (CLAUDE.md §5). Before this pass, the only writes here were
+// plain EF ones, so a bare SaveChangesAsync's own implicit transaction was
+// genuinely enough; mixing in the raw-SQL lock changed that. See
+// CreateBlackoutPeriodCommandRequestHandler and
+// UpdateBlackoutPeriodCommandRequestHandler for the call sites, and
+// LockBookingRangeAsync below for why the lock exists at all.
 //
 // Nothing here bypasses tenant isolation. Every query goes through the
 // tenant-filtered DbSet, so decision 0014's coverage of BlackoutPeriods and
@@ -60,6 +66,24 @@ public interface IBlackoutPeriodRepository
         DateTime nowUtc,
         CancellationToken cancellationToken);
 
+    // Hardening pass, P0: closes the race FindBookingsToCancelAsync alone left
+    // open — that query used to run with no lock at all, before this unit of
+    // work's own transaction even opened, so a booking dbo.CreateBooking
+    // committed in the gap was never selected for cancellation. Calls
+    // dbo.LockBookingsForBlackout, which takes the identical UPDLOCK, HOLDLOCK
+    // range lock over Bookings that dbo.CreateBooking/dbo.ApproveBooking
+    // already take (decision 0023) — the same guarantee, not a second one.
+    //
+    // Must be called from inside IUnitOfWork.ExecuteAsync, before
+    // FindBookingsToCancelAsync: the lock only protects what is read after it
+    // is taken, and it must join the caller's transaction or it releases
+    // immediately and protects nothing.
+    Task LockBookingRangeAsync(
+        Guid resourceId,
+        DateTime startsAtUtc,
+        DateTime endsAtUtc,
+        CancellationToken cancellationToken);
+
     // The tracked blackout, for an edit or a delete. Scoped to the resource as
     // well as to the tenant, so a real blackout id belonging to a different
     // resource returns null rather than being edited through the wrong route.
@@ -87,6 +111,14 @@ public interface IBlackoutPeriodRepository
     // rather than through a navigation, so AddRange is also simply the clearest
     // statement of intent.
     void AddNotifications(IEnumerable<Notification> notifications);
+
+    // Hardening pass, P2: mirrors IBookingRepository's own method, for the
+    // same reason — a Pending booking the cascade cancels must not leave
+    // behind an actionable Pending ApprovalRequest. Passed to
+    // BlackoutCascade.Apply rather than looked up inside it, since that class
+    // is a pure function with no repository of its own.
+    Task<IReadOnlyList<ApprovalRequest>> FindPendingApprovalRequestsAsync(
+        IReadOnlyCollection<Guid> bookingIds, CancellationToken cancellationToken);
 
     Task<PagedResult<ListBlackoutPeriodsQueryResponse>> ListAsync(
         ListBlackoutPeriodsQueryRequest query,

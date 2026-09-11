@@ -154,6 +154,8 @@ public class ApproveBookingCommandRequestHandlerTests
 
     [Theory]
     [InlineData(BookingApprovalResult.BookingNotPending, typeof(BookingNotPendingException))]
+    // Hardening pass, P2 approver TOCTOU.
+    [InlineData(BookingApprovalResult.ApproverNotEligible, typeof(ApproverNotEligibleException))]
     [InlineData(BookingApprovalResult.ResourceNotFound, typeof(ResourceNotFoundException))]
     [InlineData(BookingApprovalResult.ResourceArchived, typeof(ResourceArchivedException))]
     [InlineData(BookingApprovalResult.BlackoutPeriod, typeof(BookingInBlackoutPeriodException))]
@@ -169,6 +171,30 @@ public class ApproveBookingCommandRequestHandlerTests
                 new ApproveBookingCommandRequest(booking.Id), CancellationToken.None));
 
         Assert.IsType(expected, exception);
+    }
+
+    // Hardening pass, P2. dbo.ApproveBooking's own eligibility re-check is
+    // conditional on this flag — a TenantAdmin's reach never depends on
+    // ResourceApprovers (decision 0002), so the procedure must be told which
+    // kind of caller this is, not asked to guess from @ApproverUserId alone.
+    [Theory]
+    [InlineData(Role.TenantAdmin, true)]
+    [InlineData(Role.Approver, false)]
+    public async Task TellsTheProcedureWhetherTheCallerIsATenantAdmin(Role role, bool expected)
+    {
+        var booking = PendingBooking();
+        var approvalRequest = PendingApprovalRequest(booking.Id);
+        var bookings = new FakeApprovalBookingRepository
+        {
+            Reachable = booking,
+            ExistingApprovalRequest = approvalRequest,
+            ApprovableResourceIds = [ResourceId],
+        };
+
+        await Handler(bookings, Admin, role).Handle(
+            new ApproveBookingCommandRequest(booking.Id), CancellationToken.None);
+
+        Assert.Equal(expected, bookings.ApproveAsyncCallerIsTenantAdmin);
     }
 
     [Fact]

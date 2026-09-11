@@ -196,6 +196,36 @@ public class CreateRecurrenceSeriesCommandRequestHandlerTests
         Assert.All(harness.Bookings.AddedNotifications, n => Assert.Equal(ApproverId, n.RecipientUserId));
     }
 
+    // Hardening pass, P1. Same reasoning as
+    // CreateBookingCommandRequestHandlerTests.ReactsToTheProcedureDowngradingA-
+    // ConfirmedRequestToPending, one level up: the resource snapshot said
+    // RequiresApproval = false, so the handler asked dbo.CreateBooking for
+    // Confirmed on every occurrence, but the procedure re-reads RequiresApproval
+    // under its own lock and can answer Pending per occurrence. Before this
+    // pass the handler trusted its own snapshot unconditionally, which would
+    // have reported this occurrence Confirmed with no ApprovalRequest at all.
+    [Fact]
+    public async Task ReactsToTheProcedureDowngradingAnOccurrenceToPending()
+    {
+        var resource = Room(requiresApproval: false);
+        resource.ReplaceApprovers([ApproverId], ActorId, NowUtc);
+
+        var harness = Build(
+            resource,
+            outcomes: [new BookingCreationOutcome(BookingCreationResult.Created, null, BookingStatus.Pending)],
+            approvalExpiryHours: 48);
+
+        var response = await harness.Handler.Handle(Request(resource, occurrenceCount: 1), default);
+
+        Assert.Equal(RecurrenceOccurrenceReportStatus.Created, Assert.Single(response.Occurrences).Status);
+
+        var approval = Assert.Single(harness.Bookings.AddedApprovalRequests);
+        Assert.Equal(NowUtc.AddHours(48), approval.ExpiresAtUtc);
+
+        var notification = Assert.Single(harness.Bookings.AddedNotifications);
+        Assert.Equal(NotificationKind.ApprovalRequested, notification.Kind);
+    }
+
     [Fact]
     public async Task FetchesApprovalExpiryOnceForTheWholeSeries()
     {
@@ -468,6 +498,54 @@ public class CreateRecurrenceSeriesCommandRequestHandlerTests
 
         Assert.Empty(harness.Bookings.AddedNotifications);
         Assert.NotNull(harness.RecurrenceRules.Removed);
+    }
+
+    // Hardening pass, P2. Before this pass, only a *clean* all-refused
+    // outcome (every occurrence answered with a rejection, no exception)
+    // triggered the compensating removal above — a genuinely unexpected
+    // exception on the very first occurrence (a real DB error, not one of
+    // dbo.CreateBooking's own rejection outcomes) propagated straight out of
+    // Handle, leaving the RecurrenceRule row orphaned: persisted up front,
+    // zero occurrences ever created, and no response reaching the client to
+    // explain any of it.
+    [Fact]
+    public async Task TheRuleIsRemovedWhenAnUnexpectedExceptionInterruptsTheFirstOccurrence()
+    {
+        var resource = Room();
+        var harness = Build(resource);
+        var boom = new InvalidOperationException("simulated transient failure");
+        harness.Bookings.ThrowOnCreate = boom;
+        harness.Bookings.ThrowOnCallNumber = 1;
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => harness.Handler.Handle(Request(resource, occurrenceCount: 3), default));
+
+        // The original exception propagates unchanged — this is orphan
+        // prevention, not a new error-handling path — while the rule is still
+        // cleaned up rather than left behind.
+        Assert.Same(boom, thrown);
+        Assert.NotNull(harness.RecurrenceRules.Added);
+        Assert.Same(harness.RecurrenceRules.Added, harness.RecurrenceRules.Removed);
+    }
+
+    // The companion case: once at least one occurrence has genuinely been
+    // created, a later occurrence's unexpected exception must NOT remove the
+    // rule — it now has real bookings hanging off it.
+    [Fact]
+    public async Task TheRuleSurvivesAnUnexpectedExceptionAfterAtLeastOneOccurrenceWasCreated()
+    {
+        var resource = Room();
+        var harness = Build(resource);
+
+        // The first occurrence's CreateAsync call succeeds via the fake's
+        // default (Created); the second throws.
+        harness.Bookings.ThrowOnCreate = new InvalidOperationException("simulated transient failure");
+        harness.Bookings.ThrowOnCallNumber = 2;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => harness.Handler.Handle(Request(resource, occurrenceCount: 3), default));
+
+        Assert.Null(harness.RecurrenceRules.Removed);
     }
 
     // ---- Rejections before expansion ever runs ---------------------------------

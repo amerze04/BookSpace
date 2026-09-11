@@ -69,7 +69,7 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
 
                     b.ToTable("ApprovalRequests", null, t =>
                         {
-                            t.HasCheckConstraint("CK_ApprovalRequests_Decision", "[Decision] IN ('Pending','Approved','Rejected','Expired')");
+                            t.HasCheckConstraint("CK_ApprovalRequests_Decision", "[Decision] IN ('Pending','Approved','Rejected','Expired','Withdrawn')");
 
                             t.HasCheckConstraint("CK_ApprovalRequests_DecisionPaired", "([Decision] = 'Pending' AND [DecidedByUserId] IS NULL AND [DecidedAtUtc] IS NULL) OR ([Decision] <> 'Pending' AND [DecidedAtUtc] IS NOT NULL)");
                         });

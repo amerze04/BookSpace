@@ -35,8 +35,8 @@ public class CancelRecurrenceSeriesEndpointTests
     private const string GlobexMember = "member1@globex.test";
     private const string SysAdmin = "sysadmin@bookspace.local";
 
-    private const string ConnectionString =
-        "Server=localhost\\SQLEXPRESS;Database=BookSpace_AuthTests;Trusted_Connection=True;TrustServerCertificate=True;";
+    private static readonly string ConnectionString =
+        IntegrationTestSettings.ConnectionStringFor("BookSpace_AuthTests");
 
     public CancelRecurrenceSeriesEndpointTests(AuthenticationTestHost host)
     {

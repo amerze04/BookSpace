@@ -38,6 +38,21 @@ internal sealed class BookingConfiguration : IEntityTypeConfiguration<Booking>
             .HasConstraintName("FK_Bookings_Resources_SameOrg")
             .OnDelete(DeleteBehavior.NoAction);
 
+        // Hardening pass, P2/3: these four stay single-column FKs *in the EF
+        // model* — EF's alternate-key API cannot target Users(OrgId, Id)
+        // because OrgId is nullable by design (a SysAdmin has none, decision
+        // 0009), and EF requires every alternate-key column to be non-null.
+        // The same-org guarantee decision 0006 gives Resources is added for
+        // these four anyway, as a composite FK declared directly in SQL
+        // (migration AddCrossTenantUserForeignKeys) against a raw UNIQUE
+        // constraint on Users — the category CLAUDE.md §5 already puts
+        // stored procedures and RLS policies in, for the identical reason:
+        // EF will not scaffold what its C# model cannot express. This was
+        // previously an app-layer invariant only (every write path already
+        // derives these ids from an authenticated, same-tenant actor or
+        // another same-tenant lookup — see ICurrentUser/BookingReadRules —
+        // so no cross-tenant id could actually reach these columns); the SQL
+        // constraint makes it structural as well.
         builder.HasOne<User>().WithMany()
             .HasForeignKey(b => b.UserId)
             .HasConstraintName("FK_Bookings_Users")

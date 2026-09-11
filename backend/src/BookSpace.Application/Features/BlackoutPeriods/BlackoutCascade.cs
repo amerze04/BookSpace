@@ -56,9 +56,32 @@ internal static class BlackoutCascade
     // Notifications.CreatedByUserId, which is nullable only because the no-show
     // job has no human actor — here there is one. It deliberately does *not*
     // land on Bookings.CancelledByUserId; see Booking.CancelForBlackout.
+    //
+    // **Hardening pass, P0: skip rather than throw when a booking is no longer
+    // cancellable.** Both handlers now call this from inside
+    // IUnitOfWork.ExecuteAsync (see IBlackoutPeriodRepository.LockBookingRangeAsync),
+    // whose delegate can run more than once after a 1205 deadlock retry. On a
+    // retry, FindBookingsToCancelAsync's query returns the *same tracked Booking
+    // instances* a previous, aborted attempt already called CancelForBlackout on
+    // — EF's identity map resolves by key rather than refreshing from the
+    // (rolled-back) database — so CanBeCancelledForBlackout now correctly
+    // reports false for them, even though nothing was actually committed. That
+    // is the only way a booking this method receives can fail the check: the
+    // caller's query already filters to Pending/Confirmed with EndsAtUtc in the
+    // future, so a fresh (non-retried) read always satisfies it. Skipping rather
+    // than throwing is what makes the retry safe rather than a crash; the
+    // summary line is still recorded regardless, so a retried response reports
+    // every booking the blackout hit, not only the ones this particular attempt
+    // mutated.
+    // pendingApprovals, hardening pass P2: every still-Pending ApprovalRequest
+    // among these bookings (IBlackoutPeriodRepository.FindPendingApprovalRequestsAsync),
+    // keyed by BookingId. A blackout cancelling a Pending booking must not
+    // leave its approval request outstanding — the same invariant
+    // CancelBookingCommandRequestHandler enforces directly.
     public static BlackoutCascadeResult Apply(
         BlackoutPeriod blackout,
         IReadOnlyList<Booking> bookings,
+        IReadOnlyDictionary<Guid, ApprovalRequest> pendingApprovals,
         Guid actorUserId,
         DateTime nowUtc)
     {
@@ -68,14 +91,24 @@ internal static class BlackoutCascade
 
         foreach (var booking in bookings)
         {
-            // Snapshotted before the mutation. CancelForBlackout touches none of
-            // these four fields today, so this is belt-and-braces — but it keeps
-            // the reported summary honest regardless of what that method is
-            // later changed to write.
+            // Snapshotted unconditionally, before the guard below — so a
+            // retried attempt's response still names every booking the
+            // blackout hit, including ones a previous attempt already
+            // mutated.
             cancelled.Add(new CancelledBookingSummary(
                 booking.Id, booking.UserId, booking.StartsAtUtc, booking.EndsAtUtc, booking.RecurrenceRuleId));
 
+            if (!booking.CanBeCancelledForBlackout(nowUtc))
+            {
+                continue;
+            }
+
             booking.CancelForBlackout(reason, nowUtc);
+
+            if (pendingApprovals.TryGetValue(booking.Id, out var approval))
+            {
+                approval.Withdraw(nowUtc);
+            }
 
             // SendAtUtc = now: a cancellation is news, not a reminder, so it is
             // due as soon as the dispatch job (CLAUDE.md §7) next runs. That job

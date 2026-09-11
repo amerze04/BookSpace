@@ -39,8 +39,21 @@ internal sealed class FakeBlackoutPeriodRepository : IBlackoutPeriodRepository
         private set;
     }
 
+    public int LockCallCount { get; private set; }
+
     public Task<Resource?> FindOwningResourceAsync(Guid resourceId, CancellationToken cancellationToken) =>
         Task.FromResult(_resource is not null && _resource.Id == resourceId ? _resource : null);
+
+    // P0 hardening: a no-op in this fake — the lock itself is only meaningful
+    // against real SQL Server and is exercised by the integration suite. Counted
+    // so a test can assert the handler calls it before reading the cancellation
+    // candidates.
+    public Task LockBookingRangeAsync(
+        Guid resourceId, DateTime startsAtUtc, DateTime endsAtUtc, CancellationToken cancellationToken)
+    {
+        LockCallCount++;
+        return Task.CompletedTask;
+    }
 
     public Task<IReadOnlyList<Booking>> FindBookingsToCancelAsync(
         Guid resourceId,
@@ -76,6 +89,16 @@ internal sealed class FakeBlackoutPeriodRepository : IBlackoutPeriodRepository
 
     public void AddNotifications(IEnumerable<Notification> notifications) =>
         AddedNotifications.AddRange(notifications);
+
+    // Hardening pass, P2. Empty by default — "nothing Pending to withdraw" —
+    // which is what every existing blackout test here wants; a test proving
+    // the withdraw behavior sets it explicitly.
+    public IReadOnlyList<ApprovalRequest> PendingApprovalRequests { get; set; } = [];
+
+    public Task<IReadOnlyList<ApprovalRequest>> FindPendingApprovalRequestsAsync(
+        IReadOnlyCollection<Guid> bookingIds, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<ApprovalRequest>>(
+            PendingApprovalRequests.Where(a => bookingIds.Contains(a.BookingId)).ToList());
 
     public Task SaveChangesAsync(CancellationToken cancellationToken)
     {

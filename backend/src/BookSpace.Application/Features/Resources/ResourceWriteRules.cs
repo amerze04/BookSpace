@@ -83,7 +83,13 @@ internal static class ResourceWriteRules
     // guarantee in dbo.CreateBooking under a range lock, which is where a
     // guarantee can actually be made; this check exists to stop an admin
     // silently invalidating bookings that already exist, not to be that
-    // guarantee.
+    // guarantee. Confirmed and documented explicitly, not merely implied, in
+    // docs/decisions/0005-capacity-semantics.md's 2026-09-11 amendment —
+    // including why upgrading this to a hard lock was rejected and what a
+    // resource left briefly under its own peak actually does downstream
+    // (nothing unsafe: every capacity check re-reads Resources.Capacity
+    // fresh, so it only ever stops admitting further demand past the new
+    // number).
     public static void EnsureCapacityCoversExistingBookings(int newCapacity, int peakConcurrentQuantity)
     {
         if (newCapacity < peakConcurrentQuantity)

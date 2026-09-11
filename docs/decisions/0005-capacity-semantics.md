@@ -92,3 +92,52 @@ because of the pooled case: on a pooled resource the longest bookable run
 depends on how many units the caller wants, so there is no single answer without
 it (decision [`0020`](0020-bookable-interval-semantics.md)). On an exclusive
 resource the parameter can only be 1 and the question does not arise.
+
+### Amendment 2026-09-11: capacity decrease vs. concurrent booking is deliberately best-effort
+
+Raised by an independent hardening-pass review: `UpdateResourceCommandRequestHandler`
+checks a proposed capacity decrease against the peak concurrent quantity
+already booked (`ResourceWriteRules.EnsureCapacityCoversExistingBookings`,
+throwing `CapacityBelowExistingBookingsException`), then calls a plain
+`SaveChangesAsync` with no lock spanning the two. A booking can therefore
+commit, through `dbo.CreateBooking`'s own lock, in the gap between that read
+and the resource-update commit — the admin's check saw room, the booking
+genuinely fit against the *old* capacity, and the new (lower) capacity is
+saved anyway. The reviewer was right that this is a real, live race; this
+amendment is to confirm it is accepted rather than silently unhandled, which
+neither this record nor the code said outright before now.
+
+**Staying best-effort, not upgraded to a hard invariant.** The alternative
+would be taking `dbo.CreateBooking`'s own `Bookings` range lock at
+resource-update time too, so a capacity edit and a concurrent booking
+genuinely serialise — technically the same shape as the P0 hardening fix this
+amendment sits beside (`IBlackoutPeriodRepository.LockBookingRangeAsync`).
+Rejected here for a reason that fix does not share: a blackout's absolute
+priority is a hard product invariant (decision `0001`) that must never be
+violated, whereas a capacity edit racing a booking is a rare admin data-entry
+moment, not a booking-path guarantee — CLAUDE.md §4.1's actual promise is
+about `dbo.CreateBooking`/`dbo.ApproveBooking`'s own capacity check, and that
+check is untouched by this race: it re-reads `Resources.Capacity` fresh on
+every call, so no booking made *after* the edit can ever exceed the new
+number. Only the single edit transaction itself can transiently under-check
+against a booking landing in its exact gap, and locking the hot booking path
+against an unrelated, infrequent admin command trades a rare, self-evident,
+self-correctable state (an admin can simply lower capacity again, or the
+peak naturally clears as bookings end) for permanent extra lock contention on
+every booking creation.
+
+**What "unhandled" would actually produce, so downstream code can rely on it
+rather than guess:** a resource whose `Capacity` is briefly (or, if never
+revisited, permanently) below its own peak concurrent `Quantity`. Nothing
+in this codebase assumes `Capacity >= any existing booking's peak` as a
+runtime invariant — `dbo.CreateBooking`/`dbo.ApproveBooking` compute
+`@remaining = @capacity - @peak` fresh per call and simply refuse further
+bookings once `@remaining <= 0` or less than requested (a negative
+`@remaining` refuses everything the same way zero does), and the
+availability query's `CapacitySweep` likewise reports whatever is actually
+free, including zero or a floor at zero. So the state is safe to leave
+in place: it silently stops admitting *new* demand past the resource's
+real capacity rather than corrupting anything, and it is visible to an
+admin who re-opens the resource (`GET /resources/{id}` still reports the
+lower `Capacity` next to bookings that exceed it in aggregate, which is
+the honest picture).

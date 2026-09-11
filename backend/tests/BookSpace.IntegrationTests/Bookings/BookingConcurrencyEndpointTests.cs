@@ -73,8 +73,8 @@ public class BookingConcurrencyEndpointTests
     // satisfy the TenantMember policy), so all three are legitimate bookers.
     private static readonly string[] Racers = [AcmeMember, AcmeApprover, AcmeAdmin];
 
-    private const string ConnectionString =
-        "Server=localhost\\SQLEXPRESS;Database=BookSpace_AuthTests;Trusted_Connection=True;TrustServerCertificate=True;";
+    private static readonly string ConnectionString =
+        IntegrationTestSettings.ConnectionStringFor("BookSpace_AuthTests");
 
     public BookingConcurrencyEndpointTests(AuthenticationTestHost host)
     {

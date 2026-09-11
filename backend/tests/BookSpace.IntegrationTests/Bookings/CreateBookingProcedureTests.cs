@@ -39,9 +39,10 @@ public class CreateBookingProcedureTests
 
     private const string AcmeAdmin = "admin@acme.test";
     private const string AcmeMember = "member1@acme.test";
+    private const string AcmeApprover = "approver@acme.test";
 
-    private const string ConnectionString =
-        "Server=localhost\\SQLEXPRESS;Database=BookSpace_AuthTests;Trusted_Connection=True;TrustServerCertificate=True;";
+    private static readonly string ConnectionString =
+        IntegrationTestSettings.ConnectionStringFor("BookSpace_AuthTests");
 
     public CreateBookingProcedureTests(AuthenticationTestHost host)
     {
@@ -353,6 +354,61 @@ public class CreateBookingProcedureTests
         }
     }
 
+    // ---- RequiresApproval re-check (hardening pass, P1) --------------------
+
+    // The gap this migration closed: a caller asking for Confirmed on a
+    // resource that requires approval is downgraded to Pending, because the
+    // procedure re-reads RequiresApproval itself rather than trusting the
+    // caller's snapshot. Direct proof at the layer the decision was moved to,
+    // ahead of CreateBookingCommandRequestHandlerTests' unit-level proof that
+    // the *handler* reacts correctly to a downgrade it could not have
+    // predicted.
+    [Fact]
+    public async Task CreateBooking_DowngradesAConfirmedRequestToPendingWhenTheResourceRequiresApproval()
+    {
+        var resource = await CreateResourceAsync(capacity: 1);
+
+        try
+        {
+            await MakeApprovalGatedAsync(resource);
+
+            var outcome = await CallAsync(resource, Guid.NewGuid(), At(9), At(10), quantity: 1, status: "Confirmed");
+
+            Assert.Equal("Created", outcome.ResultCode);
+
+            var stored = await ReadBookingAsync(await LatestBookingIdAsync(resource.Id));
+            Assert.Equal("Pending", stored.Status);
+        }
+        finally
+        {
+            await CleanUpAsync(resource.Id);
+        }
+    }
+
+    // Never the reverse: a caller's own Pending request is honoured as-is even
+    // when the resource does not require approval — this is what lets
+    // CreateBooking_CountsAPendingBookingAgainstCapacity force a Pending row
+    // directly on a plain resource to prove decision 0005, without this
+    // migration re-deriving it back to Confirmed.
+    [Fact]
+    public async Task CreateBooking_NeverUpgradesARequestedPendingStatus()
+    {
+        var resource = await CreateResourceAsync(capacity: 1);
+
+        try
+        {
+            var bookingId = Guid.NewGuid();
+            await CallAsync(resource, bookingId, At(9), At(10), quantity: 1, status: "Pending");
+
+            var stored = await ReadBookingAsync(bookingId);
+            Assert.Equal("Pending", stored.Status);
+        }
+        finally
+        {
+            await CleanUpAsync(resource.Id);
+        }
+    }
+
     // ---- The acceptance criterion (AC-1) -----------------------------------
 
     // **The single most important test in the codebase** (CLAUDE.md §8). One
@@ -650,6 +706,42 @@ public class CreateBookingProcedureTests
 
     private static async Task<Guid> OrgIdOfAsync(Guid resourceId) =>
         await ScalarAsync<Guid>("SELECT OrgId FROM dbo.Resources WHERE Id = @p0;", resourceId);
+
+    // Assigns AcmeApprover and flips RequiresApproval — the two-step dance
+    // decision 0018/FR-3.3 require (ApproversRequired refuses the flag with no
+    // approver assigned), through the real endpoints rather than a direct SQL
+    // write, so this exercises exactly the state a real admin action leaves.
+    private async Task MakeApprovalGatedAsync(TestResource resource)
+    {
+        var client = await AuthenticatedClientAsync(AcmeAdmin);
+        var approverId = await ScalarAsync<Guid>(
+            "SELECT Id FROM dbo.Users WHERE Email = @p0;", AcmeApprover);
+
+        (await client.PutAsJsonAsync(
+            $"/resources/{resource.Id}/approvers",
+            new { approverUserIds = new[] { approverId } })).EnsureSuccessStatusCode();
+
+        var name = await ScalarAsync<string>("SELECT Name FROM dbo.Resources WHERE Id = @p0;", resource.Id);
+        var capacity = await ScalarAsync<int>("SELECT Capacity FROM dbo.Resources WHERE Id = @p0;", resource.Id);
+
+        (await client.PutAsJsonAsync(
+            $"/resources/{resource.Id}",
+            new
+            {
+                name,
+                description = (string?)null,
+                resourceType = "Room",
+                capacity,
+                timeZoneId = "UTC",
+                requiresApproval = true,
+                minDurationMinutes = (int?)null,
+                maxDurationMinutes = (int?)null,
+            })).EnsureSuccessStatusCode();
+    }
+
+    private static async Task<Guid> LatestBookingIdAsync(Guid resourceId) =>
+        await ScalarAsync<Guid>(
+            "SELECT TOP 1 Id FROM dbo.Bookings WHERE ResourceId = @p0 ORDER BY CreatedAtUtc DESC;", resourceId);
 
     private static async Task<Guid> MemberIdAsync() =>
         await ScalarAsync<Guid>("SELECT Id FROM dbo.Users WHERE Email = @p0;", AcmeMember);

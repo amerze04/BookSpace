@@ -1,10 +1,13 @@
+using System.Data;
 using BookSpace.Application.Abstractions;
 using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.BlackoutPeriods;
 using BookSpace.Application.Features.BlackoutPeriods.ListBlackoutPeriods;
 using BookSpace.Domain.Entities;
 using BookSpace.Domain.Enums;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace BookSpace.Infrastructure.Persistence.Repositories;
 
@@ -63,6 +66,59 @@ internal sealed class BlackoutPeriodRepository : IBlackoutPeriodRepository
             .ThenBy(b => b.Id)
             .ToListAsync(cancellationToken);
 
+    // Hardening pass, P0. Raw ADO for the same reason
+    // BookingRepository.CreateAsync/ApproveAsync are: opened through EF's own
+    // connection so TenantSessionContextInterceptor still sets the tenant
+    // session context, and enlisted in the ambient transaction so the lock it
+    // takes is held by *this* unit of work rather than released the instant
+    // the call returns. No result row to read — ExecuteNonQueryAsync, not
+    // ExecuteReaderAsync — because this procedure exists to take a lock, not
+    // to answer a question.
+    //
+    // Explicit DATETIME2(0)/Scale=0 parameters, matching
+    // BookingRepository.AddParameters exactly: the column is datetime2(0), and
+    // an inferred datetime2(7) parameter compared against it is how a
+    // boundary comparison ends up off by a fraction of a second (CLAUDE.md
+    // §4.3, decision 0017's fixture gotcha).
+    public async Task LockBookingRangeAsync(
+        Guid resourceId,
+        DateTime startsAtUtc,
+        DateTime endsAtUtc,
+        CancellationToken cancellationToken)
+    {
+        var connection = _context.Database.GetDbConnection();
+        var openedHere = connection.State != ConnectionState.Open;
+
+        if (openedHere)
+        {
+            await _context.Database.OpenConnectionAsync(cancellationToken);
+        }
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "dbo.LockBookingsForBlackout";
+            command.CommandType = CommandType.StoredProcedure;
+            command.Transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
+
+            command.Parameters.Add(new SqlParameter("@ResourceId", SqlDbType.UniqueIdentifier)
+            { Value = resourceId });
+            command.Parameters.Add(new SqlParameter("@StartsAtUtc", SqlDbType.DateTime2)
+            { Scale = 0, Value = startsAtUtc });
+            command.Parameters.Add(new SqlParameter("@EndsAtUtc", SqlDbType.DateTime2)
+            { Scale = 0, Value = endsAtUtc });
+
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally
+        {
+            if (openedHere)
+            {
+                await _context.Database.CloseConnectionAsync();
+            }
+        }
+    }
+
     // Both ids in the predicate, so the route has to name the blackout's real
     // owner. FirstOrDefaultAsync, never Find(), for the CLAUDE.md §4.2 reason:
     // Find can answer from the change tracker without querying, and a tracked
@@ -82,6 +138,17 @@ internal sealed class BlackoutPeriodRepository : IBlackoutPeriodRepository
 
     public void AddNotifications(IEnumerable<Notification> notifications) =>
         _context.AddRange(notifications);
+
+    // Hardening pass, P2 — same query as BookingRepository's own method,
+    // against the same table; this port needs its own copy because the two
+    // repositories share no base class and CLAUDE.md keeps the write surface
+    // for each aggregate group narrow rather than introducing one purely to
+    // share a single query.
+    public async Task<IReadOnlyList<ApprovalRequest>> FindPendingApprovalRequestsAsync(
+        IReadOnlyCollection<Guid> bookingIds, CancellationToken cancellationToken) =>
+        await _context.ApprovalRequests
+            .Where(a => bookingIds.Contains(a.BookingId) && a.Decision == ApprovalDecision.Pending)
+            .ToListAsync(cancellationToken);
 
     public Task<PagedResult<ListBlackoutPeriodsQueryResponse>> ListAsync(
         ListBlackoutPeriodsQueryRequest query,

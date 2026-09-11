@@ -333,4 +333,45 @@ public class CancelBookingCommandRequestHandlerTests
         Assert.Equal(1, bookings.SaveChangesCount);
         Assert.Single(bookings.AddedNotifications);
     }
+
+    // ---- Stale ApprovalRequest invariant (hardening pass, P2) --------------
+    //
+    // "A booking that is no longer Pending cannot have an actionable Pending
+    // ApprovalRequest." Before this pass, cancelling a Pending booking left
+    // its ApprovalRequest at Pending forever.
+
+    [Fact]
+    public async Task CancellingAPendingBookingWithdrawsItsApprovalRequest()
+    {
+        var booking = Booking(BookingStatus.Pending);
+        var approval = new ApprovalRequest(Guid.NewGuid(), booking.Id, NowUtc, null);
+        var bookings = new FakeBookingRepository
+        {
+            Cancellable = booking,
+            PendingApprovalRequests = [approval],
+        };
+
+        await Handler(bookings, Owner, Role.Member).Handle(
+            new CancelBookingCommandRequest(booking.Id), CancellationToken.None);
+
+        Assert.Equal(ApprovalDecision.Withdrawn, approval.Decision);
+        Assert.Equal(NowUtc, approval.DecidedAtUtc);
+        Assert.Null(approval.DecidedByUserId);
+    }
+
+    // A Confirmed booking never had a live approval request to begin with —
+    // the query is scoped to Pending, so this must be a no-op read, not an
+    // error.
+    [Fact]
+    public async Task CancellingAConfirmedBookingTouchesNoApprovalRequest()
+    {
+        var booking = Booking(BookingStatus.Confirmed);
+        var bookings = new FakeBookingRepository { Cancellable = booking };
+
+        await Handler(bookings, Owner, Role.Member).Handle(
+            new CancelBookingCommandRequest(booking.Id), CancellationToken.None);
+
+        // No throw is the assertion; nothing here should have been queried
+        // for a booking that never requested approval.
+    }
 }

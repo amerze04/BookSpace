@@ -5,6 +5,7 @@ using System.Text.Json;
 using BookSpace.Domain.Entities;
 using BookSpace.Infrastructure.Persistence;
 using BookSpace.IntegrationTests.Authentication;
+using BookSpace.IntegrationTests.Support;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -24,12 +25,58 @@ public class TenantIsolationTests
     private readonly AuthenticationTestHost _host;
 
     private const string AcmeMember = "member1@acme.test";
-    private const string ConnectionString =
-        "Server=localhost\\SQLEXPRESS;Database=BookSpace_AuthTests;Trusted_Connection=True;TrustServerCertificate=True;";
+    private static readonly string ConnectionString =
+        IntegrationTestSettings.ConnectionStringFor("BookSpace_AuthTests");
 
     public TenantIsolationTests(AuthenticationTestHost host)
     {
         _host = host;
+    }
+
+    // Hardening pass, P2/3 security — schema-level proof for
+    // FK_Bookings_Users_SameOrg (migration AddCrossTenantUserForeignKeys).
+    // Every application write path already derives Bookings.UserId from a
+    // same-tenant lookup or the authenticated actor, so a cross-tenant
+    // reference was already unreachable through the API — this proves the
+    // database itself refuses one too, independent of any application code
+    // behaving correctly, on the exact same footing
+    // FK_Bookings_Resources_SameOrg (decision 0006) already proves for
+    // ResourceId. Bypasses RLS deliberately: the point is the FK constraint,
+    // which (unlike RLS's filter predicates) applies regardless of session
+    // context.
+    [Fact]
+    public async Task RawInsert_BookingReferencingAnotherTenantsUser_IsRejectedByTheDatabase()
+    {
+        var acmeOrgId = await GetOrgIdAsync("acme");
+        var acmeResourceId = await GetAnyResourceIdAsync("acme");
+        var globexUserId = await GetAnyUserIdAsync("globex");
+
+        await using var connection = new SqlConnection(ConnectionString);
+        await connection.OpenAsync();
+        await ExecuteAsync(connection, "EXEC sys.sp_set_session_context @key = N'TenantInit', @value = 1;");
+        await ExecuteAsync(connection, "EXEC sys.sp_set_session_context @key = N'TenantBypass', @value = 1;");
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO dbo.Bookings
+                (Id, OrgId, ResourceId, UserId, StartsAtUtc, EndsAtUtc, Quantity, Status,
+                 CreatedAtUtc, CreatedByUserId, UpdatedAtUtc)
+            VALUES
+                (NEWID(), @OrgId, @ResourceId, @UserId, '2027-09-01T09:00:00', '2027-09-01T10:00:00', 1,
+                 'Confirmed', SYSUTCDATETIME(), @UserId, SYSUTCDATETIME());
+            """;
+        command.Parameters.AddWithValue("@OrgId", acmeOrgId);
+        command.Parameters.AddWithValue("@ResourceId", acmeResourceId);
+        command.Parameters.AddWithValue("@UserId", globexUserId);
+
+        var exception = await Assert.ThrowsAsync<SqlException>(() => command.ExecuteNonQueryAsync());
+
+        // 547 is SQL Server's "the INSERT statement conflicted with the FOREIGN
+        // KEY constraint" error number — confirms this failed for the reason
+        // under test, not merely for some other reason (a missing column, a
+        // type mismatch) that would also throw SqlException.
+        Assert.Equal(547, exception.Number);
+        Assert.Contains("FK_Bookings_Users_SameOrg", exception.Message);
     }
 
     [Fact]
@@ -309,6 +356,18 @@ public class TenantIsolationTests
         using var _ = TenantBypassScope.Enter();
         var resource = await context.Resources.IgnoreQueryFilters().FirstAsync(r => r.OrgId == orgId);
         return resource.Id;
+    }
+
+    private async Task<Guid> GetAnyUserIdAsync(string orgSlug)
+    {
+        await using var scope = _host.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<BookSpaceDbContext>();
+
+        var orgId = await context.Organizations.Where(o => o.Slug == orgSlug).Select(o => o.Id).SingleAsync();
+
+        using var _ = TenantBypassScope.Enter();
+        var user = await context.Users.IgnoreQueryFilters().FirstAsync(u => u.OrgId == orgId);
+        return user.Id;
     }
 
     private async Task<Guid> GetAnyBlackoutIdAsync(string orgSlug)

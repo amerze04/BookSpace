@@ -117,6 +117,43 @@ try
     // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
     builder.Services.AddOpenApi();
 
+    // Hardening pass, P2 security. /auth/login and /auth/refresh had no rate
+    // limiting at all — a credential-stuffing or refresh-token-guessing loop
+    // could run unthrottled. Fixed-window, partitioned by remote IP: simple,
+    // matches "N attempts per window" intuitively, and IP is what this API
+    // can trust without assuming anything about a reverse proxy's own
+    // X-Forwarded-For handling — a spoofable header is not used as the
+    // partition key. Defaults are conservative starting points, not
+    // load-tested production numbers (see appsettings.json's own comment);
+    // both are overridden to an effectively unlimited value in
+    // AuthenticationTestHost, since the integration suite logs in far more
+    // often, and with no shared token cache, than any real client would in
+    // the same window.
+    builder.Services.AddRateLimiter(options =>
+    {
+        options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+        options.AddPolicy("login", httpContext => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                PermitLimit = builder.Configuration.GetValue("RateLimiting:Login:PermitLimit", 10),
+                Window = TimeSpan.FromSeconds(
+                    builder.Configuration.GetValue("RateLimiting:Login:WindowSeconds", 60)),
+                QueueLimit = 0,
+            }));
+
+        options.AddPolicy("refresh", httpContext => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                PermitLimit = builder.Configuration.GetValue("RateLimiting:Refresh:PermitLimit", 20),
+                Window = TimeSpan.FromSeconds(
+                    builder.Configuration.GetValue("RateLimiting:Refresh:WindowSeconds", 60)),
+                QueueLimit = 0,
+            }));
+    });
+
     builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
     builder.Services.AddProblemDetails(options =>
     {
@@ -155,6 +192,11 @@ try
     // request carries no Authorization header, so CORS has to be resolved
     // first or the browser's preflight never gets past auth to see it.
     app.UseCors(FrontendCorsPolicy);
+
+    // Before authentication, deliberately: a request over the login/refresh
+    // budget is rejected before this API spends any work validating a token
+    // or hashing a password against it.
+    app.UseRateLimiter();
 
     // Authentication must run before authorization — it's what puts the
     // principal on the context that the policies then evaluate.
