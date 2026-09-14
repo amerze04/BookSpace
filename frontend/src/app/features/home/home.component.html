@@ -10,4 +10,21 @@
       <li><strong>Roles:</strong> {{ claims.roles.join(', ') }}</li>
     </ul>
   }
+
+  <hr />
+
+  <p>Phase 2 check — this calls the real, protected <code>GET /resources</code> through the interceptor.</p>
+  <button (click)="callProtectedEndpoint()">Call protected endpoint</button>
+
+  @if (resourceCount() !== null) {
+    <p>Success — your tenant has {{ resourceCount() }} resource(s).</p>
+  }
+
+  @if (callError()) {
+    <p style="color: #d63c3c">{{ callError() }}</p>
+  }
+
+  <hr />
+
+  <button (click)="logout()">Log out</button>
 </div>
