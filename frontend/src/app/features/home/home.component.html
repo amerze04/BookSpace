@@ -1,0 +1,13 @@
+<div style="padding: 3rem; font-family: sans-serif">
+  <h1>You're logged in</h1>
+
+  @if (auth.claims(); as claims) {
+    <p>This is proof phase 1 works — these came from decoding your access token.</p>
+    <ul>
+      <li><strong>Email:</strong> {{ claims.email }}</li>
+      <li><strong>User id (sub):</strong> {{ claims.sub }}</li>
+      <li><strong>Org id:</strong> {{ claims.orgId ?? '(none — SysAdmin)' }}</li>
+      <li><strong>Roles:</strong> {{ claims.roles.join(', ') }}</li>
+    </ul>
+  }
+</div>
