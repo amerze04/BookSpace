@@ -24,6 +24,15 @@ export class AuthService {
   readonly claims = this.claimsSignal.asReadonly();
   readonly isAuthenticated = computed(() => this.claimsSignal() !== null);
 
+  // Same two roles decision 0018 admits as an eligible approver — kept here,
+  // not duplicated at each call site, so "who can approve" has one answer.
+  // This is a UI convenience only (which nav items/routes are reachable) —
+  // the backend enforces the real rule independently on every request.
+  readonly canApproveBookings = computed(() => {
+    const roles = this.claimsSignal()?.roles ?? [];
+    return roles.includes('Approver') || roles.includes('TenantAdmin');
+  });
+
   constructor(private readonly http: HttpClient) {}
 
   async login(email: string, password: string): Promise<void> {

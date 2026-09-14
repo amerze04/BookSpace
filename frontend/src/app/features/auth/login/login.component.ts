@@ -1,11 +1,12 @@
 import { Component, signal } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { AuthService } from '../../../core/auth/auth.service';
+import { BrandMarkComponent } from '../../../shared/brand-mark/brand-mark.component';
 
 @Component({
   selector: 'app-login',
-  imports: [ReactiveFormsModule],
+  imports: [ReactiveFormsModule, BrandMarkComponent],
   templateUrl: './login.component.html',
   styleUrl: './login.component.scss',
 })
@@ -22,6 +23,7 @@ export class LoginComponent {
     formBuilder: FormBuilder,
     private readonly auth: AuthService,
     private readonly router: Router,
+    private readonly route: ActivatedRoute,
   ) {
     this.form = formBuilder.nonNullable.group({
       email: ['', [Validators.required, Validators.email]],
@@ -41,7 +43,8 @@ export class LoginComponent {
 
     try {
       await this.auth.login(email, password);
-      await this.router.navigateByUrl('/home');
+      const returnUrl = this.route.snapshot.queryParamMap.get('returnUrl') ?? '/';
+      await this.router.navigateByUrl(returnUrl);
     } catch {
       // A real per-field/reason-code mapping is phase 4's job (CLAUDE.md §6 /
       // decisions/0016) — this is deliberately the generic placeholder until then.
