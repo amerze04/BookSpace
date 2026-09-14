@@ -9,9 +9,15 @@ to flag rather than something to add on judgment (CLAUDE.md §11).
 
 ## Status
 
-**Planned — approved 2026-09-11, no phase started yet.** Two shape questions
-were put to the repo owner before writing this plan, the same process WP-3
-through WP-5 each went through on the backend side. Both are recorded in §3.
+**Done — all four phases complete, 2026-09-14.** Two shape questions were put
+to the repo owner before writing this plan, the same process WP-3 through
+WP-5 each went through on the backend side; both are recorded in §3. All four
+acceptance criteria are met and 26 vitest tests pass, 0 failed. Built as a
+teaching exercise — the repo owner is new to Angular/frontend generally, so
+each phase was delivered in small steps with an explanation of what changed,
+how, and why, rather than landed as one commit. Real bugs found and fixed
+along the way are recorded under each phase below, not smoothed over — they
+were part of what made the exercise real.
 
 ---
 
@@ -121,7 +127,7 @@ Four phases, each a working increment against the real backend — no mocks,
 same delivery style as the backend work packages. Control returns to the owner
 between phases.
 
-### Phase 1 — Foundations + auth core
+### Phase 1 — Foundations + auth core — **Done 2026-09-14**
 
 - Project conventions: standalone components, a feature-folder layout
   (`core/`, `features/auth/`, `shared/` — `features/` grows in WP-7),
@@ -141,7 +147,20 @@ between phases.
 placeholder, confirm the decoded claims (email, role, orgId) are correct for
 that account.
 
-### Phase 2 — Interceptor & session lifecycle
+Delivered as planned: `environment.ts` (dev-only, no production split — no
+deployed frontend target exists yet to justify one), `core/auth/jwt-decode.ts`,
+`core/auth/auth.service.ts`, `features/auth/login/`. One real finding: **the
+`role` claim's actual JSON key is not `"role"`**. `JwtAccessTokenService`
+builds the token directly from a `Claim` list rather than through
+`JwtSecurityTokenHandler`'s short-name mapping, so the wire key is the full
+`ClaimTypes.Role` URI
+(`http://schemas.microsoft.com/ws/2008/06/identity/claims/role`) — confirmed
+by logging in against the real running backend and decoding a genuine token,
+not by reading decisions/0009's table (which calls it `role` for readability).
+`jwt-decode.ts` documents this and `jwt-decode.spec.ts` pins it down so it
+can't silently regress.
+
+### Phase 2 — Interceptor & session lifecycle — **Done 2026-09-14**
 
 - HTTP interceptor: attaches `Authorization: Bearer` to outgoing requests.
 - On a 401, attempts exactly one silent refresh — **single-flight**, so several
@@ -166,7 +185,28 @@ calls, confirm exactly one refresh call happens and both requests complete
 successfully; then exhaust the refresh token and confirm a clean redirect to
 login.
 
-### Phase 3 — Route guards & authenticated shell
+Delivered as planned: `core/auth/auth.interceptor.ts` (bearer attach + 401
+catch/refresh/retry) and `AuthService.refreshAccessToken()`'s single-flight
+guard (`shareReplay(1)` over a cached in-flight `Observable`, cleared via
+`finalize`). Verified live by corrupting the stored access token in
+`localStorage` via the browser console and watching the Network tab: one
+failed request, one `POST /auth/refresh`, one successful retry — with the
+corrupted-refresh-token variant confirming a clean redirect to `/login`
+instead.
+
+**A real bug found here, not just an anticipated one:** the login page's
+"Signing in…" state never reverted after a failed login. Root cause — this
+project is **zoneless** (no `zone.js` in `package.json`, an Angular 22
+default), and `submitting`/`errorMessage` were plain class fields, not
+signals. A write to a plain field inside a `catch`/`finally` block after an
+`await` has nothing telling Angular to re-render, since there's no zone
+patching the `Promise` continuation and no signal write to notice either.
+Fixed by converting both to signals — the same rule §3's state-management
+answer already implied, just not yet applied to a component's own local UI
+state, only to `AuthService`'s shared state. Written up as a `LoginComponent`
+comment so the reasoning survives the fix.
+
+### Phase 3 — Route guards & authenticated shell — **Done 2026-09-14**
 
 - Functional `CanActivateFn` guards: unauthenticated → redirect to `login`
   with a `returnUrl`; authenticated → kept off `login` itself.
@@ -181,7 +221,48 @@ member and approver-visible states.
 returns to the originally-requested route after a successful login; a
 member's shell and an approver's shell visibly differ by one nav item.
 
-### Phase 4 — Error handling, tests, AC sweep
+Delivered as planned, plus a fourth nav route beyond the original screen list:
+`core/auth/auth.guard.ts` (`authGuard`, `guestOnlyGuard`, and `approverGuard` —
+the last one added in this phase, gating a new `/approvals` route the shell
+design's approver-only nav item needed somewhere to point), the real
+`layout/shell/shell.component.*`, a shared `features/placeholder/` page every
+nav item routes to for now, and `shared/brand-mark/` — the login page's logo
+mark, extracted into a component on its third use (the sidebar), per the "extract
+on the third occurrence" rule rather than up front. `primaryNavItems` is a
+`computed()` signal, not a plain array, gated on a new
+`AuthService.canApproveBookings` (the same `Approver`/`TenantAdmin` pair
+decision `0018` already treats as eligible) — UI convenience only, since the
+real enforcement is `approverGuard` on the route and the backend's own RBAC
+underneath that regardless.
+
+**One breadcrumb design correction, made by the owner directly in the code:**
+the first pass rendered every page's breadcrumb as `Home > <page>`, implying
+Resources/My Bookings/etc. are children of Home. They aren't — every current
+route is a flat, top-level sibling — so the owner simplified `breadcrumb` to
+just `[title]` and flagged the real design question for later: once WP-7 adds
+genuine nesting (a Rooms page under Resources), the breadcrumb needs to walk
+every matched level of the *actual* route tree and collect each one's own
+title, not synthesize an ancestor no route has.
+
+**Two real bugs found and fixed, both instructive:**
+- The same field-initializer-ordering bug as Phase 1's `LoginComponent`
+  (`formBuilder` used before the constructor assigned it) recurred in
+  `ShellComponent`, this time with `router`. Rather than move the affected
+  code into the constructor again, the fix this time was to adopt `inject()`
+  field initializers everywhere in this component instead of constructor
+  parameters — field initializers run top-to-bottom in declaration order
+  regardless of the constructor, which removes the whole ordering hazard
+  rather than working around one instance of it.
+- The shell crashed on load with `Cannot read properties of undefined
+  (reading 'data')`. Cause: `currentRouteTitle()` walked
+  `this.activatedRoute.firstChild` — the *live* `ActivatedRoute` tree — which
+  isn't fully wired together yet at the exact moment `ShellComponent`'s own
+  constructor runs. Fixed by walking `router.routerState.snapshot` instead —
+  the router's already-fully-resolved snapshot tree for the current
+  navigation, safe to read at construction time because nothing about it is
+  still being assembled.
+
+### Phase 4 — Error handling, tests, AC sweep — **Done 2026-09-14**
 
 - A global mapping from the backend's `ProblemDetails` shape to user-facing
   feedback: validation failures surface per-field (login form first, WP-7's
@@ -205,6 +286,87 @@ to a protected route while logged out; a token refresh happening silently
 mid-session; and a deliberately-triggered API error (e.g. wrong password, or
 the backend stopped) rendering as a clear message rather than a blank screen
 or a console error.
+
+No design existed for the toast/banner (unlike Login and the shell), so it
+was built directly from the brand doc's own rules — white surface, the
+existing radius token, a colored left border in the semantic error/primary
+color, a soft shadow rather than heavy elevation — isolated enough
+(`core/notifications/`) to restyle later without touching the logic.
+
+Delivered: `core/notifications/` (`NotificationService` — a signal-backed
+list, `show()`/`dismiss()` — and `NotificationListComponent`, mounted once at
+the app root so it's visible over both the login page and the shell
+regardless of route); `core/http/problem-details.ts` (the `ProblemDetails`
+shape, confirmed against a **real** response rather than assumed — notably,
+`errors`' keys are **PascalCase** — `"Email"`, `"Password"` — matching the C#
+request property names FluentValidation reports against, not the wire's usual
+camelCase); `core/http/skip-error-toast.ts` (an `HttpContextToken` a request
+can opt out with, for a caller that already has its own inline feedback); and
+`core/http/error-toast.interceptor.ts`, which shows a toast for anything that
+reaches it **except** a `401` (always `auth.interceptor`'s domain — it either
+fixes it silently or is already redirecting with its own message) or a
+request marked `skipErrorToast()`.
+
+**Interceptor ordering was the one place a subtle mistake was cheap to make.**
+`provideHttpClient(withInterceptors([errorToastInterceptor, authInterceptor]))`
+— `errorToastInterceptor` has to be *first* (outermost, same idea as ASP.NET
+Core middleware order), so it only ever sees whatever `authInterceptor`
+couldn't already resolve. Reversed, the toast would fire on every
+expired-token `401` before the silent refresh got a chance to run at all,
+turning Phase 2's whole point into a toast flashing on screen every 15
+minutes.
+
+`AuthService.login()` and `.logout()` both now pass `context: skipErrorToast()`
+on their own calls — `login()` because `LoginComponent` renders its own
+feedback for anything it can fail with, `logout()` because decision `0011`
+already means that failure is deliberately swallowed, and a toast appearing
+during a silent logout would contradict that. The interceptor's own
+refresh-failure branch now also calls `notifications.show(...)` directly
+("Your session has expired. Please sign in again.") before redirecting,
+closing the "why did I just get logged out" gap Phase 2 left open.
+
+`LoginComponent` gained real field-level validation: `touchedFields` and
+`fieldErrors` signals (touched-state tracked explicitly via `(blur)` handlers,
+not read off `FormControl.touched` directly in the template — the same
+"template reads a signal, always" rule Phase 1's bug established), client-side
+messages for `required`/`email` once a field has been touched or submit was
+attempted, and a mapping from a real backend `errors` dictionary onto the same
+per-field slots (translating `Email`/`Password` to the form's `email`/
+`password` control names — the PascalCase finding above, made concrete).
+
+**Test coverage** (26 vitest tests, 0 failed, across 6 files): `jwt-decode.spec.ts`
+(the role-claim URI, single vs. array roles, a missing `orgId`, a malformed
+token); `auth.service.spec.ts` (login stores + decodes, logout clears locally
+even when the server call fails, the single-flight refresh case via
+`HttpTestingController.expectOne` — which throws if a second concurrent
+request also went out — and a failed refresh clearing the session);
+`auth.interceptor.spec.ts` (bearer attachment, 401 → refresh → retry,
+single-flight across two simultaneously-failing requests, auth endpoints
+never being retried, and the session-expired notification + redirect);
+`error-toast.interceptor.spec.ts` (a mapped `ProblemDetails` title, the
+network-failure fallback, silence on a `401`, silence on an opted-out
+request); `auth.guard.spec.ts` (all three guards). One minor test-authoring
+finding: three `approverGuard` assertions originally lived in one `it()`
+block and the third's `router.serializeUrl(...)` call threw
+(`Cannot read properties of undefined (reading 'hasChildren')`) — splitting
+into three separate `it()` blocks, each getting its own fresh `Router` from
+`beforeEach`, fixed it and left better-isolated tests regardless of the exact
+cause.
+
+**AC sweep**, against the real running backend:
+- *A user logs in through the UI and reaches an authenticated area.* Met —
+  `member1@acme.test` / `Passw0rd!` through the real login form lands on the
+  shell's Home tab with decoded claims correctly reflected in the nav.
+- *Protected routes are inaccessible without a valid session.* Met — a direct
+  visit to any shell route while logged out redirects to `/login` with a
+  `returnUrl`; `/approvals` additionally redirects a non-approver to `/home`
+  even when authenticated.
+- *Token refresh happens transparently via the interceptor.* Met — proved
+  live in Phase 2 (corrupted access token → silent refresh → retry succeeds)
+  and now also by `auth.interceptor.spec.ts`.
+- *API errors surface as clear user feedback, not silent failures.* Met — a
+  wrong password shows inline on the login form; anything else reaching the
+  interceptor chain surfaces as a toast; nothing is dropped silently.
 
 ---
 

@@ -138,6 +138,12 @@
   opacity: 0.7;
 }
 
+.field-error {
+  margin: 0.4rem 0 0;
+  font-size: 0.8rem;
+  color: var(--color-error);
+}
+
 .error-message {
   margin: 1rem 0 0;
   padding: 0.6rem 0.8rem;

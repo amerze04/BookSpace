@@ -40,8 +40,12 @@
             formControlName="email"
             placeholder="name@company.com"
             autocomplete="email"
+            (blur)="markTouched('email')"
           />
         </div>
+        @if (fieldError('email'); as message) {
+          <p class="field-error">{{ message }}</p>
+        }
 
         <label for="password">Password</label>
         <div class="input-with-icon">
@@ -61,8 +65,12 @@
             formControlName="password"
             placeholder="Your password"
             autocomplete="current-password"
+            (blur)="markTouched('password')"
           />
         </div>
+        @if (fieldError('password'); as message) {
+          <p class="field-error">{{ message }}</p>
+        }
 
         <!-- Static on purpose: password reset isn't in the PRD/any work package yet. -->
         <span class="forgot-password" aria-disabled="true">Forgot password?</span>
@@ -71,7 +79,7 @@
           <p class="error-message" role="alert">{{ message }}</p>
         }
 
-        <button type="submit" [disabled]="form.invalid || submitting()">
+        <button type="submit" [disabled]="submitting()">
           {{ submitting() ? 'Signing in…' : 'Sign in' }}
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path

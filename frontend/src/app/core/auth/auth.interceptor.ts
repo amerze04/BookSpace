@@ -2,6 +2,7 @@ import { HttpErrorResponse, HttpInterceptorFn, HttpRequest } from '@angular/comm
 import { inject } from '@angular/core';
 import { Router } from '@angular/router';
 import { catchError, switchMap, throwError } from 'rxjs';
+import { NotificationService } from '../notifications/notification.service';
 import { AuthService } from './auth.service';
 
 // Never try to silent-refresh a 401 from these — that 401 already IS the
@@ -12,6 +13,7 @@ const AUTH_ENDPOINTS = ['/auth/login', '/auth/refresh'];
 export const authInterceptor: HttpInterceptorFn = (request, next) => {
   const auth = inject(AuthService);
   const router = inject(Router);
+  const notifications = inject(NotificationService);
 
   const authorizedRequest = withBearerToken(request, auth.accessToken);
 
@@ -27,6 +29,7 @@ export const authInterceptor: HttpInterceptorFn = (request, next) => {
       return auth.refreshAccessToken().pipe(
         switchMap((newAccessToken) => next(withBearerToken(request, newAccessToken))),
         catchError((refreshError) => {
+          notifications.show('Your session has expired. Please sign in again.', 'info');
           router.navigateByUrl('/login');
           return throwError(() => refreshError);
         }),

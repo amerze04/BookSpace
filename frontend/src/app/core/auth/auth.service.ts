@@ -2,6 +2,7 @@ import { Injectable, computed, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, catchError, finalize, firstValueFrom, map, shareReplay, tap, throwError } from 'rxjs';
 import { environment } from '../../../environments/environment';
+import { skipErrorToast } from '../http/skip-error-toast';
 import { DecodedAccessToken, decodeAccessToken } from './jwt-decode';
 
 // Login and refresh both hand back this same shape — the backend's own name
@@ -36,8 +37,16 @@ export class AuthService {
   constructor(private readonly http: HttpClient) {}
 
   async login(email: string, password: string): Promise<void> {
+    // Skips the global toast: LoginComponent renders its own inline
+    // feedback (a top-of-form message, or per-field errors) for anything
+    // this call can fail with — a second, generic toast on top would be
+    // noise on top of the one failure this app already explains well.
     const response = await firstValueFrom(
-      this.http.post<IssuedTokens>(`${environment.apiBaseUrl}/auth/login`, { email, password }),
+      this.http.post<IssuedTokens>(
+        `${environment.apiBaseUrl}/auth/login`,
+        { email, password },
+        { context: skipErrorToast() },
+      ),
     );
     this.storeSession(response);
   }
@@ -51,7 +60,15 @@ export class AuthService {
 
     if (refreshToken) {
       try {
-        await firstValueFrom(this.http.post(`${environment.apiBaseUrl}/auth/logout`, { refreshToken }));
+        // Skips the global toast too: this failure is deliberately swallowed
+        // below regardless, so showing one first would contradict that.
+        await firstValueFrom(
+          this.http.post(
+            `${environment.apiBaseUrl}/auth/logout`,
+            { refreshToken },
+            { context: skipErrorToast() },
+          ),
+        );
       } catch {
         // Already logged out locally — nothing more to do.
       }
