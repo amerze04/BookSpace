@@ -1,0 +1,8 @@
+<div class="notification-stack">
+  @for (notification of notifications(); track notification.id) {
+    <div class="notification" [class.notification--info]="notification.kind === 'info'">
+      <p>{{ notification.message }}</p>
+      <button type="button" aria-label="Dismiss" (click)="dismiss(notification.id)">&times;</button>
+    </div>
+  }
+</div>
