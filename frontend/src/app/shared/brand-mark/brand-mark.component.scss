@@ -1,0 +1,24 @@
+:host {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.logo-mark {
+  width: 1.75rem;
+  height: 1.75rem;
+
+  path {
+    fill: var(--color-primary);
+  }
+
+  .accent {
+    fill: var(--color-accent);
+  }
+}
+
+.wordmark {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--color-text);
+}

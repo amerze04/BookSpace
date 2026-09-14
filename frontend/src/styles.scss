@@ -1,1 +1,37 @@
 /* You can add global styles to this file, and also import other style files */
+
+// Design tokens from design/BookSpace Visual Identity — Premium Burgundy.md.
+// Defined once, here, so every component references a name (var(--color-primary))
+// instead of a hex code — the value only ever needs to change in one place.
+:root {
+  --color-primary: #6b1835;
+  --color-primary-hover: #57112a;
+  --color-primary-soft: #f4e9ed;
+  --color-accent: #b07a8d;
+
+  --color-bg: #f7f4f3;
+  --color-surface: #ffffff;
+  --color-text: #1d171a;
+  --color-text-secondary: #6a6065;
+  --color-border: #e5d8dd;
+
+  --color-success: #2e8b57;
+  --color-warning: #c98900;
+  --color-error: #d63c3c;
+
+  --radius-md: 10px;
+  --radius-lg: 12px;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+}

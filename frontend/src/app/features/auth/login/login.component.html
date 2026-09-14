@@ -1,0 +1,90 @@
+<div class="login-page">
+  <section class="marketing">
+    <div class="brand">
+      <app-brand-mark />
+    </div>
+
+    <h1>Everything your team books in one place</h1>
+    <hr class="divider" />
+    <p>
+      Rooms, desks, vehicles, tools and more — a simpler way to manage the
+      resources that keep your business moving.
+    </p>
+  </section>
+
+  <section class="login-card-wrapper">
+    <div class="login-card">
+      <div class="brand brand--centered">
+        <app-brand-mark />
+      </div>
+
+      <h2>Welcome back</h2>
+      <p class="subtitle">Sign in to your BookSpace account</p>
+
+      <form [formGroup]="form" (ngSubmit)="submit()">
+        <label for="email">Email</label>
+        <div class="input-with-icon">
+          <svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M4 6h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1Zm0 2 8 6 8-6"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <input
+            id="email"
+            type="email"
+            formControlName="email"
+            placeholder="name@company.com"
+            autocomplete="email"
+          />
+        </div>
+
+        <label for="password">Password</label>
+        <div class="input-with-icon">
+          <svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M6 11V8a6 6 0 0 1 12 0v3M5 11h14a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1Z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <input
+            id="password"
+            type="password"
+            formControlName="password"
+            placeholder="Your password"
+            autocomplete="current-password"
+          />
+        </div>
+
+        <!-- Static on purpose: password reset isn't in the PRD/any work package yet. -->
+        <span class="forgot-password" aria-disabled="true">Forgot password?</span>
+
+        @if (errorMessage(); as message) {
+          <p class="error-message" role="alert">{{ message }}</p>
+        }
+
+        <button type="submit" [disabled]="form.invalid || submitting()">
+          {{ submitting() ? 'Signing in…' : 'Sign in' }}
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M5 12h14M13 6l6 6-6 6"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
+      </form>
+    </div>
+  </section>
+</div>
