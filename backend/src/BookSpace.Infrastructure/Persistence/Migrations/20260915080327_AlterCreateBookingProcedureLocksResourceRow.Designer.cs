@@ -4,6 +4,7 @@ using BookSpace.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace BookSpace.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(BookSpaceDbContext))]
-    partial class BookSpaceDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260915080327_AlterCreateBookingProcedureLocksResourceRow")]
+    partial class AlterCreateBookingProcedureLocksResourceRow
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -415,64 +418,6 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
                     b.ToTable("Organizations", null, t =>
                         {
                             t.HasCheckConstraint("CK_Organizations_Status", "[Status] IN ('Active','Suspended')");
-                        });
-                });
-
-            modelBuilder.Entity("BookSpace.Domain.Entities.RecurrenceCreationOperation", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasPrecision(0)
-                        .HasColumnType("datetime2(0)");
-
-                    b.Property<Guid>("CreatedByUserId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("IdempotencyKey")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
-                    b.Property<Guid>("OrgId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<Guid?>("RecurrenceRuleId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(10)
-                        .HasColumnType("nvarchar(10)");
-
-                    b.Property<DateTime>("UpdatedAtUtc")
-                        .HasPrecision(0)
-                        .HasColumnType("datetime2(0)");
-
-                    b.Property<Guid?>("UpdatedByUserId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<Guid>("UserId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.HasKey("Id")
-                        .HasName("PK_RecurrenceCreationOperations");
-
-                    b.HasIndex("CreatedByUserId");
-
-                    b.HasIndex("UpdatedByUserId");
-
-                    b.HasIndex("UserId");
-
-                    b.HasIndex("OrgId", "UserId", "IdempotencyKey")
-                        .IsUnique()
-                        .HasDatabaseName("UQ_RecurrenceCreationOperations_Org_User_Key");
-
-                    b.ToTable("RecurrenceCreationOperations", null, t =>
-                        {
-                            t.HasCheckConstraint("CK_RecurrenceCreationOperations_Status", "[Status] IN ('Creating','Active','Failed')");
                         });
                 });
 
@@ -897,36 +842,6 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
                         .HasForeignKey("UpdatedByUserId")
                         .OnDelete(DeleteBehavior.NoAction)
                         .HasConstraintName("FK_Organizations_UpdatedBy");
-                });
-
-            modelBuilder.Entity("BookSpace.Domain.Entities.RecurrenceCreationOperation", b =>
-                {
-                    b.HasOne("BookSpace.Domain.Entities.User", null)
-                        .WithMany()
-                        .HasForeignKey("CreatedByUserId")
-                        .OnDelete(DeleteBehavior.NoAction)
-                        .IsRequired()
-                        .HasConstraintName("FK_RecurrenceCreationOperations_CreatedBy");
-
-                    b.HasOne("BookSpace.Domain.Entities.Organization", null)
-                        .WithMany()
-                        .HasForeignKey("OrgId")
-                        .OnDelete(DeleteBehavior.NoAction)
-                        .IsRequired()
-                        .HasConstraintName("FK_RecurrenceCreationOperations_Organizations");
-
-                    b.HasOne("BookSpace.Domain.Entities.User", null)
-                        .WithMany()
-                        .HasForeignKey("UpdatedByUserId")
-                        .OnDelete(DeleteBehavior.NoAction)
-                        .HasConstraintName("FK_RecurrenceCreationOperations_UpdatedBy");
-
-                    b.HasOne("BookSpace.Domain.Entities.User", null)
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.NoAction)
-                        .IsRequired()
-                        .HasConstraintName("FK_RecurrenceCreationOperations_Users");
                 });
 
             modelBuilder.Entity("BookSpace.Domain.Entities.RecurrenceRule", b =>

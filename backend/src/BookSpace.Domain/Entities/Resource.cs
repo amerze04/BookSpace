@@ -34,6 +34,20 @@ public class Resource : IAuditable, ITenantOwned
     public DateTime UpdatedAtUtc { get; private set; }
     public Guid? UpdatedByUserId { get; private set; }
 
+    // Hardening pass. Optimistic concurrency, the same mechanism CLAUDE.md §5
+    // already uses on Bookings.RowVersion — added because SetRequiresApproval
+    // and ReplaceApprovers (FR-3.3's invariant, split across two endpoints)
+    // otherwise race: both read-check-mutate-save with no serialization
+    // between them, so two concurrent requests can each see the invariant
+    // satisfied under the *other's* about-to-be-superseded state and both
+    // commit, leaving RequiresApproval = true with an empty approver list.
+    // Every mutator here already calls Touch() — including ReplaceApprovers,
+    // which otherwise touches only the owned ResourceApprovers table — so
+    // every write that matters for this invariant issues an UPDATE against
+    // this row guarded by this token, and the loser gets
+    // DbUpdateConcurrencyException (already mapped to 409, same as Bookings).
+    public byte[] RowVersion { get; private set; } = Array.Empty<byte>();
+
     // EF Core materialization only — see Organization.cs for why this is needed.
     private Resource()
     {

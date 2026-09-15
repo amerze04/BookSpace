@@ -86,7 +86,7 @@ describe('AuthService', () => {
     expect(await second).toBe(accessToken2);
   });
 
-  it('clears the session when a refresh attempt fails', async () => {
+  it('clears the session when a refresh attempt fails with a terminal 401', async () => {
     const accessToken1 = buildFakeAccessToken({ sub: 'u1', email: 'member1@acme.test', orgId: 'org-1', [ROLE_CLAIM]: 'Member' });
     const loginPromise = service.login('member1@acme.test', 'Passw0rd!');
     httpMock.expectOne(`${API}/auth/login`).flush({ accessToken: accessToken1, expiresIn: 900, refreshToken: 'refresh-1' });
@@ -96,6 +96,144 @@ describe('AuthService', () => {
     httpMock.expectOne(`${API}/auth/refresh`).flush(null, { status: 401, statusText: 'Unauthorized' });
 
     await expect(refreshPromise).rejects.toBeTruthy();
+    expect(service.claims()).toBeNull();
+    expect(service.isAuthenticated()).toBe(false);
+  });
+
+  // Item 8: a refresh that fails because the network/server is unavailable
+  // says nothing about whether the refresh token itself is still good, so it
+  // must not be treated the same as the backend actually rejecting it.
+  it('keeps the session when a refresh attempt fails with a network error, not a 401', async () => {
+    const accessToken1 = buildFakeAccessToken({ sub: 'u1', email: 'member1@acme.test', orgId: 'org-1', [ROLE_CLAIM]: 'Member' });
+    const loginPromise = service.login('member1@acme.test', 'Passw0rd!');
+    httpMock.expectOne(`${API}/auth/login`).flush({ accessToken: accessToken1, expiresIn: 900, refreshToken: 'refresh-1' });
+    await loginPromise;
+
+    const refreshPromise = firstValueFrom(service.refreshAccessToken());
+    httpMock.expectOne(`${API}/auth/refresh`).error(new ProgressEvent('error'));
+
+    await expect(refreshPromise).rejects.toBeTruthy();
+    expect(localStorage.getItem('bookspace.accessToken')).toBe(accessToken1);
+    expect(localStorage.getItem('bookspace.refreshToken')).toBe('refresh-1');
+    expect(service.isAuthenticated()).toBe(true);
+  });
+
+  // Item 8, the 5xx/429 half of the same rule, checked separately since it's
+  // a different HttpErrorResponse shape than a network-level error.
+  it('keeps the session when a refresh attempt fails with a 503', async () => {
+    const accessToken1 = buildFakeAccessToken({ sub: 'u1', email: 'member1@acme.test', orgId: 'org-1', [ROLE_CLAIM]: 'Member' });
+    const loginPromise = service.login('member1@acme.test', 'Passw0rd!');
+    httpMock.expectOne(`${API}/auth/login`).flush({ accessToken: accessToken1, expiresIn: 900, refreshToken: 'refresh-1' });
+    await loginPromise;
+
+    const refreshPromise = firstValueFrom(service.refreshAccessToken());
+    httpMock.expectOne(`${API}/auth/refresh`).flush(null, { status: 503, statusText: 'Service Unavailable' });
+
+    await expect(refreshPromise).rejects.toBeTruthy();
+    expect(service.isAuthenticated()).toBe(true);
+  });
+
+  // Item 6: a refresh already in flight when logout() runs must not be able
+  // to write its result afterward and resurrect the session logout just
+  // ended — deterministic via the generation counter, no timing involved.
+  it('does not let a refresh that was already in flight resurrect the session after logout', async () => {
+    const accessToken1 = buildFakeAccessToken({ sub: 'u1', email: 'member1@acme.test', orgId: 'org-1', [ROLE_CLAIM]: 'Member' });
+    const loginPromise = service.login('member1@acme.test', 'Passw0rd!');
+    httpMock.expectOne(`${API}/auth/login`).flush({ accessToken: accessToken1, expiresIn: 900, refreshToken: 'refresh-1' });
+    await loginPromise;
+
+    const refreshPromise = firstValueFrom(service.refreshAccessToken());
+
+    const logoutPromise = service.logout();
+    httpMock.expectOne(`${API}/auth/logout`).flush(null);
+    await logoutPromise;
+
+    expect(localStorage.getItem('bookspace.accessToken')).toBeNull();
+
+    const accessToken2 = buildFakeAccessToken({ sub: 'u1', email: 'member1@acme.test', orgId: 'org-1', [ROLE_CLAIM]: 'Member' });
+    httpMock
+      .expectOne(`${API}/auth/refresh`)
+      .flush({ accessToken: accessToken2, expiresIn: 900, refreshToken: 'refresh-2' });
+
+    await expect(refreshPromise).rejects.toBeTruthy();
+    expect(localStorage.getItem('bookspace.accessToken')).toBeNull();
+    expect(localStorage.getItem('bookspace.refreshToken')).toBeNull();
+    expect(service.claims()).toBeNull();
+  });
+
+  // Item 5: two tabs share localStorage but each has its own AuthService
+  // instance. When another tab already holds the refresh lock, this tab must
+  // wait for that tab's result — signalled via the `storage` event a real
+  // second tab's localStorage write would fire — rather than making its own
+  // POST /auth/refresh with the same refresh token (which decisions/0011
+  // would see as reuse and revoke the whole family).
+  it('waits for a peer tab already holding the refresh lock instead of calling refresh itself', async () => {
+    const accessToken1 = buildFakeAccessToken({ sub: 'u1', email: 'member1@acme.test', orgId: 'org-1', [ROLE_CLAIM]: 'Member' });
+    const loginPromise = service.login('member1@acme.test', 'Passw0rd!');
+    httpMock.expectOne(`${API}/auth/login`).flush({ accessToken: accessToken1, expiresIn: 900, refreshToken: 'refresh-1' });
+    await loginPromise;
+
+    // A peer tab claims the lock a moment before this tab tries to refresh.
+    localStorage.setItem('bookspace.refreshLock', JSON.stringify({ id: 'peer-tab', acquiredAt: Date.now() }));
+
+    const resultPromise = firstValueFrom(service.refreshAccessToken());
+
+    httpMock.expectNone(`${API}/auth/refresh`);
+
+    // The peer tab finishes its own refresh and writes the outcome directly
+    // to the localStorage this tab shares with it, then the browser delivers
+    // the `storage` event this tab's dispatchEvent call stands in for.
+    const accessToken2 = buildFakeAccessToken({ sub: 'u1', email: 'member1@acme.test', orgId: 'org-1', [ROLE_CLAIM]: 'Member' });
+    localStorage.setItem('bookspace.accessToken', accessToken2);
+    localStorage.setItem('bookspace.refreshToken', 'refresh-2');
+    localStorage.removeItem('bookspace.refreshLock');
+    window.dispatchEvent(new StorageEvent('storage', { key: 'bookspace.accessToken', newValue: accessToken2 }));
+
+    expect(await resultPromise).toBe(accessToken2);
+    expect(service.isAuthenticated()).toBe(true);
+  });
+
+  // Item 5's other half: a peer tab that dies mid-refresh must not wedge this
+  // tab out of ever refreshing. Fake timers make the wait deterministic
+  // rather than a real 8-second sleep.
+  it('takes over and refreshes itself if the peer holding the lock never produces a result', async () => {
+    vi.useFakeTimers();
+    try {
+      const accessToken1 = buildFakeAccessToken({ sub: 'u1', email: 'member1@acme.test', orgId: 'org-1', [ROLE_CLAIM]: 'Member' });
+      const loginPromise = service.login('member1@acme.test', 'Passw0rd!');
+      httpMock.expectOne(`${API}/auth/login`).flush({ accessToken: accessToken1, expiresIn: 900, refreshToken: 'refresh-1' });
+      await loginPromise;
+
+      localStorage.setItem('bookspace.refreshLock', JSON.stringify({ id: 'peer-tab', acquiredAt: Date.now() }));
+
+      const resultPromise = firstValueFrom(service.refreshAccessToken());
+      httpMock.expectNone(`${API}/auth/refresh`);
+
+      await vi.advanceTimersByTimeAsync(9_000);
+
+      const accessToken2 = buildFakeAccessToken({ sub: 'u1', email: 'member1@acme.test', orgId: 'org-1', [ROLE_CLAIM]: 'Member' });
+      httpMock
+        .expectOne(`${API}/auth/refresh`)
+        .flush({ accessToken: accessToken2, expiresIn: 900, refreshToken: 'refresh-2' });
+
+      expect(await resultPromise).toBe(accessToken2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Cross-tab sync outside a refresh entirely: a logout in another tab must
+  // end this tab's session too, since they share the same localStorage.
+  it('clears its own session when another tab logs out', async () => {
+    const accessToken1 = buildFakeAccessToken({ sub: 'u1', email: 'member1@acme.test', orgId: 'org-1', [ROLE_CLAIM]: 'Member' });
+    const loginPromise = service.login('member1@acme.test', 'Passw0rd!');
+    httpMock.expectOne(`${API}/auth/login`).flush({ accessToken: accessToken1, expiresIn: 900, refreshToken: 'refresh-1' });
+    await loginPromise;
+
+    localStorage.removeItem('bookspace.accessToken');
+    localStorage.removeItem('bookspace.refreshToken');
+    window.dispatchEvent(new StorageEvent('storage', { key: 'bookspace.accessToken', newValue: null }));
+
     expect(service.claims()).toBeNull();
     expect(service.isAuthenticated()).toBe(false);
   });

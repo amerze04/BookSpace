@@ -55,6 +55,9 @@ internal sealed class ResourceConfiguration : IEntityTypeConfiguration<Resource>
         builder.Property(r => r.CreatedByUserId).IsRequired();
         builder.Property(r => r.UpdatedAtUtc).IsRequired();
 
+        // Hardening pass — see Resource.RowVersion's own header for why.
+        builder.Property(r => r.RowVersion).IsRowVersion();
+
         // Owned collection over the private _approverAssignments backing
         // field — same technique as User.Roles in UserConfiguration.cs.
         builder.OwnsMany<Resource.ApproverAssignment>("_approverAssignments", nav =>

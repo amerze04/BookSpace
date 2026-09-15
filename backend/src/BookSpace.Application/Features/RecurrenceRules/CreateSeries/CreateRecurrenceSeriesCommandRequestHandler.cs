@@ -77,31 +77,47 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
 
         var nowUtc = _clock.UtcNow;
 
-        var rule = new RecurrenceRule(
-            Guid.NewGuid(),
-            resource.OrgId,
-            resource.Id,
-            userId,
-            request.Frequency,
-            request.IntervalValue,
-            request.LocalStartTime,
-            request.LocalEndTime,
-            request.StartDate,
-            request.EndDate,
-            request.OccurrenceCount,
-            resource.TimeZoneId,
-            userId,
-            nowUtc);
+        // Hardening pass, item 11: with no key, this is exactly the rule this
+        // handler always minted — a fresh RecurrenceRule, persisted up front
+        // because Bookings.RecurrenceRuleId is a real FK. With a key, the same
+        // rule may already exist from a prior attempt (crashed mid-series, or
+        // simply retried after its response never arrived) — see
+        // GetOrCreateRuleAsync for how that is resolved to the *same* row
+        // rather than a second one.
+        RecurrenceCreationOperation? operation = null;
+        RecurrenceRule rule;
 
-        // Persisted up front: Bookings.RecurrenceRuleId is a real FK, so
-        // every occurrence created below needs this row to already exist.
-        // If every occurrence turns out to be skipped or refused, the rule
-        // is removed again before the 422 is thrown (below) — see that
-        // branch and IRecurrenceRuleRepository.Remove for why the delete is
-        // safe: nothing else in the database ever comes to reference this
-        // row unless an occurrence is actually created.
-        _recurrenceRules.Add(rule);
-        await _recurrenceRules.SaveChangesAsync(cancellationToken);
+        if (request.IdempotencyKey is { Length: > 0 } idempotencyKey)
+        {
+            (rule, operation) = await GetOrCreateRuleAsync(
+                idempotencyKey, resource, request, userId, nowUtc, cancellationToken);
+        }
+        else
+        {
+            rule = new RecurrenceRule(
+                Guid.NewGuid(),
+                resource.OrgId,
+                resource.Id,
+                userId,
+                request.Frequency,
+                request.IntervalValue,
+                request.LocalStartTime,
+                request.LocalEndTime,
+                request.StartDate,
+                request.EndDate,
+                request.OccurrenceCount,
+                resource.TimeZoneId,
+                userId,
+                nowUtc);
+
+            // If every occurrence turns out to be skipped or refused, the
+            // rule is removed again before the 422 is thrown (below) — see
+            // that branch and IRecurrenceRuleRepository.Remove for why the
+            // delete is safe: nothing else in the database ever comes to
+            // reference this row unless an occurrence is actually created.
+            _recurrenceRules.Add(rule);
+            await _recurrenceRules.SaveChangesAsync(cancellationToken);
+        }
 
         var zone = _timeZones.GetResourceTimeZone(resource.TimeZoneId);
         var occurrences = RecurrenceExpansion.Expand(rule, zone);
@@ -132,6 +148,26 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
             : [];
         var booked = span is { } bookedSpan
             ? await _availability.FindBookedQuantitiesAsync(resource.Id, bookedSpan, cancellationToken)
+            : [];
+
+        // Bug fix (found while verifying the hardening pass, not part of it):
+        // on a resume/replay, `booked` above already includes this same
+        // series' own occurrences committed by an earlier attempt — real
+        // Bookings rows now. Evaluating an occurrence's eligibility against a
+        // snapshot that counts its *own* prior claim makes a tight-capacity
+        // resource (an exclusive room, or a pool exactly filled by this
+        // series) refuse every already-created occurrence as SlotUnavailable/
+        // CapacityExceeded on retry — which, since nothing would then be
+        // Created, would have gone on to try to delete a RecurrenceRule that
+        // those very bookings still reference (the same failure class
+        // RecurrenceSeriesIdempotencyEndpointTests's transaction bug produced,
+        // from a different cause). Only queried for a keyed request — a
+        // no-key request never has a prior attempt to collide with, and the
+        // query then simply returns nothing.
+        var alreadyBookedIntervals = operation is not null
+            ? (await _bookings.FindOccurrencesToCancelAsync(rule.Id, nowUtc, cancellationToken))
+                .Select(b => (b.StartsAtUtc, b.EndsAtUtc))
+                .ToHashSet()
             : [];
 
         var reports = new List<RecurrenceOccurrenceReport>(occurrences.Count);
@@ -183,19 +219,33 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
                     continue;
                 }
 
-                var eligibility = BookingEligibility.Evaluate(
-                    resource, interval, request.Quantity, zone, blackouts, booked);
-
-                if (eligibility != BookingEligibilityResult.Eligible)
+                // Bug fix: an occurrence this same rule already committed
+                // skips the advisory pre-check entirely rather than being
+                // evaluated against a `booked` snapshot that includes its own
+                // prior claim — see this method's header comment above
+                // `alreadyBookedIntervals`. Its availability window and
+                // blackout status were already validated when it was first
+                // created; re-checking them now would only risk a *different*
+                // wrong answer (a blackout added since then would refuse an
+                // occurrence decision 0001's cascade should instead have
+                // cancelled, which is that decision's job, not this retry's).
+                if (!alreadyBookedIntervals.Contains((interval.StartUtc, interval.EndUtc)))
                 {
-                    reports.Add(
-                        RecurrenceOccurrenceReport.ForRefused(occurrence.OccurrenceDate, ReasonCodeFor(eligibility)));
-                    continue;
+                    var eligibility = BookingEligibility.Evaluate(
+                        resource, interval, request.Quantity, zone, blackouts, booked);
+
+                    if (eligibility != BookingEligibilityResult.Eligible)
+                    {
+                        reports.Add(
+                            RecurrenceOccurrenceReport.ForRefused(
+                                occurrence.OccurrenceDate, ReasonCodeFor(eligibility)));
+                        continue;
+                    }
                 }
 
                 var (bookingId, reasonCode) = await CreateOccurrenceAsync(
-                    resource, rule.Id, userId, interval, request.Quantity, request.Title, status, expiryHours,
-                    nowUtc, cancellationToken);
+                    resource, rule.Id, userId, occurrence.OccurrenceDate, interval, request.Quantity, request.Title,
+                    status, expiryHours, nowUtc, cancellationToken);
 
                 reports.Add(bookingId is { } id
                     ? RecurrenceOccurrenceReport.ForCreated(occurrence.OccurrenceDate, id)
@@ -211,9 +261,16 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
             // the series in a state worth notifying about, which is exactly
             // the judgment call an unexpected exception cannot safely make —
             // the normal, no-exception path below still flushes them.
+            //
+            // Hardening pass, item 11: an operation row is deliberately left
+            // Creating here, not marked Failed — a genuinely unexpected
+            // exception (a DB error, a bug) says nothing about whether the
+            // occurrences already committed are still good, so a retry
+            // should still resume this same rule rather than be told to
+            // start over.
             if (!reports.Any(r => r.Status == RecurrenceOccurrenceReportStatus.Created))
             {
-                await RemoveOrphanedRuleAsync(rule, cancellationToken);
+                await RemoveOrphanedRuleAsync(rule, operation, nowUtc, cancellationToken);
             }
 
             throw;
@@ -229,7 +286,7 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
             // reference this rule (that is the condition for reaching this
             // branch at all), and pendingSkippedNotifications was never
             // added to the context, so there is nothing else to undo.
-            await RemoveOrphanedRuleAsync(rule, cancellationToken);
+            await RemoveOrphanedRuleAsync(rule, operation, nowUtc, cancellationToken);
 
             throw new NoOccurrencesCreatedException(reports);
         }
@@ -244,7 +301,132 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
             await _bookings.SaveChangesAsync(cancellationToken);
         }
 
+        // Hardening pass, item 11: at least one occurrence is real, so a
+        // retry of this key from here on is a replay, not a resume.
+        if (operation is not null)
+        {
+            operation.MarkActive(nowUtc);
+            await _recurrenceRules.SaveChangesAsync(cancellationToken);
+        }
+
         return new CreateRecurrenceSeriesCommandResponse(rule.Id, reports);
+    }
+
+    // Hardening pass, item 11. Resolves an idempotency key to the rule a
+    // retry should reuse:
+    //
+    //   - never seen before, or its one prior attempt Failed (compensated
+    //     away, nothing to resume) -> mint a fresh rule, exactly as a
+    //     request with no key at all, and record the operation against it;
+    //   - Creating or Active -> reuse the same rule. The occurrence loop
+    //     needs no special-casing for "already done" vs "not yet attempted"
+    //     because CreateOccurrenceAsync derives each occurrence's booking id
+    //     from (rule.Id, occurrence date): an occurrence already committed
+    //     recomputes the *same* id, so dbo.CreateBooking's own PK-violation
+    //     read-back (BookingRepository.CreateAsync, unchanged) reports it
+    //     Created again instead of inserting a duplicate.
+    private async Task<(RecurrenceRule Rule, RecurrenceCreationOperation Operation)> GetOrCreateRuleAsync(
+        string idempotencyKey,
+        Resource resource,
+        CreateRecurrenceSeriesCommandRequest request,
+        Guid userId,
+        DateTime nowUtc,
+        CancellationToken cancellationToken)
+    {
+        var operation = await _recurrenceRules.FindOperationAsync(
+            resource.OrgId, userId, idempotencyKey, cancellationToken);
+
+        if (operation is { RecurrenceRuleId: { } existingRuleId })
+        {
+            var existingRule = await _recurrenceRules.FindByIdAsync(existingRuleId, cancellationToken)
+                ?? throw new InvalidOperationException(
+                    $"Idempotency operation for key '{idempotencyKey}' names RecurrenceRuleId {existingRuleId}, "
+                    + "but no such rule exists.");
+
+            // Bug fix: an idempotency key is scoped to (OrgId, UserId), not to
+            // a resource — nothing stops a client from reusing one with a
+            // different ResourceId, whether by a genuine bug or by two
+            // unrelated requests accidentally sharing a key. Resuming the
+            // wrong resource's rule would go on to create Bookings whose
+            // ResourceId is *this* request's resource while RecurrenceRuleId
+            // points at a rule bound to a different one — nothing in the
+            // schema catches that mismatch (unlike the same-org composite FKs
+            // decisions 0006/0014/0025 use for OrgId). Treated as a fresh
+            // request rather than a hard error: the client asked to create a
+            // series on this resource, and "the key was already used for
+            // something else" is this handler's problem to route around, not
+            // the caller's to diagnose.
+            if (existingRule.ResourceId == resource.Id)
+            {
+                return (existingRule, operation);
+            }
+        }
+
+        var rule = new RecurrenceRule(
+            Guid.NewGuid(),
+            resource.OrgId,
+            resource.Id,
+            userId,
+            request.Frequency,
+            request.IntervalValue,
+            request.LocalStartTime,
+            request.LocalEndTime,
+            request.StartDate,
+            request.EndDate,
+            request.OccurrenceCount,
+            resource.TimeZoneId,
+            userId,
+            nowUtc);
+
+        _recurrenceRules.Add(rule);
+
+        if (operation is null)
+        {
+            var newOperation = new RecurrenceCreationOperation(
+                Guid.NewGuid(), resource.OrgId, userId, idempotencyKey, rule.Id, nowUtc);
+            _recurrenceRules.AddOperation(newOperation);
+
+            // Bug fix, item 11's own found gap: two literally-simultaneous
+            // first-time requests for this key both got here (both saw
+            // "never seen before" above), and only one insert can win
+            // UQ_RecurrenceCreationOperations_Org_User_Key. The loser detaches
+            // its own attempt and resumes the winner's row instead — an
+            // ordinary idempotent resume, not a fault, which is why this
+            // reports the outcome as a bool rather than letting the unique
+            // violation surface as an unhandled 500 for the one feature whose
+            // whole point is safe concurrent retries.
+            if (await _recurrenceRules.TrySaveNewOperationAsync(cancellationToken))
+            {
+                return (rule, newOperation);
+            }
+
+            _recurrenceRules.Remove(rule);
+            _recurrenceRules.RemoveOperation(newOperation);
+
+            var winnerOperation = await _recurrenceRules.FindOperationAsync(
+                    resource.OrgId, userId, idempotencyKey, cancellationToken)
+                ?? throw new InvalidOperationException(
+                    $"Lost the insert race for idempotency key '{idempotencyKey}', but no winning row was found.");
+            var winnerRuleId = winnerOperation.RecurrenceRuleId
+                ?? throw new InvalidOperationException(
+                    $"Idempotency operation for key '{idempotencyKey}' won the insert race but names no "
+                    + "RecurrenceRuleId.");
+            var winnerRule = await _recurrenceRules.FindByIdAsync(winnerRuleId, cancellationToken)
+                ?? throw new InvalidOperationException(
+                    $"Idempotency operation for key '{idempotencyKey}' names RecurrenceRuleId {winnerRuleId}, "
+                    + "but no such rule exists.");
+
+            return (winnerRule, winnerOperation);
+        }
+
+        // A retry of a Failed operation: its one prior attempt reserved
+        // nothing and was compensated away, so this starts over. No race to
+        // lose here — this row already exists, so this is an UPDATE, not an
+        // INSERT racing UQ_RecurrenceCreationOperations_Org_User_Key.
+        operation.RestartWith(rule.Id, nowUtc);
+        await _recurrenceRules.SaveChangesAsync(cancellationToken);
+
+        return (rule, operation);
     }
 
     // The smallest interval covering every occurrence RecurrenceExpansion
@@ -276,8 +458,16 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
     // neither can drift from the other. Safe unconditionally, per the
     // all-refused branch's own comment: reachable only when no Booking
     // exists yet to reference this rule.
-    private async Task RemoveOrphanedRuleAsync(RecurrenceRule rule, CancellationToken cancellationToken)
+    //
+    // Hardening pass, item 11: the operation, if any, is marked Failed
+    // *before* the rule is removed — RecurrenceCreationOperation carries no
+    // FK to RecurrenceRules precisely so this ordering is possible (clearing
+    // the reference first, deleting the row second), rather than the two
+    // having to happen atomically some other way.
+    private async Task RemoveOrphanedRuleAsync(
+        RecurrenceRule rule, RecurrenceCreationOperation? operation, DateTime nowUtc, CancellationToken cancellationToken)
     {
+        operation?.MarkFailed(nowUtc);
         _recurrenceRules.Remove(rule);
         await _recurrenceRules.SaveChangesAsync(cancellationToken);
     }
@@ -332,6 +522,7 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
         Resource resource,
         Guid recurrenceRuleId,
         Guid userId,
+        DateOnly occurrenceDate,
         UtcInterval interval,
         int quantity,
         string? title,
@@ -340,7 +531,11 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
         DateTime nowUtc,
         CancellationToken cancellationToken)
     {
-        var bookingId = Guid.NewGuid();
+        // Hardening pass, item 11: deterministic, not Guid.NewGuid(). See
+        // GetOrCreateRuleAsync's header for why this one change is what makes
+        // resuming or replaying an idempotent request need no other special
+        // casing in this loop.
+        var bookingId = DeterministicOccurrenceBookingId(recurrenceRuleId, occurrenceDate);
 
         var approval = new ApprovalRequest(
             Guid.NewGuid(),
@@ -378,17 +573,30 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
                     ?? throw new InvalidOperationException(
                         "dbo.CreateBooking reported Created with no ActualStatus.");
 
-                if (actualStatus == BookingStatus.Pending)
+                // Hardening pass, item 11: WasAlreadyCreated means this
+                // occurrence's booking already existed — a prior attempt
+                // against this same idempotency key got this far and
+                // committed it, approval request and notifications
+                // included. Staging them again would insert a second
+                // ApprovalRequest/Notification for a booking that can only
+                // legitimately have one, hitting UQ_Notifications_Once for
+                // exactly the reason that constraint exists (CLAUDE.md §7).
+                // Nothing here was newly created, so there is nothing new
+                // to save.
+                if (!outcome.WasAlreadyCreated)
                 {
-                    _bookings.AddApprovalRequest(approval);
-                    _bookings.AddNotifications(pendingNotifications);
-                }
-                else
-                {
-                    _bookings.AddNotifications(confirmedNotifications);
-                }
+                    if (actualStatus == BookingStatus.Pending)
+                    {
+                        _bookings.AddApprovalRequest(approval);
+                        _bookings.AddNotifications(pendingNotifications);
+                    }
+                    else
+                    {
+                        _bookings.AddNotifications(confirmedNotifications);
+                    }
 
-                await _bookings.SaveChangesAsync(token);
+                    await _bookings.SaveChangesAsync(token);
+                }
 
                 return ((Guid?)bookingId, (string?)null);
             },
@@ -417,6 +625,24 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
             .Select(approverId => Notification.ForBooking(
                 Guid.NewGuid(), bookingId, approverId, NotificationKind.ApprovalRequested, nowUtc, userId, nowUtc))
             .ToList();
+    }
+
+    // Hardening pass, item 11. Stable across processes and across retries:
+    // the same (rule, occurrence date) pair always hashes to the same Guid,
+    // which is the one property this needs — it is never decoded back into
+    // its inputs, so which hash or which byte layout is used does not matter
+    // beyond that stability. Two different rules can never collide into the
+    // same occurrence's id, since the rule id is part of what is hashed.
+    private static Guid DeterministicOccurrenceBookingId(Guid recurrenceRuleId, DateOnly occurrenceDate)
+    {
+        Span<byte> input = stackalloc byte[16 + sizeof(int)];
+        recurrenceRuleId.TryWriteBytes(input);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(input[16..], occurrenceDate.DayNumber);
+
+        Span<byte> hash = stackalloc byte[32];
+        System.Security.Cryptography.SHA256.HashData(input, hash);
+
+        return new Guid(hash[..16]);
     }
 
     private static string ReasonCodeFor(BookingEligibilityResult eligibility) => eligibility switch

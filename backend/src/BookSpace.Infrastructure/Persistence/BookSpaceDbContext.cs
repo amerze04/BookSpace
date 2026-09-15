@@ -35,6 +35,7 @@ public class BookSpaceDbContext : DbContext
     public DbSet<AvailabilityWindow> AvailabilityWindows => Set<AvailabilityWindow>();
     public DbSet<BlackoutPeriod> BlackoutPeriods => Set<BlackoutPeriod>();
     public DbSet<RecurrenceRule> RecurrenceRules => Set<RecurrenceRule>();
+    public DbSet<RecurrenceCreationOperation> RecurrenceCreationOperations => Set<RecurrenceCreationOperation>();
     public DbSet<Booking> Bookings => Set<Booking>();
     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
     public DbSet<Notification> Notifications => Set<Notification>();
@@ -68,6 +69,10 @@ public class BookSpaceDbContext : DbContext
         // WP-5 Phase 2's cancel endpoint — RecurrenceRules was reachable by id
         // alone until now.
         modelBuilder.Entity<RecurrenceRule>().HasQueryFilter(r => r.OrgId == _currentTenant.OrgId);
+        // Hardening pass, item 11: built tenant-scoped from the start, the
+        // same three mechanisms as every table above rather than the gap
+        // decision 0025 had to close after the fact for RecurrenceRules.
+        modelBuilder.Entity<RecurrenceCreationOperation>().HasQueryFilter(o => o.OrgId == _currentTenant.OrgId);
 
         // CLAUDE.md §4.3: every instant is datetime2(0)/time(0) — set once here
         // instead of a HasPrecision(0) call on every DateTime/TimeOnly property

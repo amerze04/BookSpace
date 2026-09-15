@@ -16,6 +16,37 @@ public interface IRecurrenceRuleRepository
 {
     void Add(RecurrenceRule rule);
 
+    // ---- Idempotent creation (hardening pass, item 11) ---------------------
+
+    // Tracked: FindOperationAsync's caller mutates the row it returns
+    // (MarkActive/MarkFailed/RestartWith) and saves it in the same unit of
+    // work as everything else the handler does up front.
+    Task<RecurrenceCreationOperation?> FindOperationAsync(
+        Guid orgId, Guid userId, string idempotencyKey, CancellationToken cancellationToken);
+
+    void AddOperation(RecurrenceCreationOperation operation);
+
+    // Bug fix, item 11's own found gap: the detach half of AddOperation, for
+    // an Added-but-never-saved operation this same request loses a race over
+    // (see TrySaveNewOperationAsync). Same shape as Remove(RecurrenceRule).
+    void RemoveOperation(RecurrenceCreationOperation operation);
+
+    // The tracked rule a resume/replay reuses instead of minting a new one.
+    // Tenant-filtered like every other read here, though in practice the
+    // caller already knows this id came from a same-tenant operation row.
+    Task<RecurrenceRule?> FindByIdAsync(Guid recurrenceRuleId, CancellationToken cancellationToken);
+
+    // Bug fix, item 11's own found gap: SaveChangesAsync's own twin for the
+    // one call site where a failure is an expected outcome rather than a
+    // fault — two literally-simultaneous first-time requests for the same
+    // idempotency key, racing to insert the same (OrgId, UserId,
+    // IdempotencyKey) row. True on an ordinary successful save; false only
+    // when this attempt lost that race to UQ_RecurrenceCreationOperations_Org_User_Key,
+    // in which case the caller detaches what it staged (Remove /
+    // RemoveOperation) and resumes the winner's row instead, exactly as an
+    // explicit retry against an existing operation already does.
+    Task<bool> TrySaveNewOperationAsync(CancellationToken cancellationToken);
+
     // ---- The cancel (WP-5 Phase 2, FR-5.3, decision 0002 reapplied) ----
 
     // The tracked series, for cancellation — same shape as

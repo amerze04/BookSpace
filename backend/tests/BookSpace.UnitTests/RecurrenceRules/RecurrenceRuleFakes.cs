@@ -27,6 +27,62 @@ internal sealed class FakeRecurrenceRuleRepository : IRecurrenceRuleRepository
 
     public void Remove(RecurrenceRule rule) => Removed = rule;
 
+    // ---- Idempotent creation (hardening pass, item 11) ---------------------
+
+    // Set by a test to simulate a prior attempt against this key — Creating
+    // (resume), Active (replay) or absent (first attempt / a Failed retry,
+    // which the test simulates by simply leaving this null).
+    public RecurrenceCreationOperation? ExistingOperation { get; set; }
+
+    // What FindByIdAsync hands back when GetOrCreateRuleAsync resolves an
+    // existing operation to a rule it needs to reload.
+    public RecurrenceRule? ExistingRule { get; set; }
+
+    public RecurrenceCreationOperation? AddedOperation { get; private set; }
+
+    public RecurrenceCreationOperation? RemovedOperation { get; private set; }
+
+    // Bug fix, item 11's own found gap: false simulates two concurrent
+    // first-time requests racing UQ_RecurrenceCreationOperations_Org_User_Key
+    // and this attempt losing — a test sets this alongside ExistingOperation/
+    // ExistingRule to describe what the "winner" it should resume looks like.
+    // True (the default) is every test written before this fix, where the
+    // insert always succeeds.
+    public bool SaveNewOperationSucceeds { get; set; } = true;
+
+    private int _findOperationCallCount;
+
+    public Task<RecurrenceCreationOperation?> FindOperationAsync(
+        Guid orgId, Guid userId, string idempotencyKey, CancellationToken cancellationToken)
+    {
+        _findOperationCallCount++;
+
+        // A lost-race test sets ExistingOperation to the *winner's* row but
+        // needs the *first* lookup (before this attempt tries its own insert)
+        // to still see "nothing yet" — otherwise GetOrCreateRuleAsync would
+        // resume the winner immediately and never reach TrySaveNewOperationAsync
+        // at all, which is exactly the code path this is for testing.
+        if (!SaveNewOperationSucceeds && _findOperationCallCount == 1)
+        {
+            return Task.FromResult<RecurrenceCreationOperation?>(null);
+        }
+
+        return Task.FromResult(ExistingOperation);
+    }
+
+    public void AddOperation(RecurrenceCreationOperation operation) => AddedOperation = operation;
+
+    public void RemoveOperation(RecurrenceCreationOperation operation) => RemovedOperation = operation;
+
+    public Task<RecurrenceRule?> FindByIdAsync(Guid recurrenceRuleId, CancellationToken cancellationToken) =>
+        Task.FromResult(ExistingRule);
+
+    public Task<bool> TrySaveNewOperationAsync(CancellationToken cancellationToken)
+    {
+        SaveChangesCount++;
+        return Task.FromResult(SaveNewOperationSucceeds);
+    }
+
     // ---- The cancel (WP-5 Phase 2) ----
 
     // What FindForCancellationAsync hands back — null is the "not visible to

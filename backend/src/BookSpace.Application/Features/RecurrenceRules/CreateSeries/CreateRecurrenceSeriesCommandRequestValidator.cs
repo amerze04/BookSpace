@@ -1,3 +1,4 @@
+using BookSpace.Domain.Enums;
 using FluentValidation;
 
 namespace BookSpace.Application.Features.RecurrenceRules.CreateSeries;
@@ -15,29 +16,27 @@ public sealed class CreateRecurrenceSeriesCommandRequestValidator
     // rather than once per occurrence.
     public const int MaxTitleLength = 200;
 
-    // Hardening pass. Both bounds exist to keep a malformed request out of
-    // RecurrenceRule's constructor and RecurrenceExpansion's loop entirely,
-    // rather than to express a product rule of their own — decision 0007's
-    // two-year cap is the actual ceiling either ends up enforcing.
-    public const int MaxIntervalValue = 366;
-    public const int MaxOccurrenceCount = 730;
+    // Bug fix (item 12): this file used to bound IntervalValue and
+    // OccurrenceCount separately (<= 366, <= 730) as a proxy for decision
+    // 0007's two-year cap, applied to one field at a time rather than to what
+    // the two actually imply together — so a perfectly legal series (Daily,
+    // IntervalValue 400, OccurrenceCount 2: two occurrences 400 days apart,
+    // comfortably inside two years) was rejected solely because 400 > 366,
+    // never because it actually violated the cap. IsOccurrenceCountWithinMaxSpan
+    // below replaces that proxy with the real check — the identical
+    // arithmetic RecurrenceRule's own constructor uses for
+    // CK_RecurrenceRules_MaxSpan — so what gets rejected is now exactly "the
+    // span this implies is too long", nothing narrower and nothing looser.
+    // Each field still gets its own GreaterThan(0), restating the domain's
+    // positivity guard as a 400 rather than the constructor's
+    // ArgumentOutOfRangeException.
 
-    // The latest StartDate that cannot, combined with the two bounds above,
-    // ever make RecurrenceRule's arithmetic step past DateOnly's own year-9999
-    // ceiling — computed rather than a guessed constant, so it stays correct
-    // if either bound above changes. Weekly is the worst case among the three
-    // frequencies: it multiplies steps by 7 days, where Daily and Monthly
-    // multiply by 1.
-    private static readonly DateOnly MaxStartDate = ComputeMaxStartDate();
-
-    private static DateOnly ComputeMaxStartDate()
-    {
-        var maxSteps = (long)MaxIntervalValue * (MaxOccurrenceCount - 1);
-        var maxDays = maxSteps * 7;
-        var marginYears = (int)(maxDays / 365) + 10; // +10 years of calendar slack
-
-        return DateOnly.MaxValue.AddYears(-marginYears);
-    }
+    // The latest StartDate the EndDate-bound path's IsWithinMaxSpan can
+    // safely call AddYears(2) against without itself overflowing DateOnly —
+    // a fixed, generous margin, not derived from IntervalValue/OccurrenceCount
+    // now that the real ceiling is the span check below rather than either of
+    // those fields alone.
+    private static readonly DateOnly MaxStartDate = DateOnly.MaxValue.AddYears(-10);
 
     public CreateRecurrenceSeriesCommandRequestValidator()
     {
@@ -46,39 +45,25 @@ public sealed class CreateRecurrenceSeriesCommandRequestValidator
             .WithMessage("ResourceId is required.");
 
         // **Hardening pass.** Bounds StartDate itself, independently of
-        // EndDate/OccurrenceCount: RecurrenceRule.ComputeImpliedEndDate's
-        // OccurrenceCount branch calls DateOnly.AddDays/AddMonths on
-        // StartDate stepped forward by up to MaxIntervalValue *
-        // (MaxOccurrenceCount - 1) days — legal under both bounds above, but
-        // still enough to overflow DateOnly's year-9999 ceiling if StartDate
-        // itself is already implausibly far in the future. IsWithinMaxSpan
-        // only protects the EndDate branch; this protects the other one, and
-        // both amount to the same thing IntervalValue/OccurrenceCount's own
-        // hardening does — keeping the constructor's arithmetic from ever
-        // running past the type it computes in.
+        // EndDate/OccurrenceCount: a StartDate already implausibly close to
+        // DateOnly's year-9999 ceiling would make IsWithinMaxSpan and
+        // IsOccurrenceCountWithinMaxSpan's own AddYears(2)/AddDays/AddMonths
+        // calls the thing that overflows, rather than the domain constructor
+        // they exist to keep from ever being reached with bad input.
         RuleFor(c => c.StartDate)
             .LessThanOrEqualTo(MaxStartDate)
             .WithMessage($"StartDate must not be after {MaxStartDate:yyyy-MM-dd}.");
 
         // CK_RecurrenceRules_Interval, restated as a per-field message so it
         // is a 400 rather than a 500 from the RecurrenceRule constructor's
-        // ArgumentOutOfRangeException.
-        //
-        // **Hardening pass.** The upper bound is new: nothing previously
-        // stopped an IntervalValue large enough that
-        // RecurrenceRule.StepDate's underlying DateOnly.AddDays/AddMonths
-        // call throws ArgumentOutOfRangeException — unmapped by
-        // GlobalExceptionHandler, so a plainly-invalid request reached the
-        // client as a 500. 366 comfortably covers "every N days/weeks/months"
-        // any admin would plausibly type; decision 0007's two-year cap makes
-        // anything larger meaningless regardless, since it could never
-        // produce a second occurrence within range. Plain ValidationFailed
-        // 400, no new reason code — the same precedent decision 0015 sets for
-        // an over-long availability range: this is a malformed request, not a
-        // domain refusal.
+        // ArgumentOutOfRangeException. No upper bound here any more (item 12)
+        // — IsOccurrenceCountWithinMaxSpan below is what actually protects
+        // RecurrenceRule.StepDate's DateOnly.AddDays/AddMonths call from
+        // overflow, and it does so from the real two-year cap rather than a
+        // guess at this one field's plausible range.
         RuleFor(c => c.IntervalValue)
-            .InclusiveBetween(1, MaxIntervalValue)
-            .WithMessage($"IntervalValue must be between 1 and {MaxIntervalValue}.");
+            .GreaterThan(0)
+            .WithMessage("IntervalValue must be greater than zero.");
 
         // Not backed by a DB constraint (RecurrenceRule.cs explains why) but
         // restated here for the same reason as the interval: a 400 naming the
@@ -94,17 +79,29 @@ public sealed class CreateRecurrenceSeriesCommandRequestValidator
             .WithMessage("Exactly one of EndDate or OccurrenceCount must be set.")
             .OverridePropertyName("EndDate");
 
-        // **Hardening pass.** The upper bound is new, for the same reason as
-        // IntervalValue's: an unbounded OccurrenceCount lets
-        // RecurrenceExpansion.Expand loop far past anything reasonable before
-        // either exhausting memory or hitting the same DateOnly overflow.
-        // 730 is decision 0007's own two-year cap expressed as the ceiling of
-        // "daily, every day, for two years" — comfortably above any legitimate
-        // weekly/monthly count for the same span.
         RuleFor(c => c.OccurrenceCount)
-            .InclusiveBetween(1, MaxOccurrenceCount)
+            .GreaterThan(0)
             .When(c => c.OccurrenceCount is not null)
-            .WithMessage($"OccurrenceCount must be between 1 and {MaxOccurrenceCount}.");
+            .WithMessage("OccurrenceCount must be greater than zero.");
+
+        // Bug fix (item 12). Decision 0007's two-year span cap, restated for
+        // the OccurrenceCount-bound path exactly as IsWithinMaxSpan restates
+        // it below for the EndDate-bound one: without this, an IntervalValue/
+        // OccurrenceCount pair whose implied span runs past the cap reaches
+        // RecurrenceRule's constructor unvalidated and throws (an
+        // ArgumentException for a span that merely exceeds the cap, or —
+        // before either field had any bound at all — an unmapped
+        // OverflowException from the constructor's own checked arithmetic if
+        // the pair was large enough to overflow int first). Both surface as a
+        // 500; this makes either case the same 400 IsWithinMaxSpan already
+        // gives the EndDate path, using the identical arithmetic
+        // RecurrenceRule.ComputeImpliedEndDate uses so the two can never
+        // disagree about what "within two years" means.
+        RuleFor(c => c)
+            .Must(c => IsOccurrenceCountWithinMaxSpan(c.Frequency, c.IntervalValue, c.StartDate, c.OccurrenceCount!.Value))
+            .When(c => c.OccurrenceCount is not null && c.IntervalValue > 0)
+            .WithMessage("OccurrenceCount and IntervalValue must not imply a span of more than two years.")
+            .OverridePropertyName("OccurrenceCount");
 
         RuleFor(c => c.EndDate)
             .GreaterThanOrEqualTo(c => c.StartDate)
@@ -142,6 +139,11 @@ public sealed class CreateRecurrenceSeriesCommandRequestValidator
         RuleFor(c => c.Title)
             .MaximumLength(MaxTitleLength)
             .When(c => c.Title is not null);
+
+        // Matches RecurrenceCreationOperations.IdempotencyKey NVARCHAR(200).
+        RuleFor(c => c.IdempotencyKey)
+            .MaximumLength(200)
+            .When(c => c.IdempotencyKey is not null);
     }
 
     // Guards the overflow case explicitly rather than letting DateOnly.AddYears
@@ -161,5 +163,62 @@ public sealed class CreateRecurrenceSeriesCommandRequestValidator
         }
 
         return endDate.Value <= startDate.AddYears(2);
+    }
+
+    // Bug fix (item 12). The OccurrenceCount-bound counterpart to
+    // IsWithinMaxSpan above, computing the same implied end date
+    // RecurrenceRule.ComputeImpliedEndDate does (last occurrence is
+    // IntervalValue * (OccurrenceCount - 1) steps after StartDate) — one
+    // implementation given two names because the domain type cannot itself
+    // be constructed to answer this without partly duplicating this method,
+    // the same trade CreateBookingCommandRequestValidator's own header
+    // accepts for its own pre-checks.
+    //
+    // The multiplication is done in long, not int: IntervalValue and
+    // OccurrenceCount are both plain int fields, so their product always
+    // fits in a long without overflowing — it is *that* multiplication,
+    // done in unchecked int space, that RecurrenceRule.ComputeImpliedEndDate
+    // wraps in `checked` specifically because it can silently wrap around in
+    // a plain int. Doing it here in long space instead means a span large
+    // enough to matter is caught by the day-count guard below before ever
+    // reaching DateOnly arithmetic, rather than relying on that `checked`
+    // block to convert a wraparound into a thrown OverflowException this
+    // validator would then have to also catch.
+    private static bool IsOccurrenceCountWithinMaxSpan(
+        RecurrenceFrequency frequency, int intervalValue, DateOnly startDate, int occurrenceCount)
+    {
+        if (startDate.Year > DateOnly.MaxValue.Year - 2)
+        {
+            return false;
+        }
+
+        var steps = (long)intervalValue * (occurrenceCount - 1);
+
+        // Weekly's steps are weeks, not days (RecurrenceRule.StepDate
+        // multiplies by 7 internally) — converting to an implied day count
+        // first is what makes this guard mean the same "two years" regardless
+        // of frequency, rather than "two years of Daily steps but a much
+        // longer span of Weekly ones".
+        var impliedDays = frequency == RecurrenceFrequency.Weekly ? steps * 7 : steps;
+
+        // A day count comfortably wider than any real two-year cap could ever
+        // allow — checked before calling AddDays/AddMonths so a pair large
+        // enough to overflow those never reaches them. Monthly steps are
+        // months, not days, so this is intentionally loose for that
+        // frequency; the exact check below is what actually decides Monthly.
+        if (impliedDays < 0 || impliedDays > 10_000)
+        {
+            return false;
+        }
+
+        var impliedEndDate = frequency switch
+        {
+            RecurrenceFrequency.Daily => startDate.AddDays((int)steps),
+            RecurrenceFrequency.Weekly => startDate.AddDays((int)steps * 7),
+            RecurrenceFrequency.Monthly => startDate.AddMonths((int)steps),
+            _ => throw new ArgumentOutOfRangeException(nameof(frequency)),
+        };
+
+        return impliedEndDate <= startDate.AddYears(2);
     }
 }

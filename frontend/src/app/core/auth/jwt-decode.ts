@@ -7,6 +7,11 @@ export interface DecodedAccessToken {
   email: string;
   orgId: string | null;
   roles: string[];
+  // Seconds since epoch (standard JWT `exp`), not milliseconds. Every access
+  // token the backend issues carries one (decisions/0009, 15-minute lifetime)
+  // — treated as required here rather than optional, because a client that
+  // silently accepted a token with no `exp` would never know to refresh it.
+  exp: number;
 }
 
 // .NET's JwtSecurityToken (built directly from a Claim list, not through
@@ -27,12 +32,26 @@ export function decodeAccessToken(accessToken: string): DecodedAccessToken {
   const roleClaim = payload[ROLE_CLAIM];
   const roles = Array.isArray(roleClaim) ? (roleClaim as string[]) : roleClaim ? [roleClaim as string] : [];
 
+  const exp = payload['exp'];
+  if (typeof exp !== 'number') {
+    throw new Error('Not a valid access token: missing or non-numeric exp claim.');
+  }
+
   return {
     sub: payload['sub'] as string,
     email: payload['email'] as string,
     orgId: (payload['orgId'] as string | undefined) ?? null,
     roles,
+    exp,
   };
+}
+
+// exp is in seconds; Date.now() is in milliseconds. No clock-skew leeway —
+// the access token's own 15-minute lifetime (decisions/0009) makes a few
+// seconds of drift immaterial, and the interceptor already retries on a real
+// 401 if this ever calls it valid a moment too late.
+export function isAccessTokenExpired(claims: DecodedAccessToken, nowMs: number = Date.now()): boolean {
+  return nowMs >= claims.exp * 1000;
 }
 
 // JWTs use base64url (RFC 4648 §5): '-'/'_' instead of '+'/'/', and the '='

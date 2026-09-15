@@ -1,4 +1,4 @@
-import { decodeAccessToken } from './jwt-decode';
+import { decodeAccessToken, isAccessTokenExpired } from './jwt-decode';
 import { buildFakeAccessToken } from './testing/jwt-fixture';
 
 // .NET's ClaimTypes.Role, spelled out in full — the whole point of this file
@@ -41,5 +41,36 @@ describe('decodeAccessToken', () => {
 
   it('throws rather than silently returning nonsense for something that is not a JWT', () => {
     expect(() => decodeAccessToken('not-a-jwt')).toThrow();
+  });
+
+  it('throws for a token with no exp claim, rather than treating it as never expiring', () => {
+    const token = buildFakeAccessToken({ sub: 'u', email: 'e', [ROLE_CLAIM]: 'Member', exp: undefined });
+
+    expect(() => decodeAccessToken(token)).toThrow();
+  });
+});
+
+describe('isAccessTokenExpired', () => {
+  it('is false for a token whose exp is in the future', () => {
+    const token = buildFakeAccessToken({ sub: 'u', email: 'e', [ROLE_CLAIM]: 'Member' });
+
+    expect(isAccessTokenExpired(decodeAccessToken(token))).toBe(false);
+  });
+
+  it('is true for a token whose exp is in the past', () => {
+    const token = buildFakeAccessToken({
+      sub: 'u',
+      email: 'e',
+      [ROLE_CLAIM]: 'Member',
+      exp: Math.floor(Date.now() / 1000) - 60,
+    });
+
+    expect(isAccessTokenExpired(decodeAccessToken(token))).toBe(true);
+  });
+
+  it('is true exactly at the expiry instant, not just after it', () => {
+    const claims = decodeAccessToken(buildFakeAccessToken({ sub: 'u', email: 'e', [ROLE_CLAIM]: 'Member' }));
+
+    expect(isAccessTokenExpired(claims, claims.exp * 1000)).toBe(true);
   });
 });

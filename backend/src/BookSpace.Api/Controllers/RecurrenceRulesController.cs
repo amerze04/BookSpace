@@ -56,6 +56,10 @@ public sealed class RecurrenceRulesController : ControllerBase
     // Phase 2 territory, alongside occurrence view/cancel). The 201 status is
     // still correct — a RecurrenceRule row now exists — the header is simply
     // deferred until there is somewhere for it to point.
+    // Hardening pass, item 11: an idempotency key is a property of the HTTP
+    // attempt, not of the series being created, so it travels as a header —
+    // same reasoning as the correlation id — rather than a body field a
+    // client could accidentally vary between retries of "the same" request.
     [HttpPost]
     [ProducesResponseType<CreateRecurrenceSeriesCommandResponse>(StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -65,6 +69,7 @@ public sealed class RecurrenceRulesController : ControllerBase
     [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
     public async Task<IActionResult> Create(
         CreateRecurrenceSeriesRequest request,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken)
     {
         var result = await _sender.Send(
@@ -78,7 +83,8 @@ public sealed class RecurrenceRulesController : ControllerBase
                 request.EndDate,
                 request.OccurrenceCount,
                 request.Quantity,
-                request.Title),
+                request.Title,
+                idempotencyKey),
             cancellationToken);
 
         return StatusCode(StatusCodes.Status201Created, result);

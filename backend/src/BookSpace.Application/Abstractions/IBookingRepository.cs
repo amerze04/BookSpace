@@ -252,8 +252,24 @@ public sealed record NewBooking(
 // Resources.RequiresApproval is true at the moment it reads the resource under
 // the lock — a check made after the caller's own read, which is why the two
 // can disagree. Null on every non-Created path, where no row was written.
+//
+// **WasAlreadyCreated, hardening pass item 11**: true only when Created came
+// from BookingRepository.ReadBackAlreadyCreatedAsync — a retry (of the ambiguous-
+// commit kind that method's own header describes, or of a client-driven
+// idempotency retry like CreateRecurrenceSeriesCommandRequestHandler's) that
+// found the row already there from a prior attempt, rather than inserting it
+// just now. A caller that reacts to Created by staging *other* rows keyed off
+// this booking — an ApprovalRequest, a Notification — must skip that staging
+// when this is true, or it re-inserts a sibling row the original attempt
+// already committed and collides with a uniqueness constraint that
+// legitimately allows only one (UQ_Notifications_Once, ApprovalRequests'
+// own one-per-booking shape). False on every other path, including every
+// non-Created result, where there is nothing to distinguish.
 public sealed record BookingCreationOutcome(
-    BookingCreationResult Result, int? RemainingCapacity, BookingStatus? ActualStatus = null);
+    BookingCreationResult Result,
+    int? RemainingCapacity,
+    BookingStatus? ActualStatus = null,
+    bool WasAlreadyCreated = false);
 
 // The procedure's result codes. Deliberately not ReasonCodes strings: those are
 // the Application layer's wire contract and the mapping to them is the
