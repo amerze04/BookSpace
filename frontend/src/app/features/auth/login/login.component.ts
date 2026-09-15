@@ -92,12 +92,25 @@ export class LoginComponent {
 
     try {
       await this.auth.login(email, password);
-      const returnUrl = this.route.snapshot.queryParamMap.get('returnUrl') ?? '/';
-      await this.router.navigateByUrl(returnUrl);
     } catch (error) {
       this.handleLoginError(error);
-    } finally {
       this.submitting.set(false);
+      return;
+    }
+
+    this.submitting.set(false);
+
+    // Login itself succeeded from here on — a failure past this point is a
+    // navigation problem, not an authentication one, and must never be
+    // reported as "incorrect email or password" (item 9). There is nowhere
+    // more specific to send someone when their own returnUrl fails to
+    // resolve, so this falls back to the app's own home route rather than
+    // leaving them stuck on the login page having already signed in.
+    const returnUrl = this.route.snapshot.queryParamMap.get('returnUrl') ?? '/';
+    try {
+      await this.router.navigateByUrl(returnUrl);
+    } catch {
+      await this.router.navigateByUrl('/');
     }
   }
 
@@ -117,9 +130,32 @@ export class LoginComponent {
       }
     }
 
-    // Covers InvalidCredentials and anything else with no field to blame —
-    // deliberately generic, matching decisions/0011's "don't tell an attacker
-    // which part was wrong" rule.
+    if (error instanceof HttpErrorResponse) {
+      // status 0: the request never reached a server at all (offline, DNS,
+      // CORS, refused connection) — an HttpErrorResponse.error in that case
+      // is a plain ProgressEvent, never a ProblemDetails, so this has to be
+      // checked before falling through to the generic credentials message.
+      if (error.status === 0) {
+        this.errorMessage.set('Unable to reach the server. Check your connection and try again.');
+        return;
+      }
+
+      if (error.status === 429) {
+        this.errorMessage.set('Too many attempts. Please wait a moment and try again.');
+        return;
+      }
+
+      if (error.status >= 500) {
+        this.errorMessage.set('Something went wrong on our end. Please try again shortly.');
+        return;
+      }
+    }
+
+    // Covers InvalidCredentials (401) and anything else with no field to
+    // blame — deliberately generic, matching decisions/0011's "don't tell an
+    // attacker which part was wrong" rule. Only reached for an actual
+    // authentication failure now, not for every other kind of failure this
+    // call can produce.
     this.errorMessage.set('Incorrect email or password.');
   }
 }

@@ -100,6 +100,58 @@ public class CreateRecurrenceSeriesValidatorTests
         Validator.TestValidate(request).ShouldHaveValidationErrorFor(c => c.OccurrenceCount);
     }
 
+    // Bug fix (item 12): this combination used to be rejected outright by a
+    // flat IntervalValue <= 366 ceiling, despite its implied span (400 days)
+    // being comfortably inside decision 0007's real two-year cap — a
+    // perfectly legal series with no business reason to refuse it.
+    [Fact]
+    public void ADailyIntervalOverTheOldFlatCeilingIsAcceptedWhenTheImpliedSpanIsWithinTwoYears()
+    {
+        var request = Valid() with
+        {
+            Frequency = RecurrenceFrequency.Daily,
+            IntervalValue = 400,
+            EndDate = null,
+            OccurrenceCount = 2,
+        };
+
+        Validator.TestValidate(request).ShouldNotHaveAnyValidationErrors();
+    }
+
+    // The real invariant this validator restates: two occurrences 800 days
+    // apart (Daily, interval 800) implies a span well past decision 0007's
+    // two-year cap, regardless of how small OccurrenceCount is.
+    [Fact]
+    public void ADailyIntervalWhoseImpliedSpanExceedsTwoYearsIsRejected()
+    {
+        var request = Valid() with
+        {
+            Frequency = RecurrenceFrequency.Daily,
+            IntervalValue = 800,
+            EndDate = null,
+            OccurrenceCount = 2,
+        };
+
+        Validator.TestValidate(request).ShouldHaveValidationErrorFor(c => c.OccurrenceCount);
+    }
+
+    // A single occurrence has no second date to imply a span at all — the
+    // check must not reject a large IntervalValue that is never actually
+    // used for stepping.
+    [Fact]
+    public void ASingleOccurrenceAcceptsAnyIntervalValue()
+    {
+        var request = Valid() with
+        {
+            Frequency = RecurrenceFrequency.Daily,
+            IntervalValue = 100_000,
+            EndDate = null,
+            OccurrenceCount = 1,
+        };
+
+        Validator.TestValidate(request).ShouldNotHaveAnyValidationErrors();
+    }
+
     [Fact]
     public void EndDateMustNotBeBeforeStartDate()
     {

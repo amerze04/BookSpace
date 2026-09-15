@@ -40,11 +40,13 @@
             formControlName="email"
             placeholder="name@company.com"
             autocomplete="email"
+            [attr.aria-invalid]="fieldError('email') ? true : null"
+            [attr.aria-describedby]="fieldError('email') ? 'email-error' : null"
             (blur)="markTouched('email')"
           />
         </div>
         @if (fieldError('email'); as message) {
-          <p class="field-error">{{ message }}</p>
+          <p id="email-error" class="field-error">{{ message }}</p>
         }
 
         <label for="password">Password</label>
@@ -65,11 +67,13 @@
             formControlName="password"
             placeholder="Your password"
             autocomplete="current-password"
+            [attr.aria-invalid]="fieldError('password') ? true : null"
+            [attr.aria-describedby]="fieldError('password') ? 'password-error' : null"
             (blur)="markTouched('password')"
           />
         </div>
         @if (fieldError('password'); as message) {
-          <p class="field-error">{{ message }}</p>
+          <p id="password-error" class="field-error">{{ message }}</p>
         }
 
         <!-- Static on purpose: password reset isn't in the PRD/any work package yet. -->

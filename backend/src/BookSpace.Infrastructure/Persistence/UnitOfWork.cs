@@ -1,5 +1,6 @@
 using BookSpace.Application.Abstractions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace BookSpace.Infrastructure.Persistence;
 
@@ -29,9 +30,19 @@ namespace BookSpace.Infrastructure.Persistence;
 //     a retry is happening precisely because the data moved.
 //
 // One EF caveat, stated rather than hidden: if SaveChangesAsync succeeds and the
-// commit then fails, the tracked entities are already marked Unchanged, so a
-// retry would not re-insert them. EF has no general answer to this and neither
-// does this class; the window is the commit itself.
+// commit then fails — a dropped connection after the server has already
+// committed, before this client learns the outcome — the tracked entities are
+// already marked Unchanged, so a retry through this class alone would not
+// re-insert them. EF has no general answer to that ambiguity, and this class
+// still doesn't try to be one (no verifySucceeded callback, no idempotency
+// table) — but for this codebase's one caller, the ambiguity is closed a
+// different way: BookingRepository.CreateAsync catches the PK violation a
+// retried-but-already-committed dbo.CreateBooking call produces (the booking's
+// own Guid is its natural idempotency key, chosen before ExecuteAsync runs, as
+// below) and reads the row back rather than letting the violation surface. See
+// ReadBackAlreadyCreatedAsync there for the mechanism and its own boundary —
+// it distinguishes a genuine retry from an actual id collision rather than
+// papering over both the same way.
 internal sealed class UnitOfWork : IUnitOfWork
 {
     private readonly BookSpaceDbContext _context;
@@ -56,7 +67,26 @@ internal sealed class UnitOfWork : IUnitOfWork
 
                 var result = await work(token);
 
-                await transaction.CommitAsync(token);
+                // Bug fix, found alongside BookingRepository's own: dbo.CreateBooking
+                // runs under SET XACT_ABORT ON, so a runtime error inside it — a PK
+                // violation on a retried-but-already-committed insert, specifically —
+                // makes SQL Server roll back this transaction itself, without waiting
+                // to be asked. BookingRepository.CreateAsync's PK-violation handler
+                // already accounts for that (it reads the already-existing row back
+                // with no transaction, rather than the one this method opened, which
+                // is dead by then) and returns normally instead of throwing — so
+                // work() above can complete successfully with the transaction already
+                // gone. Committing it anyway would throw ("This SqlTransaction has
+                // completed; it is no longer usable"), for an operation whose result
+                // is already correct and already durable. Connection is null exactly
+                // when the server has already ended the transaction out from under
+                // the client (EF/ADO.NET's own signal for it); there is nothing left
+                // to commit in that case, and skipping it is what makes the read-back
+                // path actually reach the caller instead of failing one step later.
+                if (transaction.GetDbTransaction().Connection is not null)
+                {
+                    await transaction.CommitAsync(token);
+                }
 
                 return result;
             },

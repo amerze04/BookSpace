@@ -19,6 +19,16 @@ namespace BookSpace.Application.Features.RecurrenceRules.CreateSeries;
 //
 // No RecurrenceRuleId, no UserId: the id is minted by the handler and the
 // actor comes from the token, exactly as POST /bookings does.
+//
+// **IdempotencyKey (hardening pass, item 11), from the Idempotency-Key
+// request header, not the body** — an HTTP idempotency key describes the
+// request attempt, not the resource being created, the same distinction the
+// correlation id already makes. Optional: a client that never retries (or
+// retries by accepting the risk) gets today's behaviour unchanged — a fresh
+// RecurrenceRule and a fresh attempt at every occurrence. A client that
+// supplies one gets a request that is safe to retry after a crash or a lost
+// response, because CreateRecurrenceSeriesCommandRequestHandler resolves the
+// same key to the same RecurrenceRule every time.
 public sealed record CreateRecurrenceSeriesCommandRequest(
     Guid ResourceId,
     RecurrenceFrequency Frequency,
@@ -29,5 +39,6 @@ public sealed record CreateRecurrenceSeriesCommandRequest(
     DateOnly? EndDate,
     int? OccurrenceCount,
     int Quantity,
-    string? Title)
+    string? Title,
+    string? IdempotencyKey = null)
     : IRequest<CreateRecurrenceSeriesCommandResponse>;

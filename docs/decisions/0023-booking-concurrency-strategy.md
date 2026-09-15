@@ -9,6 +9,9 @@ inheriting the strategy: the same weakening technique confirms its distinct
 race (two decisions on one row, not two inserts into a range) actually needs
 the lock, and the same deadlock-counter method finds contention even more
 routine here than at create time.
+**Amended 2026-09-15** (hardening pass, items 3/4 from an external review):
+both procedures now hold `WITH (HOLDLOCK)` on their `Resources` read too — see
+below.
 
 ## Context
 
@@ -342,6 +345,39 @@ and never table-wide.
 - **WP-5's `dbo.ApproveBooking` inherits all of this.** FR-7.5 and AC-5 need the
   same check at approval time, so it takes the same locks in the same order over
   the same index.
+- **Amended 2026-09-15**: both procedures now also hold `WITH (HOLDLOCK)` on
+  their `Resources` read, closing a gap an external review raised (items 3 and
+  4): an `Archive`/`RequiresApproval` UPDATE, or a `ResourceApprovers` DELETE,
+  could previously commit *after* the procedure had already read the row it
+  based its decision on but *before* its own transaction committed — a plain
+  shared lock, held to end-of-transaction, blocks that write until this one is
+  done. This introduces one more realistic ABBA deadlock shape than existed
+  before: `dbo.ApproveBooking` now takes `S(ResourceApprovers)` then
+  `S(Resources)`, while a concurrent `ReplaceApprovers`/`SetRequiresApproval`
+  save (which bumps `Resources.RowVersion`, see below) can hold `X(Resources)`
+  waiting on `X(ResourceApprovers)` — the opposite order. Not measured the way
+  the rest of this record's deadlock figures are (that would need its own
+  weakened-procedure run); reasoned to be the same shape as the blackout-cascade
+  deadlock this record already documents, and absorbed the same way: SQL
+  Server's detector kills one side, the existing 1205 retry the whole
+  design already depends on picks it back up. No test asserts the deadlock
+  itself for this one — only that the invariant it could otherwise violate
+  holds (`ResourceConcurrencyTests`).
+- **`Resources.RowVersion`, added 2026-09-15** (hardening pass, item 2):
+  closes a *different* race the same review raised — `UpdateResource` and
+  `ReplaceApprovers` each read-check-mutate-save independently, so two
+  concurrent requests could each see FR-3.3's invariant
+  (`RequiresApproval ⇒ at least one approver`) satisfied against the *other's*
+  about-to-be-superseded state and both commit, landing on exactly the state
+  the invariant forbids. Ordinary optimistic concurrency, the same mechanism
+  `Bookings.RowVersion` already uses: whichever request saves second gets
+  `DbUpdateConcurrencyException` (409), because `ReplaceApprovers` already
+  calls `Touch()` on the owning `Resource` even though its own changes are to
+  the owned `ResourceApprovers` collection. Proved deterministically —
+  `ResourceConcurrencyTests`, two `DbContext`s loading the same row and saving
+  in the order that actually produces the race, per CLAUDE.md §8's preference
+  for that over a timing-based test — rather than by firing concurrent HTTP
+  requests and hoping they interleave.
 
 ## Notes
 

@@ -122,7 +122,29 @@ internal sealed class BookingRepository : IBookingRepository
                 // ReadBackAlreadyCreatedAsync for the one case this
                 // deliberately still throws: the row exists but does not
                 // match what this call actually asked for.
-                return await ReadBackAlreadyCreatedAsync(connection, command.Transaction, booking, cancellationToken);
+                //
+                // Bug fix (found while verifying the hardening pass, not part
+                // of it): dbo.CreateBooking runs under SET XACT_ABORT ON, so a
+                // runtime error there — this PK violation included — makes SQL
+                // Server roll back the *entire* ambient transaction itself,
+                // regardless of who opened it. command.Transaction (the .NET
+                // SqlTransaction IUnitOfWork began) is therefore already dead
+                // by the time control returns here; handing it to a new
+                // command throws "An error occurred using a transaction"
+                // instead of reading anything back, which — since reports
+                // still had nothing Created — went on to make
+                // CreateRecurrenceSeriesCommandRequestHandler try to delete a
+                // RecurrenceRule that earlier, already-committed occurrences
+                // still reference, surfacing as an FK-constraint 500
+                // (RecurrenceSeriesIdempotencyEndpointTests caught this). The
+                // read-back below deliberately runs with no transaction at
+                // all — the row it is reading was committed by a *previous*,
+                // already-completed attempt, so an ordinary autocommit read is
+                // both correct and all that is left usable on this
+                // connection. UnitOfWork.ExecuteAsync has the other half: it
+                // must not then try to commit a transaction the server has
+                // already ended.
+                return await ReadBackAlreadyCreatedAsync(connection, booking, cancellationToken);
             }
         }
         finally
@@ -150,12 +172,15 @@ internal sealed class BookingRepository : IBookingRepository
     // which is at least an honest signal that something needs investigating.
     private static async Task<BookingCreationOutcome> ReadBackAlreadyCreatedAsync(
         System.Data.Common.DbConnection connection,
-        System.Data.Common.DbTransaction? transaction,
         NewBooking booking,
         CancellationToken cancellationToken)
     {
+        // No transaction set, deliberately — see the catch site's comment.
+        // The ambient one is already dead (XACT_ABORT rolled it back on the
+        // server the moment the PK violation happened), and the row this
+        // reads was committed before that rollback even started, so a plain
+        // autocommit read on the same connection sees it correctly.
         await using var command = connection.CreateCommand();
-        command.Transaction = transaction;
         command.CommandText = """
             SELECT ResourceId, StartsAtUtc, EndsAtUtc, Quantity, Status
             FROM dbo.Bookings WHERE Id = @BookingId;
@@ -189,7 +214,8 @@ internal sealed class BookingRepository : IBookingRepository
         return new BookingCreationOutcome(
             BookingCreationResult.Created,
             RemainingCapacity: null,
-            ParseStatus(reader.GetString(4)));
+            ParseStatus(reader.GetString(4)),
+            WasAlreadyCreated: true);
     }
 
     // ---- The approval re-check (WP-5 Phase 3, decision 0023 inherited whole) ----

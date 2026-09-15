@@ -1,6 +1,16 @@
 <div class="notification-stack">
   @for (notification of notifications(); track notification.id) {
-    <div class="notification" [class.notification--info]="notification.kind === 'info'">
+    <!--
+      role="alert"/"status" are implicit ARIA live regions (assertive/polite
+      respectively) on their own — no separate aria-live needed. The role has
+      to be present on the element at the moment it's inserted for a screen
+      reader to pick it up, which @for's per-item creation already gives us.
+    -->
+    <div
+      class="notification"
+      [class.notification--info]="notification.kind === 'info'"
+      [attr.role]="notification.kind === 'error' ? 'alert' : 'status'"
+    >
       <p>{{ notification.message }}</p>
       <button type="button" aria-label="Dismiss" (click)="dismiss(notification.id)">&times;</button>
     </div>
