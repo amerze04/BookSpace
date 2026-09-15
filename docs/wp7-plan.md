@@ -9,13 +9,18 @@ is a gap to flag rather than something to add on judgment (CLAUDE.md §11).
 
 ## Status
 
-**Planning — plan approved by the repo owner 2026-09-15, before any code is
-written**, the same process WP-3 through WP-6 each went through. The owner has
-allocated more than a week to this package and wants every phase built
-seriously rather than rushed; each phase below will be split into its own
-smaller steps (as WP-3 through WP-5 did on the backend, and as WP-6 did on the
-frontend) once that phase is about to start, not all up front in this
-document.
+**In progress.** Plan approved by the repo owner 2026-09-15, before any code
+was written, the same process WP-3 through WP-6 each went through. The owner
+has allocated more than a week to this package and wants every phase built
+seriously rather than rushed; each phase is split into its own smaller steps
+(as WP-3 through WP-5 did on the backend, and as WP-6 did on the frontend)
+once that phase is about to start, not all up front in this document.
+
+**Phase 1 (resource list & detail) is done, 2026-09-15** — all five steps,
+including the mid-phase pivot on step 3 (client-side search/approval filters
+reversed to real backend query params, CLAUDE.md's "Resource list filters
+extended for WP-7" entry) and its subsequent redo. 89 vitest tests pass, 0
+failed. See §5 below for what each step delivered.
 
 ---
 
@@ -169,7 +174,7 @@ between phases, and — per the owner's instruction for this package
 specifically — **each phase is taken seriously and split into its own
 reviewable steps once it starts**, rather than compressed to move faster.
 
-### Phase 1 — Resource list & detail (browse)
+### Phase 1 — Resource list & detail (browse) — **Done** (2026-09-15)
 
 **Superseded 2026-09-15 — reversed by the owner.** The paragraph below is
 kept, struck through in spirit rather than deleted, because step 3 was
@@ -290,38 +295,86 @@ search text + approval-required client-side, over that fetched set.
    flushed Angular's zoneless auto-render (`vi.advanceTimersByTimeAsync`
    does), which none of steps 2–3's earlier tests happened to do.
 
-4. **Resource detail.** `features/resources/detail/` matching the provided
-   design: header (icon, name, type, approval badge, description), the
-   Resource information card (type, capacity, timezone, status), the Booking
-   rules card (approval / min duration / max duration / approvers), and the
-   bookable-hours table built from `AvailabilityWindows` (grouped by weekday,
-   "Not bookable" for a day with no window — mirroring the design exactly).
-   "Edit resource" is not rendered (§3). This step replaces step 2's
-   placeholder on the `:id` route with the real component. "Check
-   availability" points at the same `:id/availability` route step 2 already
-   created — Phase 2 gives *that* route a real destination.
-   Also where the shell's breadcrumb gets fixed: `ShellComponent.breadcrumb`
-   has been a flat `[title()]` since WP-6, with a comment flagging exactly
-   this moment ("once WP-7 adds real nesting… walk every matched level").
-   Step 2 already added that nesting, but left the breadcrumb alone since
-   nothing yet needed more than one crumb; this step is the first that
-   genuinely wants `Resources > Conference Room A` — the second crumb being
-   the resource's own name, not a route-config string — so the walk (and
-   feeding it the loaded resource's name) is built here, not before there's a
-   real screen to prove it against.
+4. **Resource detail — done, 2026-09-15.** `features/resources/detail/`
+   matching the provided design: header (icon, name, type, approval badge,
+   description), the Resource information card (type, capacity, timezone,
+   status), the Booking rules card (approval / min duration / max duration /
+   approvers, the last shown only when approval is required), and the
+   bookable-hours table built from `AvailabilityWindows` — all seven weekdays
+   always rendered, Monday first (matching the design, not the `DayOfWeek`
+   enum's own Sunday-first order), "Not bookable" for a day with no window,
+   multiple same-day windows joined by a comma. "Edit resource" is not
+   rendered (§3). This step replaces step 2's placeholder on the `:id` route
+   with the real component; "Check availability" points at the same
+   `:id/availability` route step 2 already created — Phase 2 gives *that*
+   route a real destination.
+   **A 404 gets its own state, distinct from a generic failure**: "This
+   resource doesn't exist, or you don't have access to it," with a link back
+   to the list rather than a retry button (retrying the same id can't help).
+   The wording deliberately doesn't distinguish "doesn't exist" from "isn't
+   yours," mirroring the backend's own `ResourceNotFoundException` reasoning
+   for the same AC-4 case.
+   **The route param is observed, not read once**: the component subscribes
+   to `ActivatedRoute.paramMap` rather than only `route.snapshot.paramMap` at
+   construction, so if the router ever reuses this component instance across
+   two different resource ids (navigating detail-to-detail on the same route
+   config, which nothing does yet but nothing rules out either), it re-fetches
+   instead of silently keeping the first resource's data on screen.
+   **Also where the shell's breadcrumb gets fixed**, as flagged when step 2
+   added the nesting: `ShellComponent.breadcrumb` now walks every matched
+   route level's own `data.title` (`layout/breadcrumb.service.ts`'s
+   `BreadcrumbService` lets a leaf page — this one — override the *last*
+   crumb with something only it knows at runtime, the loaded resource's own
+   name, cleared again on destroy so it can't leak onto the next page).
+   `Resources > Resource details` (the static route titles) becomes
+   `Resources > Conference Room A` once the resource loads.
+   **A pre-existing gap fixed in passing**: `ResourcesService.list()`/
+   `.getById()` never opted out of the global error toast, so steps 2–3's own
+   inline error/retry UI would have shown *and* a redundant toast — fixed by
+   adding `skipErrorToast()` to both calls, the same reasoning
+   `AuthService.login()`/`.logout()` already apply to theirs.
    **Screens needed:** provided (`design/resource_details_design.png`).
+   **Tests:** the fetch-by-id request, the success/404/other-error paths and
+   `retry()`, re-fetching on a route-param change without recreation, the
+   weekday-row builder (ordering, "Not bookable", multi-window joining),
+   duration formatting, and the approver-name/capacity-label formatting —
+   plus new coverage on `ShellComponent` (a single crumb, a multi-level
+   walk, live re-derivation on `NavigationEnd`, the override replacing only
+   the last crumb, and falling back once it's cleared) and a couple of
+   direct `BreadcrumbService` tests, since neither had any test coverage
+   before this step touched them.
 
-5. **Final test pass + phase demo.** Routing is already in place
-   incrementally from steps 2 and 4, so this step adds no new routes — it's
-   the full pass of the phase's own vitest coverage, then a manual
-   walkthrough against the real running backend: an approval-gated resource
-   and a plain one, a pooled resource and an exclusive one, and (if the seed
-   data doesn't already have one) a temporarily-archived resource checked
-   with `includeArchived` on and off.
+5. **Final test pass + phase demo — done, 2026-09-15.** Routing was already
+   in place incrementally from steps 2 and 4, so this step added no new
+   code — verification only. `npx ng test --watch=false`: **13 test files,
+   89 tests passed, 0 failed.** `npx ng build`: clean, no type errors.
+   **No browser-automation tool was available this session**, so the
+   click-through walkthrough the plan called for (log in, browse, filter,
+   open a resource) was not performed and is **not claimed as done** — flagged
+   explicitly rather than assumed to be fine. In its place, the real running
+   backend's contract was smoke-checked directly (`curl`, authenticated as
+   `member1@acme.test`) against every request shape the frontend actually
+   sends: the default list, `type=Room`, `search=printer` (name match),
+   `requiresApproval=true`, `search=Room&type=Equipment` (combined, correctly
+   empty), `includeArchived=true` (surfaced two pre-existing archived
+   resources already sitting in the dev database — "Postman Room Updated" and
+   "Scratch Resource," neither created by this session — confirming the
+   filter and the `isArchived` flag both work against real, not just
+   fixture, data), the detail read for Conference Room A (description,
+   duration limits and its five weekday windows all present and correctly
+   shaped), and the 404 path (`ResourceNotFound`, matching what
+   `ResourceDetailComponent.notFound` checks for). Every response matched
+   what the Angular unit tests already assumed by mocking it — real evidence
+   the mocks were honest, not just internally consistent. **This is not a
+   substitute for an actual browser walkthrough** (rendering, the debounce
+   feel, click targets, and the breadcrumb/title swap are all still
+   unverified visually) — recommended before treating Phase 1 as fully
+   signed off.
 
-**Demo:** browse the seeded resources, filter by type and by the
-client-side search/approval controls, open one, and see its schedule and
-approvers render correctly for both an approval-gated and a plain resource.
+**Demo:** browse the seeded resources, filter by type and by search/approval
+(now real server round-trips, not client-side), open one, and see its
+schedule and approvers render correctly for both an approval-gated and a
+plain resource.
 
 **API:** `GET /resources`, `GET /resources/{id}`.
 

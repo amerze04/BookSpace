@@ -3,6 +3,7 @@ import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { environment } from '../../../environments/environment';
 import { PagedResult } from '../../core/http/paged-result';
+import { skipErrorToast } from '../../core/http/skip-error-toast';
 import { ListResourcesParams, ResourceDetail, ResourceSummary } from './resources.models';
 
 // Thin wrapper over GET /resources and GET /resources/{id} — no filtering,
@@ -10,6 +11,12 @@ import { ListResourcesParams, ResourceDetail, ResourceSummary } from './resource
 // own ResourcesController keeps to. Every screen in features/resources/ goes
 // through this rather than injecting HttpClient directly, so the request
 // shape (query param names, base URL) lives in exactly one place.
+//
+// Both calls skip the global error toast: every current caller
+// (ResourceListComponent, ResourceDetailComponent) renders its own inline
+// error/retry state for exactly this failure, so the toast would only be
+// noise on top of it — the same reasoning AuthService.login/logout already
+// apply to their own calls.
 @Injectable({ providedIn: 'root' })
 export class ResourcesService {
   private readonly http = inject(HttpClient);
@@ -17,11 +24,14 @@ export class ResourcesService {
   list(params: ListResourcesParams = {}): Observable<PagedResult<ResourceSummary>> {
     return this.http.get<PagedResult<ResourceSummary>>(`${environment.apiBaseUrl}/resources`, {
       params: buildListParams(params),
+      context: skipErrorToast(),
     });
   }
 
   getById(id: string): Observable<ResourceDetail> {
-    return this.http.get<ResourceDetail>(`${environment.apiBaseUrl}/resources/${id}`);
+    return this.http.get<ResourceDetail>(`${environment.apiBaseUrl}/resources/${id}`, {
+      context: skipErrorToast(),
+    });
   }
 }
 

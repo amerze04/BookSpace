@@ -255,6 +255,34 @@ describe('ResourceListComponent', () => {
       }
     });
 
+    // The race a slow network (or a slow server) can trigger even with a
+    // debounce in place: two searches each survive their own debounce
+    // window (the user paused after each), so two requests are genuinely
+    // in flight together, and the *first* one to be typed is the *last* to
+    // resolve.
+    it('ignores a stale search response that resolves after a newer search has already landed', async () => {
+      vi.useFakeTimers();
+      try {
+        const component = createLoadedComponent();
+
+        component.onSearchInput(fakeInputEvent('abc'));
+        await vi.advanceTimersByTimeAsync(500);
+        const staleReq = httpMock.expectOne((r) => r.params.get('search') === 'abc');
+
+        component.onSearchInput(fakeInputEvent('abcd'));
+        await vi.advanceTimersByTimeAsync(500);
+        const freshReq = httpMock.expectOne((r) => r.params.get('search') === 'abcd');
+
+        // Out-of-order resolution: the newer request ("abcd") lands first.
+        freshReq.flush(fakePage([fakeResource({ id: 'r2', name: 'Fresh Match' })]));
+        staleReq.flush(fakePage([fakeResource({ id: 'r1', name: 'Stale Match' })]));
+
+        expect(component.items().map((r) => r.name)).toEqual(['Fresh Match']);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('omits the search param entirely once the box is cleared', async () => {
       vi.useFakeTimers();
       try {

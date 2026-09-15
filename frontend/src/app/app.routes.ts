@@ -28,11 +28,12 @@ export const routes: Routes = [
               import('./features/resources/list/resource-list.component').then((m) => m.ResourceListComponent),
           },
           {
-            // WP-7 Phase 1 step 4 replaces this with the real detail screen.
             path: ':id',
             data: { title: 'Resource details' },
             loadComponent: () =>
-              import('./features/placeholder/placeholder.component').then((m) => m.PlaceholderComponent),
+              import('./features/resources/detail/resource-detail.component').then(
+                (m) => m.ResourceDetailComponent,
+              ),
           },
           {
             // WP-7 Phase 2 replaces this with the real availability screen.

@@ -1,0 +1,242 @@
+:host {
+  display: block;
+}
+
+.state-message {
+  padding: 3rem 0;
+  text-align: center;
+  color: var(--color-text-secondary);
+
+  &--error {
+    color: var(--color-error);
+  }
+}
+
+.retry-button {
+  display: inline-block;
+  margin-top: 0.5rem;
+  padding: 0.5rem 1.1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--color-bg);
+  }
+}
+
+.resource-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.detail-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 1.25rem;
+  padding: 1.5rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 4%);
+}
+
+.resource-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 4.5rem;
+  height: 4.5rem;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+
+  svg {
+    width: 2.25rem;
+    height: 2.25rem;
+  }
+}
+
+.header-text {
+  flex: 1;
+  min-width: 0;
+
+  h2 {
+    margin: 0 0 0.4rem;
+    font-size: 1.4rem;
+    color: var(--color-text);
+  }
+}
+
+.header-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.6rem;
+}
+
+.type-label {
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+}
+
+.approval-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  font-size: 0.8rem;
+  font-weight: 600;
+
+  svg {
+    width: 0.9rem;
+    height: 0.9rem;
+  }
+}
+
+.description {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 0.9rem;
+}
+
+.header-actions {
+  flex-shrink: 0;
+}
+
+.primary-button {
+  display: inline-block;
+  padding: 0.65rem 1.25rem;
+  border-radius: var(--radius-md);
+  background: var(--color-primary);
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.9rem;
+  text-decoration: none;
+  white-space: nowrap;
+
+  &:hover {
+    background: var(--color-primary-hover);
+  }
+}
+
+.detail-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.5rem;
+}
+
+.detail-card {
+  padding: 1.5rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 4%);
+
+  h3 {
+    margin: 0 0 1rem;
+    font-size: 1rem;
+    color: var(--color-text);
+  }
+
+  dl {
+    margin: 0;
+  }
+}
+
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 0.9rem;
+
+  &:last-child {
+    border-bottom: none;
+  }
+
+  dt {
+    color: var(--color-text-secondary);
+  }
+
+  dd {
+    margin: 0;
+    color: var(--color-text);
+    text-align: right;
+  }
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.status-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--color-success);
+}
+
+.status--archived .status-dot {
+  background: var(--color-text-secondary);
+}
+
+.bookable-hours {
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  td {
+    padding: 0.55rem 0;
+    border-bottom: 1px solid var(--color-border);
+    font-size: 0.9rem;
+  }
+
+  tr:last-child td {
+    border-bottom: none;
+  }
+
+  .weekday {
+    width: 40%;
+    color: var(--color-text);
+  }
+
+  .hours {
+    color: var(--color-text);
+
+    &--closed {
+      color: var(--color-text-secondary);
+    }
+  }
+}
+
+.hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 1rem 0 0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-size: 0.85rem;
+
+  svg {
+    width: 1rem;
+    height: 1rem;
+    flex-shrink: 0;
+    margin-top: 0.1rem;
+  }
+}
