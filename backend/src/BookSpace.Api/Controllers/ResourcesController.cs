@@ -48,12 +48,17 @@ public sealed class ResourcesController : ControllerBase
     // the name (case-insensitively) *and* the underlying number. `type=0` is
     // therefore also accepted and means Room; harmless, and not worth a custom
     // binder to forbid.
+    // Search and RequiresApproval added 2026-09-15 for the WP-7 browse
+    // screen's search box and "Approval" filter — see the query's own
+    // comment.
     public sealed record ListResourcesRequest(
         int Page = PagingDefaults.Page,
         int PageSize = PagingDefaults.PageSize,
         string? Sort = null,
         bool IncludeArchived = false,
-        ResourceType? Type = null);
+        ResourceType? Type = null,
+        string? Search = null,
+        bool? RequiresApproval = null);
 
     // Paging/sorting failures come back as 400 from ValidationBehavior, with
     // per-field errors — not silently clamped (PagingDefaults.MaxPageSize).
@@ -68,7 +73,13 @@ public sealed class ResourcesController : ControllerBase
     {
         var result = await _sender.Send(
             new ListResourcesQueryRequest(
-                request.Page, request.PageSize, request.Sort, request.IncludeArchived, request.Type),
+                request.Page,
+                request.PageSize,
+                request.Sort,
+                request.IncludeArchived,
+                request.Type,
+                request.Search,
+                request.RequiresApproval),
             cancellationToken);
 
         return Ok(result);

@@ -1,9 +1,17 @@
 import { Component, computed, inject } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import {
+  ActivatedRouteSnapshot,
+  NavigationEnd,
+  Router,
+  RouterLink,
+  RouterLinkActive,
+  RouterOutlet,
+} from '@angular/router';
 import { filter, map } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
 import { BrandMarkComponent } from '../../shared/brand-mark/brand-mark.component';
+import { BreadcrumbService } from '../breadcrumb.service';
 
 interface NavItem {
   label: string;
@@ -34,6 +42,7 @@ export class ShellComponent {
   // `formBuilder` fix in LoginComponent worked around a different way.
   protected readonly auth = inject(AuthService);
   private readonly router = inject(Router);
+  private readonly breadcrumbService = inject(BreadcrumbService);
 
   // A signal, not a plain array: it has to react to who's actually logged
   // in. "Approvals" only belongs in the list for an eligible approver
@@ -48,25 +57,40 @@ export class ShellComponent {
     { label: 'Help', path: '/help', icon: 'help' },
   ];
 
-  // The active route's own `data.title` (set per-route in app.routes.ts),
-  // kept live via router navigation events — a plain read on construction
-  // would only ever show whichever page loaded first. toSignal subscribes to
-  // the Observable and unsubscribes automatically when this component is
-  // destroyed; no manual subscribe()/unsubscribe() to manage.
-  protected readonly title = toSignal(
+  // One title per matched level of the *actual* route tree, kept live via
+  // router navigation events — a plain read on construction would only ever
+  // show whichever page loaded first. toSignal subscribes to the Observable
+  // and unsubscribes automatically when this component is destroyed; no
+  // manual subscribe()/unsubscribe() to manage.
+  //
+  // Was a single title until WP-7 Phase 1 step 4, which is the first route
+  // that's genuinely nested (`resources` -> `:id`) — see routeTitleChain.
+  private readonly routeTitleChain = toSignal(
     this.router.events.pipe(
       filter((event): event is NavigationEnd => event instanceof NavigationEnd),
-      map(() => this.currentRouteTitle()),
+      map(() => this.computeRouteTitleChain()),
     ),
-    { initialValue: this.currentRouteTitle() },
+    { initialValue: this.computeRouteTitleChain() },
   );
 
-  // One crumb per level of the *actual* route tree — right now that's just
-  // the current tab, since every route today is a flat, top-level sibling.
-  // Once WP-7 adds real nesting (e.g. a Rooms page under Resources), this
-  // needs to walk every matched level and collect each one's own title
-  // (Resources -> Rooms), not synthesize a "Home" ancestor no route has.
-  protected readonly breadcrumb = computed(() => [this.title()]);
+  // The route-config chain with its last segment swapped for
+  // BreadcrumbService's override, when a leaf page has set one — a loaded
+  // resource's own name is not something any static `data: { title }` could
+  // carry. Falls back to the plain route chain before a page loads anything,
+  // or on a route that never sets an override at all.
+  protected readonly breadcrumb = computed(() => {
+    const chain = this.routeTitleChain();
+    const override = this.breadcrumbService.override();
+
+    return override && chain.length > 0 ? [...chain.slice(0, -1), override] : chain;
+  });
+
+  // The page heading always matches the breadcrumb's last crumb — one
+  // source for both, rather than two computations that could disagree.
+  protected readonly title = computed(() => {
+    const crumbs = this.breadcrumb();
+    return crumbs[crumbs.length - 1] ?? '';
+  });
 
   protected async logout(): Promise<void> {
     await this.auth.logout();
@@ -78,11 +102,23 @@ export class ShellComponent {
   // ActivatedRoute objects via this.activatedRoute.firstChild — the live tree
   // isn't fully wired up yet at the exact moment this runs during
   // ShellComponent's own construction, which is what crashed here first.
-  private currentRouteTitle(): string {
-    let snapshot = this.router.routerState.snapshot.root;
-    while (snapshot.firstChild) {
+  //
+  // Every matched level that carries its own `data.title` contributes one
+  // crumb; a level with none (the parentless `resources` path itself, which
+  // exists only to group its children) is skipped rather than appearing as a
+  // blank crumb.
+  private computeRouteTitleChain(): string[] {
+    const titles: string[] = [];
+    let snapshot: ActivatedRouteSnapshot | null = this.router.routerState.snapshot.root;
+
+    while (snapshot) {
+      const title = snapshot.data['title'] as string | undefined;
+      if (title) {
+        titles.push(title);
+      }
       snapshot = snapshot.firstChild;
     }
-    return (snapshot.data['title'] as string | undefined) ?? '';
+
+    return titles;
   }
 }

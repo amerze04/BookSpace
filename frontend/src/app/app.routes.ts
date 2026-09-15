@@ -20,9 +20,29 @@ export const routes: Routes = [
       },
       {
         path: 'resources',
-        data: { title: 'Resources' },
-        loadComponent: () =>
-          import('./features/placeholder/placeholder.component').then((m) => m.PlaceholderComponent),
+        children: [
+          {
+            path: '',
+            data: { title: 'Resources' },
+            loadComponent: () =>
+              import('./features/resources/list/resource-list.component').then((m) => m.ResourceListComponent),
+          },
+          {
+            path: ':id',
+            data: { title: 'Resource details' },
+            loadComponent: () =>
+              import('./features/resources/detail/resource-detail.component').then(
+                (m) => m.ResourceDetailComponent,
+              ),
+          },
+          {
+            // WP-7 Phase 2 replaces this with the real availability screen.
+            path: ':id/availability',
+            data: { title: 'Availability' },
+            loadComponent: () =>
+              import('./features/placeholder/placeholder.component').then((m) => m.PlaceholderComponent),
+          },
+        ],
       },
       {
         path: 'my-bookings',

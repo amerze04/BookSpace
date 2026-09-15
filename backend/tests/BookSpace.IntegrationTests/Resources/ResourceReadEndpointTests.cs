@@ -425,6 +425,147 @@ public class ResourceReadEndpointTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
+    // ---- The search and requiresApproval filters (2026-09-15, WP-7) ----
+    //
+    // Added for the WP-7 browse screen's search box and "Approval" dropdown,
+    // which had been filtering client-side over one fetched page until this
+    // landed (docs/wp7-plan.md). Acme's two seeded resources are "Conference
+    // Room A" (description "Main conference room", RequiresApproval false)
+    // and "3D Printer" (description "Shared prototyping printer",
+    // RequiresApproval true) — chosen so a search term can be pinned to
+    // either the name or the description alone.
+
+    [Fact]
+    public async Task List_SearchMatchesTheName()
+    {
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
+            "/resources?search=Printer", TestJson.Options);
+
+        Assert.Equal(1, page!.TotalCount);
+        Assert.Equal("3D Printer", page.Items.Single().Name);
+    }
+
+    // The name "3D Printer" contains none of these letters together — only
+    // the description does, so this fails if search is ever narrowed to Name
+    // alone.
+    [Fact]
+    public async Task List_SearchMatchesTheDescriptionToo()
+    {
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
+            "/resources?search=prototyping", TestJson.Options);
+
+        Assert.Equal(1, page!.TotalCount);
+        Assert.Equal("3D Printer", page.Items.Single().Name);
+    }
+
+    // Query-string search is matched by SQL LIKE, whose case sensitivity
+    // follows the database's collation rather than anything decided in code
+    // — worth pinning down explicitly rather than assuming.
+    [Fact]
+    public async Task List_SearchMatchIsCaseInsensitive()
+    {
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
+            "/resources?search=CONFERENCE", TestJson.Options);
+
+        Assert.Equal(1, page!.TotalCount);
+        Assert.Equal("Conference Room A", page.Items.Single().Name);
+    }
+
+    [Fact]
+    public async Task List_SearchWithNoMatches_IsEmptyButStillAPage()
+    {
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
+            "/resources?search=spaceship", TestJson.Options);
+
+        Assert.Empty(page!.Items);
+        Assert.Equal(0, page.TotalCount);
+    }
+
+    // Whitespace-only is treated as "no search", the same way an empty Type
+    // would be meaningless as a filter.
+    [Fact]
+    public async Task List_BlankSearch_ReturnsEveryResource()
+    {
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
+            "/resources?search=%20%20", TestJson.Options);
+
+        Assert.Equal(2, page!.TotalCount);
+    }
+
+    [Fact]
+    public async Task List_SearchAboveTheNameLengthCeiling_IsRejectedWithPerFieldErrors()
+    {
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var response = await client.GetAsync($"/resources?search={new string('a', 201)}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("ValidationFailed", body.GetProperty("reasonCode").GetString());
+        Assert.True(body.GetProperty("errors").TryGetProperty("Search", out _));
+    }
+
+    // Combined with an existing filter, to prove the two compose rather than
+    // one silently overriding the other.
+    [Fact]
+    public async Task List_SearchCombinesWithTheTypeFilter()
+    {
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
+            "/resources?search=Room&type=Equipment", TestJson.Options);
+
+        Assert.Empty(page!.Items);
+    }
+
+    [Fact]
+    public async Task List_FiltersByRequiresApprovalTrue()
+    {
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
+            "/resources?requiresApproval=true", TestJson.Options);
+
+        Assert.Equal(1, page!.TotalCount);
+        Assert.Equal("3D Printer", page.Items.Single().Name);
+    }
+
+    [Fact]
+    public async Task List_FiltersByRequiresApprovalFalse()
+    {
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
+            "/resources?requiresApproval=false", TestJson.Options);
+
+        Assert.Equal(1, page!.TotalCount);
+        Assert.Equal("Conference Room A", page.Items.Single().Name);
+    }
+
+    // Unlike includeArchived, there is no default subset to hide: omitting
+    // the parameter entirely must return both kinds of resource.
+    [Fact]
+    public async Task List_WithNoRequiresApprovalFilter_ReturnsBoth()
+    {
+        var client = await AuthenticatedClientAsync(AcmeMember);
+
+        var page = await client.GetFromJsonAsync<PagedResult<ListResourcesQueryResponse>>(
+            "/resources", TestJson.Options);
+
+        Assert.Equal(2, page!.TotalCount);
+    }
+
     [Fact]
     public Task List_ExcludesArchivedResourcesByDefault() =>
         WithArchivedAcmeResourceAsync("Retired Projector", async archivedId =>
