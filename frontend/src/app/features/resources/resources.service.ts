@@ -48,6 +48,12 @@ function buildListParams(params: ListResourcesParams): HttpParams {
   if (params.type !== undefined) {
     httpParams = httpParams.set('type', params.type);
   }
+  if (params.search !== undefined) {
+    httpParams = httpParams.set('search', params.search);
+  }
+  if (params.requiresApproval !== undefined) {
+    httpParams = httpParams.set('requiresApproval', params.requiresApproval);
+  }
 
   return httpParams;
 }

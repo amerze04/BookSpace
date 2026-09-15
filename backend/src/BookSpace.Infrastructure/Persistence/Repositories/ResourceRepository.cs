@@ -47,6 +47,26 @@ internal sealed class ResourceRepository : IResourceRepository
             resources = resources.Where(r => r.ResourceType == type);
         }
 
+        // Added 2026-09-15 for the WP-7 browse screen's search box. Name or
+        // Description, since a resource's description is exactly the free
+        // text an admin wrote for someone to search on. Whitespace-only
+        // counts as "no search", the same way an empty Type would be
+        // meaningless as a filter; EF translates Contains to a LIKE, whose
+        // case sensitivity follows the database's own collation rather than
+        // anything decided here.
+        if (!string.IsNullOrWhiteSpace(query.Search))
+        {
+            var search = query.Search.Trim();
+            resources = resources.Where(r => r.Name.Contains(search) || (r.Description != null && r.Description.Contains(search)));
+        }
+
+        // Unlike IncludeArchived, there is no default subset to hide — null
+        // means both kinds of resource, not "not required".
+        if (query.RequiresApproval is { } requiresApproval)
+        {
+            resources = resources.Where(r => r.RequiresApproval == requiresApproval);
+        }
+
         // The projection happens after ordering so ToPagedResultAsync still
         // sees the OrderBy in the expression tree, and so COUNT(*) runs over
         // the filtered set rather than a materialized list.

@@ -84,12 +84,21 @@ export interface ResourceDetail {
 // GET /resources query params — ListResourcesQueryRequest. All optional:
 // an omitted field is left off the request entirely so the backend's own
 // documented default applies (PagingDefaults.Page/PageSize, "every type",
-// includeArchived=false), rather than this file inventing a second copy of
-// those defaults that could drift from the server's.
+// includeArchived=false, "every approval state"), rather than this file
+// inventing a second copy of those defaults that could drift from the
+// server's.
+//
+// search and requiresApproval added 2026-09-15, once GET /resources actually
+// supported them — see CLAUDE.md's "Resource list filters extended for WP-7"
+// entry. Before that, the resource list screen filtered both client-side
+// over one fetched page; that workaround is gone now that the server can
+// answer directly.
 export interface ListResourcesParams {
   page?: number;
   pageSize?: number;
   sort?: string;
   includeArchived?: boolean;
   type?: ResourceType;
+  search?: string;
+  requiresApproval?: boolean;
 }

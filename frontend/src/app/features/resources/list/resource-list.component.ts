@@ -1,14 +1,23 @@
 import { Component, computed, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Router, RouterLink } from '@angular/router';
+import { Subject, debounceTime, distinctUntilChanged } from 'rxjs';
 import { ResourcesService } from '../resources.service';
 import { ResourceSummary, ResourceType } from '../resources.models';
 
-// The API's own page-size ceiling (PagingDefaults.MaxPageSize). Fetching one
-// page at this size and filtering client-side is the settled answer
-// (docs/wp7-plan.md, Phase 1) for the search/approval filters step 3 adds —
-// step 2 already fetches at this size so switching to a type pill never
-// needs a second round-trip shape later.
+// A generous page rather than a real pagination UI — there is no client-side
+// filtering left to justify fetching the API's own max (that workaround is
+// gone, see the 2026-09-15 note below), but nothing yet asks for a "next
+// page" control either, and a tenant with over 100 resources is still the
+// exception CLAUDE.md's own filter-gap note flagged as worth revisiting only
+// if it actually happens.
 const RESOURCE_LIST_PAGE_SIZE = 100;
+
+// How long the search box waits after the last keystroke before firing a
+// request — every keystroke is now a real HTTP round-trip (search moved
+// server-side 2026-09-15), so debouncing is what keeps a fast typist from
+// firing a dozen requests for one search term.
+const SEARCH_DEBOUNCE_MS = 300;
 
 interface TypeFilterOption {
   label: string;
@@ -38,8 +47,9 @@ const RESOURCE_TYPE_LABELS: Record<ResourceType, string> = {
   Other: 'Other',
 };
 
-// The "Approval" dropdown, client-side only (docs/wp7-plan.md, Phase 1: no
-// `requiresApproval` query param exists on GET /resources).
+// The "Approval" dropdown's three states, mapped onto
+// ListResourcesParams.requiresApproval (true / false / omitted) in load() —
+// a real server round-trip since 2026-09-15, not a client-side predicate.
 export type ApprovalFilter = 'all' | 'required' | 'notRequired';
 
 @Component({
@@ -55,66 +65,50 @@ export class ResourceListComponent {
   protected readonly typeFilters = TYPE_FILTERS;
   protected readonly selectedType = signal<ResourceType | null>(null);
 
-  // includeArchived is the one "More filters" checkbox this step adds — the
-  // only real server parameter left that GET /resources supports and the
-  // design didn't already surface via the type pills. It's a genuine
-  // round-trip, exactly like selectedType.
+  // includeArchived, search and approvalFilter are all real server
+  // round-trips (docs/wp7-plan.md, Phase 1 — search/approval moved server-side
+  // 2026-09-15, once GET /resources actually supported them; see CLAUDE.md's
+  // "Resource list filters extended for WP-7" entry). None of the four
+  // filters on this screen do any client-side narrowing any more — `items`
+  // below is exactly what the last fetch returned.
   protected readonly includeArchived = signal(false);
   protected readonly showMoreFilters = signal(false);
-
-  // searchText and approvalFilter are client-side only — filtered in
-  // filteredItems() below over whatever `items` the last server fetch
-  // returned, per the settled call in docs/wp7-plan.md (no `search` or
-  // `requiresApproval` query param exists on GET /resources).
-  protected readonly searchText = signal('');
   protected readonly approvalFilter = signal<ApprovalFilter>('all');
+
+  // The immediate value the search box displays — updated on every
+  // keystroke so the input never feels laggy — separate from
+  // searchRequestChanges$ below, which is what actually triggers a request,
+  // debounced.
+  protected readonly searchText = signal('');
+  private readonly searchRequestChanges$ = new Subject<string>();
 
   protected readonly items = signal<ResourceSummary[]>([]);
   protected readonly totalCount = signal(0);
   protected readonly loading = signal(true);
   protected readonly loadError = signal(false);
 
-  // True only when the server reports more rows exist than this fetch
-  // could carry (RESOURCE_LIST_PAGE_SIZE) — the honest alternative to
-  // silently under-counting past the client-side-filtering limit the plan
-  // accepted. Deliberately measured against `items()`, the raw fetch, not
-  // `filteredItems()` — a search/approval filter narrowing what's *shown*
-  // says nothing about whether more rows exist on the server than were ever
-  // fetched.
+  // True only when the server reports more rows exist than this fetch could
+  // carry (RESOURCE_LIST_PAGE_SIZE) — meaningful again now that every filter
+  // on this screen narrows the fetch itself rather than merely what's shown.
   protected readonly isTruncated = computed(() => this.totalCount() > this.items().length);
 
-  // The list actually rendered: `items()` (this fetch's up-to-100 rows, by
-  // type and archived-state — both real server filters) narrowed by the
-  // client-side search text and approval-required state. Search matches
-  // only the resource's name — a list row carries no description to search
-  // against (step 2's own deviation note) — case-insensitively, by simple
-  // substring rather than any fuzzier match the API doesn't support either.
-  protected readonly filteredItems = computed(() => {
-    const query = this.searchText().trim().toLowerCase();
-    const approval = this.approvalFilter();
-
-    return this.items().filter((resource) => {
-      if (query && !resource.name.toLowerCase().includes(query)) {
-        return false;
-      }
-      if (approval === 'required' && !resource.requiresApproval) {
-        return false;
-      }
-      if (approval === 'notRequired' && resource.requiresApproval) {
-        return false;
-      }
-      return true;
-    });
-  });
-
   // Guards against a stale response overwriting a newer one if a second
-  // pill is clicked before the first request returns — the same
-  // "which one is still current" idea as AuthService.sessionGeneration,
-  // applied to requests instead of sessions.
+  // request goes out before the first returns (a type pill click racing a
+  // debounced search, for instance) — the same "which one is still current"
+  // idea as AuthService.sessionGeneration, applied to requests instead of
+  // sessions.
   private latestRequestId = 0;
 
   constructor() {
     this.load();
+
+    // distinctUntilChanged so clearing the box back to what it already was
+    // (or a debounce window elapsing with no real change) doesn't spend a
+    // request saying nothing new; takeUntilDestroyed so this subscription
+    // doesn't outlive the component.
+    this.searchRequestChanges$
+      .pipe(debounceTime(SEARCH_DEBOUNCE_MS), distinctUntilChanged(), takeUntilDestroyed())
+      .subscribe(() => this.load());
   }
 
   protected selectType(type: ResourceType | null): void {
@@ -126,19 +120,20 @@ export class ResourceListComponent {
   }
 
   protected onSearchInput(event: Event): void {
-    this.searchText.set((event.target as HTMLInputElement).value);
+    const value = (event.target as HTMLInputElement).value;
+    this.searchText.set(value);
+    this.searchRequestChanges$.next(value);
   }
 
   protected onApprovalFilterChange(event: Event): void {
     this.approvalFilter.set((event.target as HTMLSelectElement).value as ApprovalFilter);
+    this.load();
   }
 
   protected toggleMoreFilters(): void {
     this.showMoreFilters.set(!this.showMoreFilters());
   }
 
-  // A real server round-trip, unlike search/approval — see includeArchived's
-  // own comment above.
   protected onIncludeArchivedChange(event: Event): void {
     this.includeArchived.set((event.target as HTMLInputElement).checked);
     this.load();
@@ -170,14 +165,20 @@ export class ResourceListComponent {
     this.loading.set(true);
     this.loadError.set(false);
 
+    const approval = this.approvalFilter();
+
     this.resourcesService
       .list({
         pageSize: RESOURCE_LIST_PAGE_SIZE,
         type: this.selectedType() ?? undefined,
-        // Only sent when true, matching `type`'s own "omit at the default"
-        // convention (ResourcesService.buildListParams) — the backend's own
-        // default is already false, so there's nothing to say otherwise.
+        // Only sent when it says something other than the backend's own
+        // default (ResourcesService.buildListParams's "omit at the
+        // default" convention): includeArchived only when true, search
+        // only when non-empty, requiresApproval only when the dropdown
+        // has actually narrowed it.
         includeArchived: this.includeArchived() ? true : undefined,
+        search: this.searchText().trim() || undefined,
+        requiresApproval: approval === 'all' ? undefined : approval === 'required',
       })
       .subscribe({
         next: (page) => {

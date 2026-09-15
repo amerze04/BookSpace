@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { ResourceListComponent } from './resource-list.component';
 import { PagedResult } from '../../../core/http/paged-result';
 import { ResourceSummary, ResourceType } from '../resources.models';
@@ -14,7 +14,6 @@ const API = 'http://localhost:5270';
 // without going through real DOM events in a zoneless app.
 type TestableResourceListComponent = ResourceListComponent & {
   items: () => ResourceSummary[];
-  filteredItems: () => ResourceSummary[];
   totalCount: () => number;
   loading: () => boolean;
   loadError: () => boolean;
@@ -77,7 +76,17 @@ describe('ResourceListComponent', () => {
 
     TestBed.configureTestingModule({
       imports: [ResourceListComponent],
-      providers: [provideHttpClient(), provideHttpClientTesting(), { provide: Router, useValue: { navigate } }],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: Router, useValue: { navigate } },
+        // RouterLink (the "Book resource" link) injects ActivatedRoute
+        // whether or not a test ever calls detectChanges() — Angular's
+        // zoneless auto-render can still flush a scheduled render pass once
+        // fake timers are advanced (see the debounce tests below), which is
+        // enough to instantiate it and hit this if it's missing.
+        { provide: ActivatedRoute, useValue: {} },
+      ],
     });
 
     httpMock = TestBed.inject(HttpTestingController);
@@ -201,73 +210,108 @@ describe('ResourceListComponent', () => {
     expect(component.typeLabel('Room')).toBe('Room');
   });
 
-  // Step 3: client-side search + approval filter, over whatever the last
-  // fetch returned — no server round-trip for either (docs/wp7-plan.md).
-  describe('client-side search and approval filtering', () => {
-    function createComponentWithMixedItems(): TestableResourceListComponent {
-      const component = createFixture();
-      httpMock.expectOne((r) => r.url === `${API}/resources`).flush(
-        fakePage([
-          fakeResource({ id: 'r1', name: 'Conference Room A', requiresApproval: true }),
-          fakeResource({ id: 'r2', name: 'Pool Cars', resourceType: 'Vehicle', requiresApproval: false }),
-          fakeResource({ id: 'r3', name: 'Camera Kit', resourceType: 'Equipment', requiresApproval: false }),
-        ]),
-      );
-      return component;
-    }
+  // Step 3 redo (2026-09-15): search and approval moved server-side once
+  // GET /resources actually supported them — see CLAUDE.md's "Resource list
+  // filters extended for WP-7" entry. Neither does any client-side narrowing
+  // any more; `items()` is exactly what the last fetch returned.
+  describe('search (debounced) and approval filter (server round-trips)', () => {
+    it('does not fire a request on every keystroke — it waits for the debounce window', () => {
+      vi.useFakeTimers();
+      try {
+        const component = createLoadedComponent();
 
-    it('matches the search text against the resource name, case-insensitively', () => {
-      const component = createComponentWithMixedItems();
+        component.onSearchInput(fakeInputEvent('r'));
+        component.onSearchInput(fakeInputEvent('ro'));
+        component.onSearchInput(fakeInputEvent('room'));
 
-      component.onSearchInput(fakeInputEvent('ROOM'));
-
-      expect(component.filteredItems().map((r) => r.name)).toEqual(['Conference Room A']);
+        httpMock.expectNone((r) => r.url === `${API}/resources`);
+        // The displayed value updates immediately, independent of the debounce.
+        expect(component.searchText()).toBe('room');
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
-    it('shows every resource again once the search text is cleared', () => {
-      const component = createComponentWithMixedItems();
+    it('fires exactly one request, with the final text, once the debounce window elapses', async () => {
+      vi.useFakeTimers();
+      try {
+        const component = createLoadedComponent();
 
-      component.onSearchInput(fakeInputEvent('room'));
-      component.onSearchInput(fakeInputEvent(''));
+        component.onSearchInput(fakeInputEvent('r'));
+        component.onSearchInput(fakeInputEvent('ro'));
+        component.onSearchInput(fakeInputEvent('room'));
 
-      expect(component.filteredItems()).toHaveLength(3);
+        await vi.advanceTimersByTimeAsync(500);
+
+        // expectOne throws if more than one request went out — the case a
+        // missing debounce would produce (one per keystroke).
+        const req = httpMock.expectOne((r) => r.url === `${API}/resources`);
+        expect(req.request.params.get('search')).toBe('room');
+        req.flush(fakePage([fakeResource({ name: 'Conference Room A' })]));
+
+        expect(component.items().map((r) => r.name)).toEqual(['Conference Room A']);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
-    it('filters by approval requirement', () => {
-      const component = createComponentWithMixedItems();
+    it('omits the search param entirely once the box is cleared', async () => {
+      vi.useFakeTimers();
+      try {
+        const component = createLoadedComponent();
+
+        component.onSearchInput(fakeInputEvent('room'));
+        await vi.advanceTimersByTimeAsync(500);
+        httpMock.expectOne((r) => r.params.get('search') === 'room').flush(fakePage([fakeResource()]));
+
+        component.onSearchInput(fakeInputEvent(''));
+        await vi.advanceTimersByTimeAsync(500);
+
+        const req = httpMock.expectOne((r) => r.url === `${API}/resources`);
+        expect(req.request.params.has('search')).toBe(false);
+        req.flush(fakePage([fakeResource()]));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('maps the approval dropdown onto requiresApproval and re-fetches immediately, without debouncing', () => {
+      const component = createLoadedComponent();
 
       component.onApprovalFilterChange(fakeInputEvent('required'));
-      expect(component.filteredItems().map((r) => r.name)).toEqual(['Conference Room A']);
+      let req = httpMock.expectOne((r) => r.url === `${API}/resources`);
+      expect(req.request.params.get('requiresApproval')).toBe('true');
+      req.flush(fakePage([fakeResource({ name: 'Conference Room A', requiresApproval: true })]));
 
       component.onApprovalFilterChange(fakeInputEvent('notRequired'));
-      expect(component.filteredItems().map((r) => r.name)).toEqual(['Pool Cars', 'Camera Kit']);
+      req = httpMock.expectOne((r) => r.url === `${API}/resources`);
+      expect(req.request.params.get('requiresApproval')).toBe('false');
+      req.flush(fakePage([fakeResource({ name: 'Pool Cars', requiresApproval: false })]));
 
       component.onApprovalFilterChange(fakeInputEvent('all'));
-      expect(component.filteredItems()).toHaveLength(3);
+      req = httpMock.expectOne((r) => r.url === `${API}/resources`);
+      expect(req.request.params.has('requiresApproval')).toBe(false);
+      req.flush(fakePage([fakeResource()]));
     });
 
-    it('combines the search text and the approval filter', () => {
-      const component = createComponentWithMixedItems();
+    it('combines search and approval into one request once both are set', async () => {
+      vi.useFakeTimers();
+      try {
+        const component = createLoadedComponent();
 
-      // "o" matches "Conference Room A" and "Pool Cars" but not "Camera Kit";
-      // notRequired then drops "Conference Room A" too, since it requires
-      // approval — the intersection of the two filters, not either alone.
-      component.onSearchInput(fakeInputEvent('o'));
-      component.onApprovalFilterChange(fakeInputEvent('notRequired'));
+        component.onApprovalFilterChange(fakeInputEvent('notRequired'));
+        httpMock.expectOne((r) => r.params.get('requiresApproval') === 'false').flush(fakePage([fakeResource()]));
 
-      expect(component.filteredItems().map((r) => r.name)).toEqual(['Pool Cars']);
-    });
+        component.onSearchInput(fakeInputEvent('pool'));
+        await vi.advanceTimersByTimeAsync(500);
 
-    it('does not change isTruncated, which stays about the raw fetch, not what is currently shown', () => {
-      const component = createFixture();
-      httpMock
-        .expectOne((r) => r.url === `${API}/resources`)
-        .flush(fakePage(Array.from({ length: 100 }, (_, i) => fakeResource({ id: `r${i}`, name: `Room ${i}` })), 150));
-
-      component.onSearchInput(fakeInputEvent('no such resource'));
-
-      expect(component.filteredItems()).toHaveLength(0);
-      expect(component.isTruncated()).toBe(true);
+        const req = httpMock.expectOne((r) => r.url === `${API}/resources`);
+        expect(req.request.params.get('search')).toBe('pool');
+        expect(req.request.params.get('requiresApproval')).toBe('false');
+        req.flush(fakePage([fakeResource({ name: 'Pool Cars', requiresApproval: false })]));
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

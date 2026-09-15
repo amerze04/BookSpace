@@ -171,20 +171,36 @@ reviewable steps once it starts**, rather than compressed to move faster.
 
 ### Phase 1 — Resource list & detail (browse)
 
-**A contract gap found while breaking this phase down, settled with the
-owner 2026-09-15**: the list design has a free-text search box and an
-"Approval" filter dropdown, but `GET /resources` only ever supported `type`,
-`includeArchived`, and paging/sort — no search text, no approval-required
-filter. Rather than add backend query params inside a frontend package, or
-ship the screen visibly short of the design, the call is: **fetch one page at
-the API's own max (`pageSize=100`) and filter search text + approval-required
-client-side**, over that fetched set. `type` and `includeArchived` stay real
-server round-trips, since the API already supports both. Documented limit,
-not silently swallowed: past 100 resources in one tenant, the client-side
-filters would miss rows the server never sent — revisit only if a tenant's
-catalogue actually grows that large. If `totalCount` from the response ever
-exceeds what was fetched, the list says so (§ Step 2) rather than quietly
-under-counting.
+**Superseded 2026-09-15 — reversed by the owner.** The paragraph below is
+kept, struck through in spirit rather than deleted, because step 3 was
+already built against it and the reversal is itself worth a record: the
+first call was client-side filtering to avoid a backend change inside a
+frontend package; the owner decided the opposite was worth doing properly.
+`GET /resources` now has real `search` and `requiresApproval` query
+parameters (backend work, done and tested 2026-09-15 — see the entry in
+CLAUDE.md §12 for the full detail: `ListResourcesQueryRequest`,
+`ListResourcesQueryRequestValidator`, `ResourceRepository.ListAsync`, and
+`ResourcesController.ListResourcesRequest`, plus 10 new integration tests).
+Frontend step 3 (search box + approval dropdown) had already been built
+against the old, client-side answer in this same session and was redone
+against the real endpoints the same day — see **step 3**, below, now marked
+done. Switching to a real round-trip brought one new requirement: **the
+search box debounces** (500ms after the last keystroke) rather than firing a
+request per character, since every keystroke now costs an HTTP call instead
+of a `computed()` re-filter.
+
+<details>
+<summary>Original call (2026-09-15, superseded same day)</summary>
+
+A contract gap found while breaking this phase down: the list design has a
+free-text search box and an "Approval" filter dropdown, but `GET /resources`
+only ever supported `type`, `includeArchived`, and paging/sort — no search
+text, no approval-required filter. Rather than add backend query params
+inside a frontend package, or ship the screen visibly short of the design,
+the call was: fetch one page at the API's own max (`pageSize=100`) and filter
+search text + approval-required client-side, over that fetched set.
+
+</details>
 
 **Steps:**
 
@@ -238,16 +254,41 @@ under-counting.
    component-instance tests via `HttpTestingController`, not full DOM
    rendering tests.
 
-3. **Resource list — search, approval filter, archived toggle.** The
+3. **Resource list — search, approval filter, archived toggle.** ~~The
    search box and "Approval" dropdown filter the already-fetched set in the
-   browser, per the settled call above. "More filters" is scoped down to the
-   one filter that actually has a backend parameter behind it —
-   `includeArchived` — since nothing in the source PDF or the design
-   specifies what else it should contain; anything broader is deferred, not
-   invented. `includeArchived` is a real server round-trip, same as `type`.
-   **Tests:** the client-side filter predicate (search-text match,
-   approval-required match) as plain unit tests over fixture data — the
-   logic this step actually adds, independent of HTTP or rendering.
+   browser~~ — superseded same day, redone below. "More filters" holding only
+   `includeArchived` was never affected by the reversal — that one was always
+   a real server round-trip.
+
+   **Done, redone against the real endpoints (2026-09-15).** Now that `search`
+   and `requiresApproval` are real query params (CLAUDE.md's "Resource list
+   filters extended for WP-7" entry), `ResourceListComponent` sends both as
+   ordinary server round-trips, same as `selectType`/`includeArchived` —
+   `filteredItems` (the client-side computed from the first attempt) is gone;
+   `items` is simply whatever the last fetch returned. The search input
+   **debounces 500ms** after the last keystroke
+   (`Subject` → `debounceTime(500)` → `distinctUntilChanged()` →
+   `takeUntilDestroyed()`, subscribed once in the constructor) before it
+   triggers `load()` — the box's own displayed value (`searchText`) still
+   updates on every keystroke so typing never feels laggy, only the *request*
+   waits. The existing `latestRequestId` stale-response guard covers every
+   trigger (type, search, approval, archived) through the same `load()`, so a
+   debounced search firing after a type pill was already clicked can't
+   overwrite the newer response. `isTruncated` keeps meaning what it always
+   meant (more rows exist server-side than this page fetched) but is now
+   truthful in one more case: a search/approval combination could itself be
+   truncated at 100 rows, which the old client-side-filtering answer
+   couldn't express (a search narrowed the *view*, never the *fetch*).
+   **Tests:** the debounce itself (no request until the window elapses, and
+   only one request — with the final text — once it does, via
+   `vi.useFakeTimers()`/`vi.advanceTimersByTimeAsync`, the same technique
+   `auth.service.spec.ts` already used for its own timeout), the approval
+   dropdown's immediate (non-debounced) round-trip, and both combined into
+   one request. One test-infrastructure gap this surfaced and fixed:
+   `ResourceListComponent`'s spec had never provided `ActivatedRoute` for
+   `RouterLink` (the "Book resource" link) — invisible until a test actually
+   flushed Angular's zoneless auto-render (`vi.advanceTimersByTimeAsync`
+   does), which none of steps 2–3's earlier tests happened to do.
 
 4. **Resource detail.** `features/resources/detail/` matching the provided
    design: header (icon, name, type, approval badge, description), the
