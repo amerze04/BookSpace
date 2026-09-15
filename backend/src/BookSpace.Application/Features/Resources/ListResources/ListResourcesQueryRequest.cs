@@ -21,10 +21,27 @@ namespace BookSpace.Application.Features.Resources.ListResources;
 //
 // Optional, and null means every type. Unlike IncludeArchived there is no
 // sensible default subset to hide.
+//
+// Search and RequiresApproval added 2026-09-15, for the WP-7 browse screen's
+// search box and "Approval" filter: both were designed against this endpoint
+// before it could actually answer them, and client-side filtering over one
+// fetched page was the accepted stopgap (docs/wp7-plan.md) only until this
+// landed. Search matches Name or Description, case sensitivity following
+// whatever the database's collation already does for LIKE — the same
+// non-decision this codebase makes everywhere else a string is compared, not
+// a new one. Null means "no text filter", exactly like Type meaning "every
+// type"; an empty string is treated as null too; see the repository.
+//
+// RequiresApproval is a nullable bool, not a bool defaulting to false, because
+// unlike IncludeArchived there is no sensible default subset to hide — a
+// member browsing wants to see both kinds of resource unless they ask
+// otherwise.
 public sealed record ListResourcesQueryRequest(
     int Page = PagingDefaults.Page,
     int PageSize = PagingDefaults.PageSize,
     string? Sort = null,
     bool IncludeArchived = false,
-    ResourceType? Type = null)
+    ResourceType? Type = null,
+    string? Search = null,
+    bool? RequiresApproval = null)
     : IRequest<PagedResult<ListResourcesQueryResponse>>, IPagedQuery;

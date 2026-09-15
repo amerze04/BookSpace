@@ -71,11 +71,11 @@
       <p>Couldn't load resources.</p>
       <button type="button" class="retry-button" (click)="retry()">Try again</button>
     </div>
-  } @else if (filteredItems().length === 0) {
+  } @else if (items().length === 0) {
     <p class="state-message">No resources match this filter.</p>
   } @else {
     <div class="resource-grid">
-      @for (resource of filteredItems(); track resource.id) {
+      @for (resource of items(); track resource.id) {
         <div
           class="resource-card"
           role="link"
