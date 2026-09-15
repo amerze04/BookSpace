@@ -14,17 +14,34 @@ const API = 'http://localhost:5270';
 // without going through real DOM events in a zoneless app.
 type TestableResourceListComponent = ResourceListComponent & {
   items: () => ResourceSummary[];
+  filteredItems: () => ResourceSummary[];
   totalCount: () => number;
   loading: () => boolean;
   loadError: () => boolean;
   isTruncated: () => boolean;
   selectedType: () => ResourceType | null;
+  includeArchived: () => boolean;
+  showMoreFilters: () => boolean;
+  searchText: () => string;
+  approvalFilter: () => string;
   selectType(type: ResourceType | null): void;
+  onSearchInput(event: Event): void;
+  onApprovalFilterChange(event: Event): void;
+  onIncludeArchivedChange(event: Event): void;
+  toggleMoreFilters(): void;
   retry(): void;
   goToDetail(id: string): void;
   capacityLabel(resource: ResourceSummary): string;
   typeLabel(type: ResourceType): string;
 };
+
+function fakeInputEvent(value: string): Event {
+  return { target: { value } } as unknown as Event;
+}
+
+function fakeCheckboxEvent(checked: boolean): Event {
+  return { target: { checked } } as unknown as Event;
+}
 
 function fakeResource(overrides: Partial<ResourceSummary> = {}): ResourceSummary {
   return {
@@ -182,5 +199,104 @@ describe('ResourceListComponent', () => {
 
     expect(component.typeLabel('LabSlot')).toBe('Lab slot');
     expect(component.typeLabel('Room')).toBe('Room');
+  });
+
+  // Step 3: client-side search + approval filter, over whatever the last
+  // fetch returned — no server round-trip for either (docs/wp7-plan.md).
+  describe('client-side search and approval filtering', () => {
+    function createComponentWithMixedItems(): TestableResourceListComponent {
+      const component = createFixture();
+      httpMock.expectOne((r) => r.url === `${API}/resources`).flush(
+        fakePage([
+          fakeResource({ id: 'r1', name: 'Conference Room A', requiresApproval: true }),
+          fakeResource({ id: 'r2', name: 'Pool Cars', resourceType: 'Vehicle', requiresApproval: false }),
+          fakeResource({ id: 'r3', name: 'Camera Kit', resourceType: 'Equipment', requiresApproval: false }),
+        ]),
+      );
+      return component;
+    }
+
+    it('matches the search text against the resource name, case-insensitively', () => {
+      const component = createComponentWithMixedItems();
+
+      component.onSearchInput(fakeInputEvent('ROOM'));
+
+      expect(component.filteredItems().map((r) => r.name)).toEqual(['Conference Room A']);
+    });
+
+    it('shows every resource again once the search text is cleared', () => {
+      const component = createComponentWithMixedItems();
+
+      component.onSearchInput(fakeInputEvent('room'));
+      component.onSearchInput(fakeInputEvent(''));
+
+      expect(component.filteredItems()).toHaveLength(3);
+    });
+
+    it('filters by approval requirement', () => {
+      const component = createComponentWithMixedItems();
+
+      component.onApprovalFilterChange(fakeInputEvent('required'));
+      expect(component.filteredItems().map((r) => r.name)).toEqual(['Conference Room A']);
+
+      component.onApprovalFilterChange(fakeInputEvent('notRequired'));
+      expect(component.filteredItems().map((r) => r.name)).toEqual(['Pool Cars', 'Camera Kit']);
+
+      component.onApprovalFilterChange(fakeInputEvent('all'));
+      expect(component.filteredItems()).toHaveLength(3);
+    });
+
+    it('combines the search text and the approval filter', () => {
+      const component = createComponentWithMixedItems();
+
+      // "o" matches "Conference Room A" and "Pool Cars" but not "Camera Kit";
+      // notRequired then drops "Conference Room A" too, since it requires
+      // approval — the intersection of the two filters, not either alone.
+      component.onSearchInput(fakeInputEvent('o'));
+      component.onApprovalFilterChange(fakeInputEvent('notRequired'));
+
+      expect(component.filteredItems().map((r) => r.name)).toEqual(['Pool Cars']);
+    });
+
+    it('does not change isTruncated, which stays about the raw fetch, not what is currently shown', () => {
+      const component = createFixture();
+      httpMock
+        .expectOne((r) => r.url === `${API}/resources`)
+        .flush(fakePage(Array.from({ length: 100 }, (_, i) => fakeResource({ id: `r${i}`, name: `Room ${i}` })), 150));
+
+      component.onSearchInput(fakeInputEvent('no such resource'));
+
+      expect(component.filteredItems()).toHaveLength(0);
+      expect(component.isTruncated()).toBe(true);
+    });
+  });
+
+  describe('"More filters" — includeArchived', () => {
+    it('toggles the panel open and closed without touching the network', () => {
+      const component = createLoadedComponent();
+
+      expect(component.showMoreFilters()).toBe(false);
+      component.toggleMoreFilters();
+      expect(component.showMoreFilters()).toBe(true);
+      component.toggleMoreFilters();
+      expect(component.showMoreFilters()).toBe(false);
+
+      httpMock.expectNone((r) => r.url === `${API}/resources`);
+    });
+
+    it('re-fetches with includeArchived=true when checked, and omits the param again once unchecked', () => {
+      const component = createLoadedComponent();
+
+      component.onIncludeArchivedChange(fakeCheckboxEvent(true));
+      const withArchived = httpMock.expectOne((r) => r.url === `${API}/resources`);
+      expect(withArchived.request.params.get('includeArchived')).toBe('true');
+      withArchived.flush(fakePage([fakeResource({ id: 'r4', name: 'Retired Room', isArchived: true })]));
+      expect(component.includeArchived()).toBe(true);
+
+      component.onIncludeArchivedChange(fakeCheckboxEvent(false));
+      const withoutArchived = httpMock.expectOne((r) => r.url === `${API}/resources`);
+      expect(withoutArchived.request.params.has('includeArchived')).toBe(false);
+      withoutArchived.flush(fakePage([fakeResource()]));
+    });
   });
 });

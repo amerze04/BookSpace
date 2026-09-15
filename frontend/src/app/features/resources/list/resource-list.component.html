@@ -1,6 +1,48 @@
 <div class="resource-list">
   <p class="intro">Find and book the resources your team needs.</p>
 
+  <div class="filter-bar">
+    <input
+      type="search"
+      class="search-input"
+      placeholder="Search resources…"
+      aria-label="Search resources by name"
+      [value]="searchText()"
+      (input)="onSearchInput($event)"
+    />
+
+    <select
+      class="approval-select"
+      aria-label="Filter by approval requirement"
+      [value]="approvalFilter()"
+      (change)="onApprovalFilterChange($event)"
+    >
+      <option value="all">All approval types</option>
+      <option value="required">Requires approval</option>
+      <option value="notRequired">No approval required</option>
+    </select>
+
+    <div class="more-filters">
+      <button
+        type="button"
+        class="more-filters-button"
+        [attr.aria-expanded]="showMoreFilters()"
+        (click)="toggleMoreFilters()"
+      >
+        More filters
+      </button>
+
+      @if (showMoreFilters()) {
+        <div class="more-filters-panel">
+          <label class="checkbox-field">
+            <input type="checkbox" [checked]="includeArchived()" (change)="onIncludeArchivedChange($event)" />
+            Include archived resources
+          </label>
+        </div>
+      }
+    </div>
+  </div>
+
   <div class="type-filters" role="tablist" aria-label="Filter by resource type">
     @for (filter of typeFilters; track filter.label) {
       <button
@@ -29,11 +71,11 @@
       <p>Couldn't load resources.</p>
       <button type="button" class="retry-button" (click)="retry()">Try again</button>
     </div>
-  } @else if (items().length === 0) {
+  } @else if (filteredItems().length === 0) {
     <p class="state-message">No resources match this filter.</p>
   } @else {
     <div class="resource-grid">
-      @for (resource of items(); track resource.id) {
+      @for (resource of filteredItems(); track resource.id) {
         <div
           class="resource-card"
           role="link"
