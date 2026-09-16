@@ -5,6 +5,8 @@ import { ActivatedRoute, RouterLink } from '@angular/router';
 import { BreadcrumbService } from '../../../layout/breadcrumb.service';
 import { ResourcesService } from '../resources.service';
 import { AvailabilityWindowDetail, DayOfWeekName, ResourceDetail, ResourceType } from '../resources.models';
+import { ResourceTypeIconComponent } from '../../../shared/resource-type/resource-type-icon.component';
+import { resourceCapacityLabel, resourceTypeLabel } from '../../../shared/resource-type/resource-type';
 
 // Monday-first, matching the design — not the DayOfWeek enum's own
 // Sunday-first declaration order, which nothing on the wire promises anyway
@@ -62,22 +64,9 @@ function formatDuration(minutes: number | null, whenUnset: string): string {
   return remainder === 0 ? hourLabel : `${hourLabel} ${remainder} min`;
 }
 
-// Duplicated from ResourceListComponent rather than extracted — the same
-// "third occurrence" rule brand-mark was extracted under (WP-6 Phase 3):
-// this is only the second place either mapping is needed. Extract a shared
-// module once a third feature (the booking form, most likely) needs the
-// same type icon or label.
-const RESOURCE_TYPE_LABELS: Record<ResourceType, string> = {
-  Room: 'Room',
-  Equipment: 'Equipment',
-  Vehicle: 'Vehicle',
-  LabSlot: 'Lab slot',
-  Other: 'Other',
-};
-
 @Component({
   selector: 'app-resource-detail',
-  imports: [RouterLink],
+  imports: [RouterLink, ResourceTypeIconComponent],
   templateUrl: './resource-detail.component.html',
   styleUrl: './resource-detail.component.scss',
 })
@@ -135,12 +124,16 @@ export class ResourceDetailComponent {
     this.load();
   }
 
+  // Delegates to the shared helper (extracted 2026-09-16, WP-7 Phase 2, once
+  // the availability screen became a third caller) — kept as a method here
+  // rather than called directly from the template so existing call sites and
+  // tests don't change shape.
   protected typeLabel(type: ResourceType): string {
-    return RESOURCE_TYPE_LABELS[type];
+    return resourceTypeLabel(type);
   }
 
   protected capacityLabel(resource: ResourceDetail): string {
-    return resource.capacity === 1 ? 'Single resource' : `${resource.capacity} units`;
+    return resourceCapacityLabel(resource);
   }
 
   protected minDurationLabel(resource: ResourceDetail): string {

@@ -1,0 +1,13 @@
+// The host is sized by whichever page places it (list card vs. detail header
+// vs. the availability screen's summary card each want a different badge
+// size) — this component only ever fills whatever box it's given.
+:host {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+svg {
+  width: 100%;
+  height: 100%;
+}

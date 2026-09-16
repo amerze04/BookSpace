@@ -4,6 +4,8 @@ import { Router, RouterLink } from '@angular/router';
 import { Subject, debounceTime, distinctUntilChanged } from 'rxjs';
 import { ResourcesService } from '../resources.service';
 import { ResourceSummary, ResourceType } from '../resources.models';
+import { ResourceTypeIconComponent } from '../../../shared/resource-type/resource-type-icon.component';
+import { resourceCapacityLabel, resourceTypeLabel } from '../../../shared/resource-type/resource-type';
 
 // A generous page rather than a real pagination UI — there is no client-side
 // filtering left to justify fetching the API's own max (that workaround is
@@ -36,17 +38,6 @@ const TYPE_FILTERS: TypeFilterOption[] = [
   { label: 'Other', value: 'Other' },
 ];
 
-// The singular label shown on a card, as opposed to TYPE_FILTERS' plural
-// pill labels ("Rooms" the filter, "Room" the resource) — two different
-// pieces of copy for the same enum value, not one reused awkwardly for both.
-const RESOURCE_TYPE_LABELS: Record<ResourceType, string> = {
-  Room: 'Room',
-  Equipment: 'Equipment',
-  Vehicle: 'Vehicle',
-  LabSlot: 'Lab slot',
-  Other: 'Other',
-};
-
 // The "Approval" dropdown's three states, mapped onto
 // ListResourcesParams.requiresApproval (true / false / omitted) in load() —
 // a real server round-trip since 2026-09-15, not a client-side predicate.
@@ -54,7 +45,7 @@ export type ApprovalFilter = 'all' | 'required' | 'notRequired';
 
 @Component({
   selector: 'app-resource-list',
-  imports: [RouterLink],
+  imports: [RouterLink, ResourceTypeIconComponent],
   templateUrl: './resource-list.component.html',
   styleUrl: './resource-list.component.scss',
 })
@@ -147,17 +138,15 @@ export class ResourceListComponent {
     void this.router.navigate(['/resources', resourceId]);
   }
 
+  // Delegates to the shared helper (extracted 2026-09-16, WP-7 Phase 2) —
+  // kept as a method here rather than called directly from the template so
+  // existing call sites and tests don't change shape.
   protected typeLabel(type: ResourceType): string {
-    return RESOURCE_TYPE_LABELS[type];
+    return resourceTypeLabel(type);
   }
 
-  // Derived purely from Capacity, never from ResourceType or the resource's
-  // name — decisions/0005 already makes Capacity the one axis that means
-  // exclusive vs. pooled, and CLAUDE.md §11 rules out inventing a rule like
-  // "Hot Desk Area says 'Multiple desks'" that isn't backed by any field the
-  // API actually returns.
   protected capacityLabel(resource: ResourceSummary): string {
-    return resource.capacity === 1 ? 'Single resource' : `${resource.capacity} units`;
+    return resourceCapacityLabel(resource);
   }
 
   private load(): void {
