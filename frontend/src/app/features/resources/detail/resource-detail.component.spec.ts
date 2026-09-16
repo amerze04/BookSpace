@@ -160,6 +160,25 @@ describe('ResourceDetailComponent', () => {
     expect(component.resource()?.name).toBe('Pool Cars');
   });
 
+  // Item 4: A starts loading -> route changes to B -> B completes -> A
+  // completes later — A must never win. switchMap makes this true by
+  // construction (it cancels A's in-flight request the moment B's id comes
+  // through), not by a manual "is this response still current" check.
+  it('cancels a still-pending fetch when the route id changes before it resolves, so a stale response can never overwrite the newer one', () => {
+    const fixture = createFixture('r1');
+    const component = fixture.componentInstance as TestableResourceDetailComponent;
+    const firstReq = httpMock.expectOne(`${API}/resources/r1`);
+
+    paramMap$.next(convertToParamMap({ id: 'r2' }));
+
+    const secondReq = httpMock.expectOne(`${API}/resources/r2`);
+    secondReq.flush(fakeDetail({ id: 'r2', name: 'Pool Cars' }));
+
+    expect(firstReq.cancelled).toBe(true);
+    expect(component.resource()?.name).toBe('Pool Cars');
+    expect(component.loading()).toBe(false);
+  });
+
   it('builds all seven weekday rows, Monday first, "Not bookable" where there is no window', () => {
     const fixture = createFixture();
     const component = fixture.componentInstance as TestableResourceDetailComponent;
@@ -232,5 +251,28 @@ describe('ResourceDetailComponent', () => {
 
     expect(component.capacityLabel(fakeDetail({ capacity: 1 }))).toBe('Single resource');
     expect(component.capacityLabel(fakeDetail({ capacity: 5 }))).toBe('5 units');
+  });
+
+  // Item 9: "Check availability" leads somewhere that correctly refuses to
+  // book an archived resource anyway, but offering it at all is a dead end
+  // worth not presenting in the first place.
+  it('shows a plain archived notice instead of "Check availability" for an archived resource', () => {
+    const fixture = createFixture();
+    httpMock.expectOne(`${API}/resources/r1`).flush(fakeDetail({ isArchived: true }));
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.primary-button')).toBeNull();
+    expect(el.querySelector('.archived-notice')?.textContent).toContain('Archived');
+  });
+
+  it('shows "Check availability" for an active resource', () => {
+    const fixture = createFixture();
+    httpMock.expectOne(`${API}/resources/r1`).flush(fakeDetail({ isArchived: false }));
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.primary-button')?.textContent).toContain('Check availability');
+    expect(el.querySelector('.archived-notice')).toBeNull();
   });
 });

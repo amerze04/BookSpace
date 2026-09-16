@@ -6,23 +6,64 @@ import { environment } from '../../../environments/environment';
 import { NotificationService } from '../notifications/notification.service';
 import { AuthService } from './auth.service';
 
+// The configured API origin, parsed once. `pathname` is normalized to strip
+// a trailing slash so a configured base path (if one is ever added, e.g. a
+// reverse-proxied "/api") has a clean boundary to test against below.
+const API_BASE_URL = new URL(environment.apiBaseUrl);
+const API_BASE_PATH = API_BASE_URL.pathname.replace(/\/+$/, '');
+
 // Never try to silent-refresh a 401 from these — that 401 already IS the
 // answer (wrong credentials, or the refresh token itself was rejected), and
-// retrying it as if the access token just expired would loop.
-const AUTH_ENDPOINTS = ['/auth/login', '/auth/refresh'];
+// retrying it as if the access token just expired would loop. Resolved
+// against API_BASE_PATH so this still lines up if a base path is ever added.
+const AUTH_ENDPOINT_PATHS = new Set(['/auth/login', '/auth/refresh'].map((path) => `${API_BASE_PATH}${path}`));
+
+// Deliberately NOT a startsWith/includes substring test — those are fooled by
+// a lookalike origin that merely shares a text prefix, e.g.
+// "http://localhost:52700" or "http://localhost:5270.evil.com" both pass
+// `startsWith('http://localhost:5270')`. Parsing both sides with URL and
+// comparing the resolved `origin` (scheme + host + port) is exact. Requests
+// with an unparseable URL are treated as external — safe, since apiBaseUrl
+// requests are always well-formed absolute URLs in this app.
+function isBookSpaceApiRequest(requestUrl: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(requestUrl, API_BASE_URL);
+  } catch {
+    return false;
+  }
+
+  if (url.origin !== API_BASE_URL.origin) {
+    return false;
+  }
+
+  // Only matters once a base path is configured — today API_BASE_PATH is ''
+  // (root), so every same-origin request qualifies. `startsWith` here is
+  // safe because it's anchored to a "/" boundary segment, not a raw prefix
+  // of the full URL — "/api2/..." cannot match a "/api" base path.
+  if (!API_BASE_PATH) {
+    return true;
+  }
+  return url.pathname === API_BASE_PATH || url.pathname.startsWith(`${API_BASE_PATH}/`);
+}
+
+function isAuthEndpointRequest(requestUrl: string): boolean {
+  try {
+    return AUTH_ENDPOINT_PATHS.has(new URL(requestUrl, API_BASE_URL).pathname);
+  } catch {
+    return false;
+  }
+}
 
 export const authInterceptor: HttpInterceptorFn = (request, next) => {
   // Only ever attach BookSpace's own access token, and only ever run its
-  // refresh dance, against BookSpace's own API. Every request this app makes
-  // to its backend is built from environment.apiBaseUrl (no relative URLs
-  // anywhere in the app), so this is a precise test, not a heuristic — and it
-  // is load-bearing: this interceptor is registered for every HttpClient
-  // request in the app, so without this check a bearer token minted for this
-  // backend would be sent to whatever other host a future feature calls
-  // (a map tile provider, a file upload target, anything), and that third
-  // party's own 401 would trigger this app's refresh-and-retry logic against
-  // its URL.
-  if (!request.url.startsWith(environment.apiBaseUrl)) {
+  // refresh dance, against BookSpace's own API. This interceptor is
+  // registered for every HttpClient request in the app, so without this
+  // check a bearer token minted for this backend would be sent to whatever
+  // other host a future feature calls (a map tile provider, a file upload
+  // target, anything), and that third party's own 401 would trigger this
+  // app's refresh-and-retry logic against its URL.
+  if (!isBookSpaceApiRequest(request.url)) {
     return next(request);
   }
 
@@ -35,7 +76,7 @@ export const authInterceptor: HttpInterceptorFn = (request, next) => {
   return next(authorizedRequest).pipe(
     catchError((error: unknown) => {
       const isUnauthorized = error instanceof HttpErrorResponse && error.status === 401;
-      const isAuthEndpoint = AUTH_ENDPOINTS.some((path) => request.url.includes(path));
+      const isAuthEndpoint = isAuthEndpointRequest(request.url);
 
       if (!isUnauthorized || isAuthEndpoint) {
         return throwError(() => error);

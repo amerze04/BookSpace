@@ -2,6 +2,7 @@ import { Component, DestroyRef, HostListener, computed, inject, signal } from '@
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { HttpErrorResponse } from '@angular/common/http';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { Observable, Subject, catchError, distinctUntilChanged, filter, map, merge, of, switchMap } from 'rxjs';
 import { BreadcrumbService } from '../../layout/breadcrumb.service';
 import { ResourcesService } from '../resources/resources.service';
 import { ResourceDetail } from '../resources/resources.models';
@@ -11,15 +12,25 @@ import { AvailabilityService } from './availability.service';
 import { AvailabilityResponse, LocalDateString } from './availability.models';
 import {
   addDays,
-  addMinutesToUtc,
   formatLocalDate,
+  formatLocalDateWithFullWeekday,
   formatLocalDateWithWeekday,
   formatLocalDateWithWeekdayAndYear,
   formatMinutesOfDay,
   rangeLengthDays,
   resourceLocalToday,
+  weekdayOf,
 } from './local-date';
-import { DaySegment, buildAxisTicks, buildDayRows, clamp, computeAxis, datesInRange, minuteSpanStylePercent } from './availability-grid';
+import {
+  DaySegment,
+  buildAxisTicks,
+  buildDayRows,
+  clamp,
+  computeAxis,
+  datesInRange,
+  minuteSpanStylePercent,
+  resourceLocalMinutesToUtc,
+} from './availability-grid';
 
 // Mirrors AvailabilityQueryRules.MaxRangeDays on the backend exactly — the
 // point is to refuse an over-long range in the UI *before* the request goes
@@ -34,14 +45,25 @@ const DEFAULT_WINDOW_DAYS = 7;
 
 // The Start/End time dropdowns' granularity (step 6) — matches the design's
 // own example times (09:15, 11:30), and a round number is easier to scan in
-// a dropdown than an arbitrary one.
+// a dropdown than an arbitrary one. Purely a presentation/interaction
+// choice, never a business rule: nothing in the PRD or work packages ties
+// booking granularity to 15 minutes, and decisions/0011-adjacent backend
+// semantics allow whole-second precision. Item 5's fix keeps this constant
+// scoped to what it actually governs (dropdown steps, drag snapping, and —
+// via effectiveMinDuration below — keeping those dropdowns' own bounds
+// non-degenerate) and out of anywhere that asserts what the *resource*
+// requires; see durationError's own comment for where that line is drawn.
 const TIME_OPTION_STEP_MINUTES = 15;
 
-// The resource's own minDurationMinutes/maxDurationMinutes are enforced here
-// too (owner's correction, after step 6's first pass deferred them entirely
-// to Phase 3's actual booking submission) — a `null` minimum still requires
-// *some* positive duration (one step), and a `null` maximum is genuinely
-// unbounded up to the segment's own extent.
+// A bound for the Start/End dropdowns' own option ranges, not a claim about
+// what the resource requires — used only to stop those two dropdowns from
+// offering a combination that would leave no room for a nonzero, step-
+// aligned duration. `null` (no configured minimum) falls back to one step
+// for exactly that mechanical reason, never as a stand-in minimum duration:
+// durationError below checks the resource's real minDurationMinutes
+// directly, so a resource with none configured can never see a false
+// "requires at least 15 minutes" message this function's own fallback would
+// otherwise imply.
 function effectiveMinDuration(resource: ResourceDetail): number {
   return resource.minDurationMinutes ?? TIME_OPTION_STEP_MINUTES;
 }
@@ -49,6 +71,8 @@ function effectiveMinDuration(resource: ResourceDetail): number {
 function effectiveMaxDuration(resource: ResourceDetail): number {
   return resource.maxDurationMinutes ?? Number.POSITIVE_INFINITY;
 }
+
+type ResourceLoadResult = { kind: 'success'; resource: ResourceDetail } | { kind: 'error'; error: unknown };
 
 function validateRange(from: LocalDateString, to: LocalDateString): string | null {
   if (!from || !to) {
@@ -230,6 +254,12 @@ export class AvailabilityComponent {
   // than the resource's own minDurationMinutes (a blackout can cut a window
   // down to an odd, short remainder), the one case neither dropdown's own
   // bounds can route around.
+  //
+  // Item 5: checks resource.minDurationMinutes directly, not
+  // effectiveMinDuration — a resource with no configured minimum (`null`)
+  // is valid at whole-second precision on the backend, so it must never see
+  // a "requires at least 15 minutes" message that attributes the UI's own
+  // dropdown granularity to it as if it were the resource's own policy.
   protected readonly durationError = computed(() => {
     const resource = this.resource();
     const segment = this.selectedSegment();
@@ -237,8 +267,8 @@ export class AvailabilityComponent {
       return null;
     }
     const duration = this.selectedEndMinutes() - this.selectedStartMinutes();
-    const minDuration = effectiveMinDuration(resource);
-    if (duration < minDuration) {
+    const minDuration = resource.minDurationMinutes;
+    if (minDuration !== null && duration < minDuration) {
       return `This resource requires bookings of at least ${formatSelectionDuration(minDuration)}, but this slot only fits ${formatSelectionDuration(segment.endMinutes - segment.startMinutes)}.`;
     }
     const maxDuration = effectiveMaxDuration(resource);
@@ -263,6 +293,11 @@ export class AvailabilityComponent {
 
   private resourceId: string;
 
+  // Fed by retry() alongside route-id changes, so both funnel through the
+  // same switchMap below rather than each racing it with a separate call to
+  // a shared load() method.
+  private readonly retry$ = new Subject<void>();
+
   constructor() {
     const initialId = this.route.snapshot.paramMap.get('id');
     if (!initialId) {
@@ -270,24 +305,43 @@ export class AvailabilityComponent {
     }
     this.resourceId = initialId;
 
-    this.route.paramMap.pipe(takeUntilDestroyed()).subscribe((params) => {
-      const id = params.get('id');
-      if (id && id !== this.resourceId) {
-        this.resourceId = id;
-        // A different resource can have a different timezone and a
-        // different capacity — the previous range/quantity aren't
-        // necessarily meaningful for it, so both reset rather than carrying
-        // over silently.
-        this.fromDate.set('');
-        this.toDate.set('');
-        this.quantity.set(1);
-        this.availabilityResponse.set(null);
-        this.availabilityError.set(false);
-        this.load();
-      }
-    });
+    // switchMap (item 4) is what makes a stale response impossible rather
+    // than merely ignored: a route-id change or a retry() both cancel
+    // whatever resource fetch is still in flight (switchMap unsubscribes
+    // the previous inner Observable, which aborts the underlying HTTP
+    // request) before starting the next one. The availability fetch this
+    // cascades into (applyResourceResult -> fetchAvailability) is guarded
+    // separately, by fetchAvailability's own latestAvailabilityRequestId —
+    // a different race (quantity/range controls, not route navigation)
+    // that already had its own tests before this change.
+    const idChanges$ = this.route.paramMap.pipe(
+      map((params) => params.get('id')),
+      filter((id): id is string => !!id),
+      distinctUntilChanged(),
+    );
 
-    this.load();
+    merge(idChanges$, this.retry$.pipe(map(() => this.resourceId)))
+      .pipe(
+        map((id) => {
+          const isNewResource = id !== this.resourceId;
+          this.resourceId = id;
+          if (isNewResource) {
+            // A different resource can have a different timezone and a
+            // different capacity — the previous range/quantity aren't
+            // necessarily meaningful for it, so both reset rather than
+            // carrying over silently.
+            this.fromDate.set('');
+            this.toDate.set('');
+            this.quantity.set(1);
+            this.availabilityResponse.set(null);
+            this.availabilityError.set(false);
+          }
+          return id;
+        }),
+        switchMap((id) => this.fetchResource$(id)),
+        takeUntilDestroyed(),
+      )
+      .subscribe((result) => this.applyResourceResult(result));
 
     // This screen's own crumb is inserted, not overridden (see
     // BreadcrumbService's comment on why availability needs the second
@@ -298,7 +352,7 @@ export class AvailabilityComponent {
   }
 
   protected retry(): void {
-    this.load();
+    this.retry$.next();
   }
 
   protected typeLabel(type: ResourceDetail['resourceType']): string {
@@ -420,6 +474,47 @@ export class AvailabilityComponent {
     return formatLocalDateWithWeekday(date);
   }
 
+  // Item 6: the availability API returns bookable intervals only, so an
+  // empty day doesn't tell fully booked, blacked out, or insufficient
+  // pooled capacity apart from a genuinely closed weekday — the API
+  // deliberately doesn't expose which one it is (CLAUDE.md §6's own
+  // availability-window note: narrowing a window cancels nothing, so
+  // "inside a window" isn't an invariant kept after creation, and neither
+  // is the reverse). "No bookable hours" is only ever shown when the
+  // already-loaded ResourceDetail's own availabilityWindows *prove* that
+  // weekday has no window at all; every other empty day gets the honest,
+  // non-specific "No availability".
+  protected emptyDayLabel(date: LocalDateString): string {
+    return this.isWeekdayProvenClosed(date) ? 'No bookable hours' : 'No availability';
+  }
+
+  private isWeekdayProvenClosed(date: LocalDateString): boolean {
+    const windows = this.resource()?.availabilityWindows;
+    if (!windows) {
+      return false;
+    }
+    const weekday = weekdayOf(date);
+    return !windows.some((w) => w.weekday === weekday);
+  }
+
+  // "Tuesday, Sep 22, 10:00 to 12:00, 3 units remaining" (item 10) — the
+  // segment button's own visible text is deliberately short ("3 left", or
+  // just the time range for an exclusive resource), so this is what a
+  // screen reader announces instead: the day and full time range it might
+  // otherwise have to infer from the row/axis alone, spelled out with "to"
+  // rather than the visible label's en dash (which a screen reader would
+  // read as "dash", not "to").
+  protected segmentAccessibleLabel(date: LocalDateString, segment: DaySegment): string {
+    const dayPart = formatLocalDateWithFullWeekday(date);
+    const timePart = `${formatMinutesOfDay(segment.startMinutes)} to ${formatMinutesOfDay(segment.endMinutes)}`;
+    const resource = this.resource();
+    if (resource && resource.capacity > 1) {
+      const unitWord = segment.remainingCapacity === 1 ? 'unit' : 'units';
+      return `${dayPart}, ${timePart}, ${segment.remainingCapacity} ${unitWord} remaining`;
+    }
+    return `${dayPart}, ${timePart}`;
+  }
+
   protected formatTick(minutes: number): string {
     return formatMinutesOfDay(minutes);
   }
@@ -531,9 +626,12 @@ export class AvailabilityComponent {
   }
 
   // Converts the (possibly narrowed) local-minutes selection back to real
-  // UTC instants, anchored to the clicked segment's own startUtc — see
-  // DaySegment's own comment on why this is a flat offset rather than a
-  // fresh local-to-UTC conversion, and what that trades away.
+  // UTC instants — DST-safe (item 7): resourceLocalMinutesToUtc inverts the
+  // resource's own IANA timezone rather than assuming local and UTC minutes
+  // move in lockstep, which a flat offset from the segment's own startUtc
+  // does not across a transition. See that function's own comment for the
+  // two edge cases (a gap, an ambiguous repeated hour) it can't answer
+  // exactly, and why that's accepted.
   protected continueToBooking(resource: ResourceDetail): void {
     const segment = this.selectedSegment();
     // The button is disabled whenever durationError() is set — this is a
@@ -542,8 +640,8 @@ export class AvailabilityComponent {
     if (!segment || this.durationError()) {
       return;
     }
-    const startUtc = addMinutesToUtc(segment.startUtc, this.selectedStartMinutes() - segment.startMinutes);
-    const endUtc = addMinutesToUtc(segment.startUtc, this.selectedEndMinutes() - segment.startMinutes);
+    const startUtc = resourceLocalMinutesToUtc(segment, this.selectedStartMinutes(), resource.timeZoneId);
+    const endUtc = resourceLocalMinutesToUtc(segment, this.selectedEndMinutes(), resource.timeZoneId);
 
     // Phase 3 builds the real booking form at this route; for now it's the
     // same placeholder every other not-yet-built screen loads — the router
@@ -686,36 +784,41 @@ export class AvailabilityComponent {
     this.toDate.set(addDays(today, DEFAULT_WINDOW_DAYS - 1));
   }
 
-  private load(): void {
+  private fetchResource$(id: string): Observable<ResourceLoadResult> {
     this.loading.set(true);
     this.loadError.set(false);
     this.notFound.set(false);
     this.breadcrumbService.setInsertBeforeLast(null);
 
-    this.resourcesService.getById(this.resourceId).subscribe({
-      next: (resource) => {
-        this.resource.set(resource);
-        this.loading.set(false);
-        this.breadcrumbService.setInsertBeforeLast(resource.name);
-        // Clamp before initializing/fetching, so the very first
-        // availability request already carries the corrected quantity
-        // rather than one fetchAvailability() call with a stale value
-        // followed by a second, redundant one.
-        if (this.quantity() > resource.capacity) {
-          this.quantity.set(1);
-        }
-        this.initializeRangeIfUnset(resource);
-        this.fetchAvailability();
-      },
-      error: (error: unknown) => {
-        this.loading.set(false);
-        if (error instanceof HttpErrorResponse && error.status === 404) {
-          this.notFound.set(true);
-        } else {
-          this.loadError.set(true);
-        }
-      },
-    });
+    return this.resourcesService.getById(id).pipe(
+      map((resource) => ({ kind: 'success' as const, resource })),
+      catchError((error: unknown) => of({ kind: 'error' as const, error })),
+    );
+  }
+
+  private applyResourceResult(result: ResourceLoadResult): void {
+    this.loading.set(false);
+    if (result.kind === 'error') {
+      if (result.error instanceof HttpErrorResponse && result.error.status === 404) {
+        this.notFound.set(true);
+      } else {
+        this.loadError.set(true);
+      }
+      return;
+    }
+
+    const resource = result.resource;
+    this.resource.set(resource);
+    this.breadcrumbService.setInsertBeforeLast(resource.name);
+    // Clamp before initializing/fetching, so the very first availability
+    // request already carries the corrected quantity rather than one
+    // fetchAvailability() call with a stale value followed by a second,
+    // redundant one.
+    if (this.quantity() > resource.capacity) {
+      this.quantity.set(1);
+    }
+    this.initializeRangeIfUnset(resource);
+    this.fetchAvailability();
   }
 
   // Guards against a stale response overwriting a newer one — the same

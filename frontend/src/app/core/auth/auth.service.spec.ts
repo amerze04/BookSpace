@@ -1,10 +1,34 @@
 import { TestBed } from '@angular/core/testing';
-import { provideHttpClient } from '@angular/common/http';
+import { HttpClient, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { firstValueFrom } from 'rxjs';
 import { AuthService } from './auth.service';
 import { SKIP_ERROR_TOAST } from '../http/skip-error-toast';
 import { buildFakeAccessToken } from './testing/jwt-fixture';
+
+// A deterministic stand-in for the browser's own Web Locks queue: each
+// request() call attaches its callback to a running promise chain, so
+// callbacks execute strictly in call order and a later one only starts once
+// the earlier one's returned promise has fully settled — exactly the
+// "held for the callback's lifetime" guarantee navigator.locks itself makes.
+function createFakeLockManager(): { request: (name: string, callback: () => Promise<unknown>) => Promise<unknown> } {
+  let queue: Promise<unknown> = Promise.resolve();
+  return {
+    request: (_name: string, callback: () => Promise<unknown>) => {
+      const run = queue.then(callback, callback);
+      queue = run.catch(() => undefined);
+      return run;
+    },
+  };
+}
+
+function stubWebLocks(manager: ReturnType<typeof createFakeLockManager>): void {
+  Object.defineProperty(navigator, 'locks', { configurable: true, value: manager });
+}
+
+function restoreWebLocks(): void {
+  Reflect.deleteProperty(navigator, 'locks');
+}
 
 const ROLE_CLAIM = 'http://schemas.microsoft.com/ws/2008/06/identity/claims/role';
 const API = 'http://localhost:5270';
@@ -220,6 +244,73 @@ describe('AuthService', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // Item 2: navigator.locks is a true mutex, so it's used ahead of the
+  // best-effort localStorage lock whenever it's available — see
+  // refresh-lock.ts. These use a deterministic fake lock manager (a strictly
+  // ordered promise queue) instead of the real browser API, so the
+  // interleaving is exact rather than timing-dependent.
+  describe('cross-tab refresh coordination via Web Locks', () => {
+    afterEach(() => {
+      restoreWebLocks();
+    });
+
+    it('serializes two tabs through the Web Lock into exactly one network refresh', async () => {
+      stubWebLocks(createFakeLockManager());
+
+      const accessToken1 = buildFakeAccessToken({ sub: 'u1', email: 'member1@acme.test', orgId: 'org-1', [ROLE_CLAIM]: 'Member' });
+      const loginPromise = service.login('member1@acme.test', 'Passw0rd!');
+      httpMock.expectOne(`${API}/auth/login`).flush({ accessToken: accessToken1, expiresIn: 900, refreshToken: 'refresh-1' });
+      await loginPromise;
+
+      // A second AuthService instance stands in for a second tab, sharing
+      // this same localStorage and the same fake lock manager.
+      const tabB = new AuthService(TestBed.inject(HttpClient));
+
+      const first = firstValueFrom(service.refreshAccessToken());
+      const second = firstValueFrom(tabB.refreshAccessToken());
+      // Let the lock-queued callbacks actually run before asserting on the
+      // HTTP traffic they produce.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const accessToken2 = buildFakeAccessToken({ sub: 'u1', email: 'member1@acme.test', orgId: 'org-1', [ROLE_CLAIM]: 'Member' });
+      // Exactly one — expectOne throws if tabB also made its own call.
+      httpMock
+        .expectOne(`${API}/auth/refresh`)
+        .flush({ accessToken: accessToken2, expiresIn: 900, refreshToken: 'refresh-2' });
+
+      expect(await first).toBe(accessToken2);
+      expect(await second).toBe(accessToken2);
+    });
+
+    it('prefers the Web Lock over the localStorage lock when both are available', async () => {
+      stubWebLocks(createFakeLockManager());
+
+      const accessToken1 = buildFakeAccessToken({ sub: 'u1', email: 'member1@acme.test', orgId: 'org-1', [ROLE_CLAIM]: 'Member' });
+      const loginPromise = service.login('member1@acme.test', 'Passw0rd!');
+      httpMock.expectOne(`${API}/auth/login`).flush({ accessToken: accessToken1, expiresIn: 900, refreshToken: 'refresh-1' });
+      await loginPromise;
+
+      // If the localStorage lock were still consulted first, this would make
+      // refreshAccessToken() believe a peer holds it and wait indefinitely
+      // instead of refreshing through the Web Lock.
+      localStorage.setItem('bookspace.refreshLock', JSON.stringify({ id: 'irrelevant', acquiredAt: Date.now() }));
+
+      const resultPromise = firstValueFrom(service.refreshAccessToken());
+      // Let the lock-queued callback actually run before asserting on the
+      // HTTP traffic it produces.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const accessToken2 = buildFakeAccessToken({ sub: 'u1', email: 'member1@acme.test', orgId: 'org-1', [ROLE_CLAIM]: 'Member' });
+      httpMock
+        .expectOne(`${API}/auth/refresh`)
+        .flush({ accessToken: accessToken2, expiresIn: 900, refreshToken: 'refresh-2' });
+
+      expect(await resultPromise).toBe(accessToken2);
+    });
   });
 
   // Cross-tab sync outside a refresh entirely: a logout in another tab must

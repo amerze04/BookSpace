@@ -4,9 +4,11 @@ import {
   computeAxis,
   datesInRange,
   minuteSpanStylePercent,
+  resourceLocalMinutesToUtc,
   splitIntervalByLocalDay,
 } from './availability-grid';
 import { BookableInterval } from './availability.models';
+import { utcToResourceLocal } from './local-date';
 
 function interval(startUtc: string, endUtc: string, remainingCapacity = 1): BookableInterval {
   return { startUtc, endUtc, remainingCapacity };
@@ -256,6 +258,118 @@ describe('availability-grid', () => {
       const style = minuteSpanStylePercent(fakeSegment({ startMinutes: 6 * 60, endMinutes: 20 * 60 }), axis);
       expect(style.leftPercent).toBe(0);
       expect(style.widthPercent).toBe(100);
+    });
+  });
+
+  // Item 7: a flat "add local minutes to segment.startUtc" offset drifts by
+  // exactly the DST delta whenever a transition falls between the segment's
+  // own start and the selected local time. Each fixture's segment starts at
+  // that local day's own midnight (so the flat-offset bug this replaced
+  // would have been wrong for every target after the transition) and
+  // asserts the *round-trip*: converting the result back through the
+  // already-trusted utcToResourceLocal must recover exactly the local time
+  // that was asked for.
+  describe('resourceLocalMinutesToUtc', () => {
+    it('matches the old flat-offset behaviour on an ordinary day with no transition', () => {
+      const segment = fakeSegment({
+        date: '2026-09-21',
+        startMinutes: 0,
+        endMinutes: 24 * 60,
+        startUtc: '2026-09-20T22:00:00.000Z', // 2026-09-21 00:00 CEST (+2) — well clear of any DST transition
+      });
+      const targetMinutes = 9 * 60 + 30; // 09:30 local (+2) = 07:30 UTC, same calendar day
+      const result = resourceLocalMinutesToUtc(segment, targetMinutes, 'Europe/Sarajevo');
+      expect(result).toBe('2026-09-21T07:30:00.000Z');
+      expect(utcToResourceLocal(result, 'Europe/Sarajevo')).toEqual({ date: '2026-09-21', minutesOfDay: targetMinutes });
+    });
+
+    it('Europe/Sarajevo spring-forward: a local time after the gap converts to the correct, non-flat-offset UTC instant', () => {
+      const segment = fakeSegment({
+        date: '2026-03-29',
+        startMinutes: 0,
+        endMinutes: 24 * 60,
+        startUtc: '2026-03-28T23:00:00.000Z', // 2026-03-29 00:00 CET (+1), the day of the transition
+      });
+      const targetMinutes = 3 * 60 + 30; // 03:30 — only exists as CEST (+2), after the 02:00->03:00 jump
+      const result = resourceLocalMinutesToUtc(segment, targetMinutes, 'Europe/Sarajevo');
+
+      expect(result).toBe('2026-03-29T01:30:00.000Z');
+      expect(utcToResourceLocal(result, 'Europe/Sarajevo')).toEqual({ date: '2026-03-29', minutesOfDay: targetMinutes });
+      // The bug this replaces: segment.startUtc + 210 raw minutes lands an hour late.
+      expect(result).not.toBe('2026-03-29T02:30:00.000Z');
+    });
+
+    it('Europe/Sarajevo fall-back: an ambiguous local time resolves to the earlier candidate, matching decisions/0024', () => {
+      const segment = fakeSegment({
+        date: '2026-10-25',
+        startMinutes: 0,
+        endMinutes: 24 * 60,
+        startUtc: '2026-10-24T22:00:00.000Z', // 2026-10-25 00:00 CEST (+2), the day of the transition
+      });
+      const targetMinutes = 2 * 60 + 30; // 02:30 — occurs twice, once CEST then once CET
+
+      const result = resourceLocalMinutesToUtc(segment, targetMinutes, 'Europe/Sarajevo');
+
+      expect(result).toBe('2026-10-25T00:30:00.000Z'); // the earlier (CEST) occurrence
+      expect(utcToResourceLocal(result, 'Europe/Sarajevo')).toEqual({ date: '2026-10-25', minutesOfDay: targetMinutes });
+    });
+
+    it('Europe/Sarajevo fall-back: a local time after the ambiguous hour still converts correctly', () => {
+      const segment = fakeSegment({
+        date: '2026-10-25',
+        startMinutes: 0,
+        endMinutes: 24 * 60,
+        startUtc: '2026-10-24T22:00:00.000Z',
+      });
+      const targetMinutes = 4 * 60; // 04:00, safely after the fall-back has resolved
+
+      const result = resourceLocalMinutesToUtc(segment, targetMinutes, 'Europe/Sarajevo');
+
+      expect(result).toBe('2026-10-25T03:00:00.000Z');
+      expect(utcToResourceLocal(result, 'Europe/Sarajevo')).toEqual({ date: '2026-10-25', minutesOfDay: targetMinutes });
+    });
+
+    it('Australia/Lord_Howe: a 30-minute DST delta (not 60) still converts correctly', () => {
+      const segment = fakeSegment({
+        date: '2026-10-04',
+        startMinutes: 0,
+        endMinutes: 24 * 60,
+        startUtc: '2026-10-03T13:30:00.000Z', // 2026-10-04 00:00 Lord Howe standard time
+      });
+      const targetMinutes = 3 * 60; // 03:00 — after the 02:00->02:30 (30-minute) spring-forward gap
+
+      const result = resourceLocalMinutesToUtc(segment, targetMinutes, 'Australia/Lord_Howe');
+
+      expect(result).toBe('2026-10-03T16:00:00.000Z');
+      expect(utcToResourceLocal(result, 'Australia/Lord_Howe')).toEqual({ date: '2026-10-04', minutesOfDay: targetMinutes });
+      // The bug this replaces would be off by the 30-minute delta, not 60.
+      expect(result).not.toBe('2026-10-03T16:30:00.000Z');
+    });
+
+    it('Australia/Lord_Howe fall-back: an ambiguous local time resolves to the earlier candidate', () => {
+      const segment = fakeSegment({
+        date: '2026-04-05',
+        startMinutes: 0,
+        endMinutes: 24 * 60,
+        startUtc: '2026-04-04T13:00:00.000Z', // 2026-04-05 00:00 Lord Howe daylight time
+      });
+      const targetMinutes = 1 * 60 + 30; // 01:30 — ambiguous, occurs once DST then once standard
+
+      const result = resourceLocalMinutesToUtc(segment, targetMinutes, 'Australia/Lord_Howe');
+
+      expect(result).toBe('2026-04-04T14:30:00.000Z');
+      expect(utcToResourceLocal(result, 'Australia/Lord_Howe')).toEqual({ date: '2026-04-05', minutesOfDay: targetMinutes });
+    });
+
+    it('does not crash on a local time inside a spring-forward gap that never happened', () => {
+      const segment = fakeSegment({
+        date: '2026-10-04',
+        startMinutes: 0,
+        endMinutes: 24 * 60,
+        startUtc: '2026-10-03T13:30:00.000Z',
+      });
+      // 02:15 never occurs that day (the 30-minute gap is 02:00-02:29).
+      expect(() => resourceLocalMinutesToUtc(segment, 2 * 60 + 15, 'Australia/Lord_Howe')).not.toThrow();
     });
   });
 });

@@ -110,10 +110,33 @@
   }
 }
 
-.truncation-notice {
-  margin: 0 0 1.25rem;
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 1.5rem;
   font-size: 0.85rem;
   color: var(--color-text-secondary);
+}
+
+.pagination-button {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    border-color: var(--color-accent);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
 }
 
 .state-message {
@@ -161,11 +184,6 @@
   &:hover {
     border-color: var(--color-accent);
   }
-
-  &:focus-visible {
-    outline: 2px solid var(--color-primary);
-    outline-offset: 2px;
-  }
 }
 
 .card-header {
@@ -201,6 +219,21 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+}
+
+// The one real, focusable/keyboard-reachable link this card owns for "view
+// details" (item 10) — the rest of the card is just a mouse convenience
+// (.resource-card's own (click) handler), never a second interactive
+// element competing with this one for the same purpose.
+.card-title-link {
+  display: block;
+  text-decoration: none;
+  border-radius: 4px;
+
+  &:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
   }
 }
 
@@ -245,22 +278,33 @@
   }
 }
 
-.book-link {
+.book-link,
+.archived-notice {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
   margin-top: auto;
   padding-top: 0.75rem;
   border-top: 1px solid var(--color-border);
-  color: var(--color-primary);
   font-weight: 600;
   font-size: 0.9rem;
-  text-decoration: none;
 
   svg {
     width: 1rem;
     height: 1rem;
   }
+}
+
+// Not a link — an archived resource has no active booking action here
+// (item 9), so this is deliberately just text in the same layout slot
+// [book-link] would otherwise occupy.
+.archived-notice {
+  color: var(--color-text-secondary);
+}
+
+.book-link {
+  color: var(--color-primary);
+  text-decoration: none;
 
   &:hover {
     color: var(--color-primary-hover);

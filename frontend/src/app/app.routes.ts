@@ -9,7 +9,14 @@ export const routes: Routes = [
   },
   {
     path: '',
+    // Both are needed: canActivate guards entry into the shell itself, but
+    // once the shell is active, navigating between its already-loaded
+    // children (home -> resources -> my-bookings, ...) never re-runs it —
+    // canActivateChild is what re-validates the session (and transparently
+    // refreshes an expired access token via AuthService.hasValidSession(),
+    // see auth.guard.ts) on every one of those child navigations too.
     canActivate: [authGuard],
+    canActivateChild: [authGuard],
     loadComponent: () => import('./layout/shell/shell.component').then((m) => m.ShellComponent),
     children: [
       {

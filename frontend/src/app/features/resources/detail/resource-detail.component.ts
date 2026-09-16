@@ -2,6 +2,7 @@ import { Component, DestroyRef, computed, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { HttpErrorResponse } from '@angular/common/http';
 import { ActivatedRoute, RouterLink } from '@angular/router';
+import { Observable, Subject, catchError, distinctUntilChanged, filter, map, merge, of, switchMap } from 'rxjs';
 import { BreadcrumbService } from '../../../layout/breadcrumb.service';
 import { ResourcesService } from '../resources.service';
 import { AvailabilityWindowDetail, DayOfWeekName, ResourceDetail, ResourceType } from '../resources.models';
@@ -51,6 +52,8 @@ function formatTime(hhmmss: string): string {
   return hhmmss.slice(0, 5);
 }
 
+type ResourceLoadResult = { kind: 'success'; resource: ResourceDetail } | { kind: 'error'; error: unknown };
+
 function formatDuration(minutes: number | null, whenUnset: string): string {
   if (minutes === null) {
     return whenUnset;
@@ -92,6 +95,11 @@ export class ResourceDetailComponent {
 
   private resourceId: string;
 
+  // Fed by retry() alongside route-id changes, so both funnel through the
+  // same switchMap below rather than each racing it with a separate call to
+  // a shared load() method.
+  private readonly retry$ = new Subject<void>();
+
   constructor() {
     const initialId = this.route.snapshot.paramMap.get('id');
     if (!initialId) {
@@ -99,21 +107,35 @@ export class ResourceDetailComponent {
     }
     this.resourceId = initialId;
 
-    // Subscribed rather than read once from the snapshot: the router reuses
+    // Observed rather than read once from the snapshot: the router reuses
     // this component if it's ever navigated from one resource's detail
     // straight to another's (the same route config, just a different :id),
     // and a snapshot taken at construction would go stale — the same
     // "don't trust a one-time read" lesson ShellComponent's own breadcrumb
     // fix already applied, for a different reason.
-    this.route.paramMap.pipe(takeUntilDestroyed()).subscribe((params) => {
-      const id = params.get('id');
-      if (id && id !== this.resourceId) {
-        this.resourceId = id;
-        this.load();
-      }
-    });
+    //
+    // switchMap (item 4) is what makes a stale response impossible rather
+    // than merely ignored: a route-id change or a retry() both cancel
+    // whatever fetch is still in flight (switchMap unsubscribes the
+    // previous inner Observable, which aborts the underlying HTTP request)
+    // before starting the next one, so an older response can never arrive
+    // after a newer one and overwrite it.
+    const idChanges$ = this.route.paramMap.pipe(
+      map((params) => params.get('id')),
+      filter((id): id is string => !!id),
+      distinctUntilChanged(),
+    );
 
-    this.load();
+    merge(idChanges$, this.retry$.pipe(map(() => this.resourceId)))
+      .pipe(
+        map((id) => {
+          this.resourceId = id;
+          return id;
+        }),
+        switchMap((id) => this.fetchResource$(id)),
+        takeUntilDestroyed(),
+      )
+      .subscribe((result) => this.applyResult(result));
 
     // Never leave another page showing this resource's name in its
     // breadcrumb after navigating away.
@@ -121,7 +143,7 @@ export class ResourceDetailComponent {
   }
 
   protected retry(): void {
-    this.load();
+    this.retry$.next();
   }
 
   // Delegates to the shared helper (extracted 2026-09-16, WP-7 Phase 2, once
@@ -148,26 +170,30 @@ export class ResourceDetailComponent {
     return resource.approvers.length > 0 ? resource.approvers.map((a) => a.fullName).join(', ') : 'None assigned';
   }
 
-  private load(): void {
+  private fetchResource$(id: string): Observable<ResourceLoadResult> {
     this.loading.set(true);
     this.loadError.set(false);
     this.notFound.set(false);
     this.breadcrumbService.setOverride(null);
 
-    this.resourcesService.getById(this.resourceId).subscribe({
-      next: (resource) => {
-        this.resource.set(resource);
-        this.loading.set(false);
-        this.breadcrumbService.setOverride(resource.name);
-      },
-      error: (error: unknown) => {
-        this.loading.set(false);
-        if (error instanceof HttpErrorResponse && error.status === 404) {
-          this.notFound.set(true);
-        } else {
-          this.loadError.set(true);
-        }
-      },
-    });
+    return this.resourcesService.getById(id).pipe(
+      map((resource) => ({ kind: 'success' as const, resource })),
+      catchError((error: unknown) => of({ kind: 'error' as const, error })),
+    );
+  }
+
+  private applyResult(result: ResourceLoadResult): void {
+    this.loading.set(false);
+    if (result.kind === 'error') {
+      if (result.error instanceof HttpErrorResponse && result.error.status === 404) {
+        this.notFound.set(true);
+      } else {
+        this.loadError.set(true);
+      }
+      return;
+    }
+
+    this.resource.set(result.resource);
+    this.breadcrumbService.setOverride(result.resource.name);
   }
 }

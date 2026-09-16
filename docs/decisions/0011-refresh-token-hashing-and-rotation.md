@@ -117,6 +117,18 @@ work package scoped as frontend-only (`docs/wp6-plan.md` §3). Nothing about
 the trade-off itself has changed — this just records that the revisit
 happened and the owner's call was "not this week."
 
+**Revisited again 2026-09-16, at the frontend hardening pass (that pass's
+item 12).** This time the answer is final, not deferred: the owner has
+decided to accept the risk and **not** migrate to an httpOnly cookie at all.
+Both tokens (access and refresh) stay in `localStorage`, client-held,
+indefinitely — an XSS hole in the SPA can exfiltrate the refresh token, not
+just the short-lived access token. Unlike the two prior revisits, this is not
+"not yet" — no further work on this is planned, and it should not be
+re-raised as an open item in a future pass without a new instruction from
+the owner to reopen it. The cookie option, and the `AllowCredentials`/
+`Set-Cookie`/CSRF work it would require, is documented above purely as
+history for why the alternative was considered and rejected.
+
 ## Consequences
 
 - `FR-2.4` is enforced at the refresh boundary: a deactivated user or suspended

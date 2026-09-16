@@ -69,6 +69,39 @@ function toUtcDate(dateStr: LocalDateString): Date {
   return new Date(Date.UTC(year, month - 1, day));
 }
 
+// "2026-09-22" -> "Tuesday, Sep 22" — the full weekday name, for the
+// availability grid's accessible segment labels (item 10), where the
+// abbreviated one formatLocalDateWithWeekday already uses for the visible
+// day-row label reads ambiguously out loud ("Tue" vs "Thu").
+export function formatLocalDateWithFullWeekday(dateStr: LocalDateString): string {
+  return new Intl.DateTimeFormat('en-US', {
+    weekday: 'long',
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  }).format(toUtcDate(dateStr));
+}
+
+// 0 (Sunday) through 6 (Saturday), matching JS's own Date.getUTCDay() —
+// used to test a calendar date against AvailabilityWindowDetail.weekday
+// (item 6), which names weekdays the same way buildWeekdayRows already
+// does. A plain calendar computation, like every other function in this
+// file — a LocalDateString names resource-local digits, never the viewer's
+// own timezone.
+const WEEKDAY_BY_INDEX: readonly string[] = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+];
+
+export function weekdayOf(dateStr: LocalDateString): string {
+  return WEEKDAY_BY_INDEX[toUtcDate(dateStr).getUTCDay()];
+}
+
 // A UTC instant, read as a resource-local calendar date + time-of-day — what
 // the grid (step 5) needs to place a `BookableIntervalDetail` under the
 // right day row and at the right horizontal position. `hourCycle: 'h23'` is
@@ -110,6 +143,14 @@ export function formatLocalDateWithWeekdayAndYear(dateStr: LocalDateString): str
     year: 'numeric',
     timeZone: 'UTC',
   }).format(toUtcDate(dateStr));
+}
+
+// Signed whole-day difference (b - a) between two LocalDateStrings — for
+// code (availability-grid.ts's local->UTC inversion) that needs to
+// reconcile a UTC->local reading landing on a different calendar day than
+// the one it started from.
+export function localDateDiffDays(a: LocalDateString, b: LocalDateString): number {
+  return Math.round((toUtcDate(b).getTime() - toUtcDate(a).getTime()) / 86_400_000);
 }
 
 // Adds a plain minute offset to a UTC instant — used by availability-grid.ts

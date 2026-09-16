@@ -1,5 +1,5 @@
 import { BookableInterval, LocalDateString } from './availability.models';
-import { addDays, addMinutesToUtc, utcToResourceLocal } from './local-date';
+import { addDays, addMinutesToUtc, localDateDiffDays, utcToResourceLocal } from './local-date';
 
 // Grid-specific rendering math for step 5 — separate from local-date.ts's
 // generic calendar arithmetic because everything here is about turning a
@@ -20,12 +20,17 @@ import { addDays, addMinutesToUtc, utcToResourceLocal } from './local-date';
 // BookableIntervalDetail carries a UTC instant otherwise. Derived from the
 // interval's own startUtc by walking forward the number of *local* wall-clock
 // minutes elapsed (addMinutesToUtc), not by re-deriving from local time —
-// exact whenever no DST transition falls inside the interval (true for every
-// resource in this codebase's seed data, and for any ordinary business-hours
-// resource), and off by the DST delta in the one case it does. Accepted: the
+// exact whenever no DST transition falls between the interval's start and
+// this segment's own boundary (true for every resource in this codebase's
+// seed data, and for any ordinary business-hours resource), and off by the
+// DST delta in the rarer case of an overnight-spanning window whose midnight
+// crossing lands on a transition night. Unlike the *selection* conversion
+// below (resourceLocalMinutesToUtc), fixing this one would mean re-deriving
+// every segment boundary independently rather than walking forward from a
+// known-good one, which is a bigger change for a narrower edge case; the
 // booking is re-validated against real availability under lock at submission
-// time regardless (§4.1), so a rare wrong pre-fill here is a UX rough edge a
-// viewer can correct via the dropdowns, never a double-booking risk.
+// time regardless (§4.1), so a rare wrong boundary here is a UX rough edge,
+// never a double-booking risk.
 export interface DaySegment {
   date: LocalDateString;
   startMinutes: number;
@@ -220,4 +225,51 @@ export function minuteSpanStylePercent(
 
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
+}
+
+// Inverts utcToResourceLocal: given a target resource-local minutes-of-day
+// on `segment.date`, finds the real UTC instant that reads back as exactly
+// that local time (step 6's "Continue to booking" conversion). Replaces a
+// flat "add local minutes to segment.startUtc" offset, which is only exact
+// when no DST transition falls between segment.startUtc and the target —
+// across one, local and UTC minutes stop moving in lockstep by exactly the
+// transition's own delta (not always 60 minutes — Australia/Lord_Howe's own
+// transition is 30).
+//
+// Starts from that same flat-offset guess — correct the overwhelming
+// majority of the time, since most days have no transition at all — and
+// corrects it against utcToResourceLocal, the one already-correct
+// UTC->local conversion this app has (it defers entirely to the ICU/IANA
+// timezone database via Intl.DateTimeFormat), rather than hand-rolling a
+// second, independent local->UTC engine. Two passes are enough for any
+// single transition inside the segment: the first pass's correction can
+// only be wrong by the transition's own fixed delta, and the second pass
+// has nothing left to correct once that's accounted for.
+//
+// A local time that never happened (spring-forward's gap) or happened twice
+// (fall-back's ambiguity) has no unique inverse. For a gap, this returns
+// whatever the two passes converge closest to rather than throwing. For an
+// ambiguous time, starting from segment.startUtc — always at or before the
+// first occurrence, since a DaySegment never crosses its own local day —
+// means the flat guess already lands in the *earlier* candidate's frame and
+// needs no correction at all, which happens to match decisions/0024's own
+// "earlier of the two" policy for exactly the same case server-side.
+// Neither edge case needs to be exact: the backend re-validates every
+// booking under lock at submission time regardless (§4.1), so a rare wrong
+// pre-fill here is a UX rough edge a viewer can correct via the dropdowns,
+// never a double-booking risk.
+export function resourceLocalMinutesToUtc(segment: DaySegment, targetMinutesOfDay: number, timeZoneId: string): string {
+  let candidate = addMinutesToUtc(segment.startUtc, targetMinutesOfDay - segment.startMinutes);
+
+  for (let pass = 0; pass < 2; pass++) {
+    const reading = utcToResourceLocal(candidate, timeZoneId);
+    const readingMinutesOfDay = reading.minutesOfDay + localDateDiffDays(segment.date, reading.date) * MINUTES_PER_DAY;
+    const errorMinutes = readingMinutesOfDay - targetMinutesOfDay;
+    if (errorMinutes === 0) {
+      break;
+    }
+    candidate = addMinutesToUtc(candidate, -errorMinutes);
+  }
+
+  return candidate;
 }

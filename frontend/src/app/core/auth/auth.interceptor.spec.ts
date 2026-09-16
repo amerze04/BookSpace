@@ -59,6 +59,60 @@ describe('authInterceptor', () => {
     expect(error).toBeTruthy();
   });
 
+  // Adversarial: a same-origin scoping test built on startsWith/includes can
+  // be fooled by a lookalike URL that merely shares a text prefix with
+  // apiBaseUrl. These all pass `'...'.startsWith(API)` yet are NOT the
+  // BookSpace API, so the token must never reach them and their 401s must
+  // never trigger a refresh.
+  describe('rejects lookalike origins that merely share a text prefix with apiBaseUrl', () => {
+    const lookalikes = [
+      // Extra digit on the port — a raw prefix match still succeeds.
+      'http://localhost:52700/resources',
+      // apiBaseUrl as a subdomain-ish text prefix of a different host.
+      'http://localhost:5270.evil.com/resources',
+      // Different host entirely; same port.
+      'http://evil.localhost:5270/resources',
+      // Same host/port, different scheme — a real different origin.
+      'https://localhost:5270/resources',
+    ];
+
+    for (const url of lookalikes) {
+      it(`never attaches the token to ${url}, and never refreshes on its 401`, () => {
+        let error: unknown;
+        http.get(url).subscribe({ error: (e) => (error = e) });
+
+        const req = httpMock.expectOne(url);
+        expect(req.request.headers.has('Authorization')).toBe(false);
+        req.flush(null, { status: 401, statusText: 'Unauthorized' });
+
+        httpMock.expectNone(`${API}/auth/refresh`);
+        expect(error).toBeTruthy();
+      });
+    }
+  });
+
+  it('treats a path that merely starts with an auth endpoint\'s text as a normal request, refreshing on its 401', () => {
+    // "/auth/refresh-status" contains "/auth/refresh" as a substring, which a
+    // request.url.includes('/auth/refresh') check would wrongly treat as the
+    // refresh endpoint itself and skip retrying — it's a different endpoint
+    // and its 401 should go through the normal silent-refresh-and-retry path.
+    let result: unknown;
+    http.get(`${API}/auth/refresh-status`).subscribe((response) => (result = response));
+
+    httpMock.expectOne(`${API}/auth/refresh-status`).flush(null, { status: 401, statusText: 'Unauthorized' });
+
+    const newAccessToken = buildFakeAccessToken({ sub: 'u1', email: 'member1@acme.test', orgId: 'org-1', [ROLE_CLAIM]: 'Member' });
+    httpMock
+      .expectOne(`${API}/auth/refresh`)
+      .flush({ accessToken: newAccessToken, expiresIn: 900, refreshToken: 'refresh-2' });
+
+    const retried = httpMock.expectOne(`${API}/auth/refresh-status`);
+    expect(retried.request.headers.get('Authorization')).toBe(`Bearer ${newAccessToken}`);
+    retried.flush({ ok: true });
+
+    expect(result).toEqual({ ok: true });
+  });
+
   it('on a 401, silently refreshes and retries the original request with the new token', () => {
     let result: unknown;
     http.get(`${API}/resources`).subscribe((response) => (result = response));

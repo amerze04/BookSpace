@@ -47,6 +47,8 @@ type TestableAvailabilityComponent = AvailabilityComponent & {
   dayRows: () => DayRow[];
   retryAvailability(): void;
   segmentLabel(segment: DaySegment): string;
+  emptyDayLabel(date: string): string;
+  segmentAccessibleLabel(date: string, segment: DaySegment): string;
   selectedSegment: () => DaySegment | null;
   selectedStartMinutes: () => number;
   selectedEndMinutes: () => number;
@@ -285,6 +287,35 @@ describe('AvailabilityComponent', () => {
     const component = fixture.componentInstance as TestableAvailabilityComponent;
     expect(component.resource()?.name).toBe('Pool Cars');
     expect(breadcrumbService.insertBeforeLast()).toBe('Pool Cars');
+  });
+
+  // Item 4: unlike the availability-fetch stage (already guarded by
+  // latestAvailabilityRequestId, tested separately below), the resource-load
+  // stage itself previously had no staleness guard at all — A starts
+  // loading -> route changes to B -> B completes -> A completes later would
+  // let stale A overwrite B. switchMap makes that impossible by construction
+  // (A's in-flight request is cancelled the moment B's id comes through),
+  // and B's own availability fetch must use B's metadata, not anything left
+  // over from A.
+  it('cancels a still-pending resource fetch when the route id changes before it resolves, and the new resource\'s own availability fetch uses its own metadata', () => {
+    const fixture = createFixture('r1');
+    const component = fixture.componentInstance as TestableAvailabilityComponent;
+    const firstReq = httpMock.expectOne(`${API}/resources/r1`);
+
+    paramMap$.next(convertToParamMap({ id: 'r2' }));
+
+    const secondReq = httpMock.expectOne(`${API}/resources/r2`);
+    secondReq.flush(fakeDetail({ id: 'r2', name: 'Pool Cars', timeZoneId: 'UTC', capacity: 5 }));
+
+    expect(firstReq.cancelled).toBe(true);
+    expect(component.resource()?.name).toBe('Pool Cars');
+    expect(component.loading()).toBe(false);
+
+    // The availability fetch this cascades into is for r2, not r1.
+    const availabilityReq = httpMock.expectOne((r) => r.url === `${API}/resources/r2/availability`);
+    availabilityReq.flush(fakeAvailability({ resourceId: 'r2', timeZoneId: 'UTC' }));
+
+    expect(component.availabilityResponse()?.resourceId).toBe('r2');
   });
 
   it('labels an exclusive resource "Single resource" and a pooled one by its unit count', () => {
@@ -711,6 +742,91 @@ describe('AvailabilityComponent', () => {
         }),
       ).toBe('3 left');
     });
+
+    // Item 6: the API returns bookable intervals only — an empty day can
+    // mean fully booked, blacked out, insufficient pooled capacity, or a
+    // genuinely closed weekday, and the API deliberately doesn't say which.
+    // "No bookable hours" is only used when the resource's own
+    // availabilityWindows prove the weekday has no window at all; every
+    // other empty day gets the honest, non-specific "No availability".
+    it('emptyDayLabel distinguishes a proven-closed weekday from a merely-empty one on the same response', () => {
+      const fixture = createFixture();
+      const component = fixture.componentInstance as TestableAvailabilityComponent;
+      httpMock.expectOne(`${API}/resources/r1`).flush(
+        fakeDetail({
+          timeZoneId: 'UTC',
+          // Only Monday has a window — Tuesday has none at all.
+          availabilityWindows: [{ id: 'w1', weekday: 'Monday', opensAt: '08:00:00', closesAt: '17:00:00' }],
+        }),
+      );
+      httpMock.expectOne((r) => r.url === `${API}/resources/r1/availability`).flush(fakeAvailability({ intervals: [] }));
+
+      // 2026-09-21 is a Monday (has a window, so an empty day here means
+      // fully booked/blacked out, not closed) and 2026-09-22 is a Tuesday
+      // (no window at all — genuinely closed).
+      expect(component.emptyDayLabel('2026-09-21')).toBe('No availability');
+      expect(component.emptyDayLabel('2026-09-22')).toBe('No bookable hours');
+    });
+
+    // Item 10: the segment button's own visible text is short ("3 left",
+    // or just the time range) — this is what a screen reader announces
+    // instead, spelling out the day and full time range.
+    it('segmentAccessibleLabel spells out the day and time range, with "to" rather than an en dash', () => {
+      const fixture = createFixture();
+      const component = fixture.componentInstance as TestableAvailabilityComponent;
+      httpMock.expectOne(`${API}/resources/r1`).flush(fakeDetail({ timeZoneId: 'UTC', capacity: 1 }));
+      httpMock.expectOne((r) => r.url === `${API}/resources/r1/availability`).flush(fakeAvailability());
+
+      const label = component.segmentAccessibleLabel('2026-09-22', {
+        date: '2026-09-22',
+        startMinutes: 10 * 60,
+        endMinutes: 12 * 60,
+        startUtc: '2026-09-22T10:00:00.000Z',
+        endUtc: '2026-09-22T12:00:00.000Z',
+        remainingCapacity: 1,
+      });
+
+      expect(label).toBe('Tuesday, Sep 22, 10:00 to 12:00');
+    });
+
+    it('segmentAccessibleLabel appends the remaining-units count for a pooled resource', () => {
+      const fixture = createFixture();
+      const component = fixture.componentInstance as TestableAvailabilityComponent;
+      httpMock.expectOne(`${API}/resources/r1`).flush(fakeDetail({ timeZoneId: 'UTC', capacity: 5 }));
+      httpMock.expectOne((r) => r.url === `${API}/resources/r1/availability`).flush(fakeAvailability({ quantity: 1 }));
+
+      const label = component.segmentAccessibleLabel('2026-09-22', {
+        date: '2026-09-22',
+        startMinutes: 10 * 60,
+        endMinutes: 12 * 60,
+        startUtc: '2026-09-22T10:00:00.000Z',
+        endUtc: '2026-09-22T12:00:00.000Z',
+        remainingCapacity: 3,
+      });
+
+      expect(label).toBe('Tuesday, Sep 22, 10:00 to 12:00, 3 units remaining');
+    });
+
+    it('renders aria-pressed and the accessible label on the actual segment button, and flips aria-pressed on selection', () => {
+      const fixture = createFixture();
+      const component = fixture.componentInstance as TestableAvailabilityComponent;
+      httpMock.expectOne(`${API}/resources/r1`).flush(fakeDetail({ timeZoneId: 'UTC', capacity: 1 }));
+      httpMock.expectOne((r) => r.url === `${API}/resources/r1/availability`).flush(
+        fakeAvailability({
+          intervals: [{ startUtc: '2026-09-21T08:00:00Z', endUtc: '2026-09-21T12:00:00Z', remainingCapacity: 1 }],
+        }),
+      );
+      fixture.detectChanges();
+
+      const button = (fixture.nativeElement as HTMLElement).querySelector('button.segment');
+      expect(button?.getAttribute('aria-pressed')).toBe('false');
+      expect(button?.getAttribute('aria-label')).toBe('Monday, Sep 21, 08:00 to 12:00');
+
+      component.selectSegment(component.dayRows()[0].segments[0]);
+      fixture.detectChanges();
+
+      expect(button?.getAttribute('aria-pressed')).toBe('true');
+    });
   });
 
   describe('selection (step 6)', () => {
@@ -908,6 +1024,34 @@ describe('AvailabilityComponent', () => {
       expect(routerNavigate).not.toHaveBeenCalled();
     });
 
+    // Item 5: minDurationMinutes: null means no configured minimum at all —
+    // the resource is valid at whole-second precision on the backend. A
+    // segment shorter than the UI's own 15-minute dropdown/drag granularity
+    // must never be flagged as violating a "requires at least 15 minutes"
+    // rule the resource doesn't actually have, and Continue to booking must
+    // not be blocked by one.
+    it('durationError never invents a 15-minute minimum for a resource with minDurationMinutes: null', () => {
+      const fixture = createFixture();
+      const component = fixture.componentInstance as TestableAvailabilityComponent;
+      httpMock.expectOne(`${API}/resources/r1`).flush(fakeDetail({ timeZoneId: 'UTC', minDurationMinutes: null, maxDurationMinutes: null }));
+      httpMock.expectOne((r) => r.url === `${API}/resources/r1/availability`).flush(
+        fakeAvailability({
+          // A 10-minute gap — shorter than TIME_OPTION_STEP_MINUTES (15),
+          // but there's no real minimum for it to violate.
+          intervals: [{ startUtc: '2026-09-21T08:00:00Z', endUtc: '2026-09-21T08:10:00Z', remainingCapacity: 1 }],
+        }),
+      );
+
+      component.selectSegment(component.dayRows()[0].segments[0]);
+
+      expect(component.durationError()).toBeNull();
+      component.continueToBooking(fakeDetail({ id: 'r1', timeZoneId: 'UTC', minDurationMinutes: null, maxDurationMinutes: null }));
+      expect(routerNavigate).toHaveBeenCalledWith(
+        ['/resources', 'r1', 'book'],
+        { state: { startUtc: '2026-09-21T08:00:00.000Z', endUtc: '2026-09-21T08:10:00.000Z', quantity: 1 } },
+      );
+    });
+
     it('durationError is null for an ordinary, valid selection', () => {
       const fixture = createFixture();
       const component = fixture.componentInstance as TestableAvailabilityComponent;
@@ -957,7 +1101,10 @@ describe('AvailabilityComponent', () => {
       component.onSelectedStartChange(inputChangeEvent(String(9 * 60)));
       component.onSelectedEndChange(inputChangeEvent(String(11 * 60)));
 
-      component.continueToBooking(fakeDetail({ id: 'r1', capacity: 5 }));
+      // Matches what loadWithOneSegment actually loaded (timeZoneId: 'UTC')
+      // — the real template only ever calls this with the current resource()
+      // signal's own value, never an independently-built fixture.
+      component.continueToBooking(fakeDetail({ id: 'r1', capacity: 5, timeZoneId: 'UTC' }));
 
       expect(routerNavigate).toHaveBeenCalledWith(
         ['/resources', 'r1', 'book'],

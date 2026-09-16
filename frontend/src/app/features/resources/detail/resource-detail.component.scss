@@ -113,6 +113,15 @@
   flex-shrink: 0;
 }
 
+// No active booking action for an archived resource (item 9) — text in the
+// same slot .primary-button would otherwise occupy, not a disabled-looking
+// button that implies the action exists but is temporarily unavailable.
+.archived-notice {
+  color: var(--color-text-secondary);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
 .primary-button {
   display: inline-block;
   padding: 0.65rem 1.25rem;

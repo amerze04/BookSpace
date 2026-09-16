@@ -333,7 +333,7 @@ added, add its one-liner to both places.
 8. [`0008`](docs/decisions/0008-dst-spring-forward-policy.md) — a spring-forward occurrence is skipped, not shifted; user told immediately and again by email.
 9. [`0009`](docs/decisions/0009-jwt-claims-and-token-lifetimes.md) — JWT claim shape and lifetimes (`sub`/`email`/`orgId`/`role`, 15-min access, 14-day absolute refresh).
 10. [`0010`](docs/decisions/0010-global-email-uniqueness.md) — email identifies exactly one user platform-wide; no tenant discriminator at login.
-11. [`0011`](docs/decisions/0011-refresh-token-hashing-and-rotation.md) — refresh tokens are SHA-256'd CSPRNG values; reuse of a revoked token kills the whole family.
+11. [`0011`](docs/decisions/0011-refresh-token-hashing-and-rotation.md) — refresh tokens are SHA-256'd CSPRNG values; reuse of a revoked token kills the whole family. **Amended 2026-09-16**: body-based/localStorage token storage is now a final decision, not a "revisit later" — the owner accepts the XSS-theft risk rather than migrate to an httpOnly cookie.
 12. [`0012`](docs/decisions/0012-rbac-enforcement-model.md) — RBAC via four named policies plus a deny-by-default fallback; `TenantMember` excludes SysAdmin.
 13. [`0013`](docs/decisions/0013-tenant-isolation-mechanism.md) — structural tenant isolation is validation (`SaveChanges*` throws), not assignment; RLS gets an explicit bypass signal.
 14. [`0014`](docs/decisions/0014-child-table-tenant-scoping.md) — `AvailabilityWindows`/`BlackoutPeriods` get their own `OrgId` and all three §4.2 mechanisms.
@@ -674,3 +674,84 @@ redoing against these real parameters, including a ~500ms search debounce —
 tracked in `docs/wp7-plan.md` rather than here, since it wasn't shipped yet
 at the time. Full detail:
 [`docs/roadmap/resource-list-filters-2026-09-15.md`](docs/roadmap/resource-list-filters-2026-09-15.md).
+
+### Frontend hardening pass — 2026-09-16
+Not a work package: a focused pass over the WP-7 Phase 1/2 frontend
+(resource list/detail, availability) against 13 numbered findings, each
+verified against the actual code before anything changed. Ten items were
+confirmed and fixed; one (auth token storage moving off localStorage into an
+httpOnly cookie) needs a real backend contract change and was deliberately
+left as a plan rather than a half-migration; one (splitting
+`AvailabilityComponent`) was deferred as a follow-up rather than bundled
+into a pass already landing this many functional changes to the same file.
+Baseline: 243 Vitest tests (was 218), production build clean.
+
+Key outcomes:
+- `auth.interceptor.ts` now parses both sides with `URL` and compares
+  `origin` (plus a segment-bounded base-path check) instead of
+  `startsWith`/`includes` — the old check let a same-text-prefix lookalike
+  origin (`http://localhost:52700`, `http://localhost:5270.evil.com`) pass.
+- Cross-tab refresh coordination now prefers the Web Locks API
+  (`navigator.locks`, a true mutex) over the best-effort localStorage lock
+  from the 2026-09-15 pass, which stays as the fallback for a browser
+  without it. `AuthService.performRefreshIfNeeded` double-checks the
+  refresh token against what was current when the call started, so a
+  lock-queued caller that finds a peer already rotated it adopts the result
+  instead of risking decisions/0011's reuse-detection.
+- The shell route (`app.routes.ts`) gained `canActivateChild`, not just
+  `canActivate` — session expiry is now caught on navigation between
+  already-loaded shell children (home -> settings, etc.), not only on first
+  entry.
+- `ResourceDetailComponent` and `AvailabilityComponent` now drive their
+  route-id-keyed resource fetch through a `switchMap` pipeline (merged with
+  a `retry$`/`retryResource$` Subject) instead of a manual subscribe — a
+  stale fetch is cancelled outright rather than merely ignored by an ID
+  check, closing a real gap `ResourceDetailComponent` had no guard for at
+  all.
+- The availability grid's local-selection -> UTC conversion
+  (`resourceLocalMinutesToUtc`, `availability-grid.ts`) is DST-correct — it
+  no longer assumes local and UTC minutes move in lockstep, which drifted
+  by the transition's own delta (not always 60 minutes — Lord Howe's is 30)
+  whenever one fell inside the selected segment. `DaySegment`'s own
+  boundary construction (`splitIntervalByLocalDay`) still uses the old flat
+  offset for the narrower case of an overnight-spanning window whose
+  midnight crossing lands on a transition night — noted in that function's
+  own comment, not silently left.
+- `effectiveMinDuration`'s 15-minute UI step no longer doubles as an
+  invented minimum-duration business rule: `durationError` now checks
+  `resource.minDurationMinutes` directly, so `null` (no configured minimum)
+  can never produce a false "requires at least 15 minutes" message.
+- The availability grid's empty-day text is "No availability" unless the
+  already-loaded `ResourceDetail.availabilityWindows` prove that weekday has
+  no window at all, in which case it's "No bookable hours" — an empty
+  interval list alone no longer implies "closed" (it can just as easily mean
+  fully booked, blacked out, or insufficient pooled capacity).
+- `GET /resources` real pagination (Previous/Next, using the
+  `PagedResult.totalPages`/`hasPreviousPage`/`hasNextPage` fields the
+  backend already returned) replaces the old "showing 100 of N — narrow by
+  type" truncation notice. Any filter change resets to page 1.
+- Archived resources no longer show an active booking CTA ("Book resource"
+  on the list, "Check availability" on detail) — both render a plain
+  "Archived — not bookable" notice in the same slot instead.
+- Accessibility: the resource-type filter is a `role="group"` of plain
+  `aria-pressed` buttons, not a fake `tablist`/`tab`; the resource card's
+  "view details" is a real `<a>` (`.card-title-link`), not a `role="link"`
+  div wrapping a real anchor; availability segment buttons carry
+  `aria-pressed` and a spelled-out `aria-label` ("Tuesday, Sep 22, 10:00 to
+  12:00, 3 units remaining"); the drag handles/overlay are `aria-hidden`,
+  with the pre-existing Start/End `<select>`s as the real keyboard/
+  screen-reader path for the same narrowing.
+
+Decided, not deferred: refresh-token storage (item 12 of the review) stays
+body-based/localStorage-held permanently — the owner reviewed the tradeoff
+(moving to an httpOnly cookie needs `AllowCredentials`, `Set-Cookie` on
+three backend endpoints, and a CSRF story that doesn't exist today, since
+there's no antiforgery middleware anywhere in `backend/src`) and chose to
+accept the risk of a stolen refresh token via XSS rather than do the
+migration. See decision `0011`'s own final amendment (2026-09-16) — this is
+now closed, not an open pre-production task to re-raise later.
+`AvailabilityComponent`'s size (766 lines before this pass) was left
+unsplit — this pass alone added a DST fix, a duration-validation fix, an
+empty-state fix, and accessibility changes to that same file; extracting
+child components in the same pass would have compounded the regression
+risk without a matching increase in test coverage.

@@ -42,7 +42,11 @@
       </div>
 
       <div class="header-actions">
-        <a class="primary-button" [routerLink]="['/resources', resource.id, 'availability']"> Check availability </a>
+        @if (resource.isArchived) {
+          <span class="archived-notice">Archived — not bookable</span>
+        } @else {
+          <a class="primary-button" [routerLink]="['/resources', resource.id, 'availability']"> Check availability </a>
+        }
       </div>
     </div>
 

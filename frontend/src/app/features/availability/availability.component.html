@@ -147,13 +147,15 @@
               <span class="day-label">{{ dayLabel(row.date) }}</span>
               <div class="day-track">
                 @if (row.segments.length === 0) {
-                  <span class="no-hours">No bookable hours</span>
+                  <span class="no-hours">{{ emptyDayLabel(row.date) }}</span>
                 } @else {
                   @for (segment of row.segments; track segment.startMinutes) {
                     <button
                       type="button"
                       class="segment"
                       [class.selected]="isSegmentSelected(segment)"
+                      [attr.aria-pressed]="isSegmentSelected(segment)"
+                      [attr.aria-label]="segmentAccessibleLabel(row.date, segment)"
                       [style.left.%]="segmentLeftPercent(segment)"
                       [style.width.%]="segmentWidthPercent(segment)"
                       (click)="selectSegment(segment)"
@@ -167,6 +169,7 @@
                   @if (selected.date === row.date) {
                     <div
                       class="selection-overlay"
+                      aria-hidden="true"
                       [style.left.%]="selectionOverlayLeftPercent()"
                       [style.width.%]="selectionOverlayWidthPercent()"
                       (pointerdown)="onOverlayPointerDown($event)"
@@ -174,6 +177,12 @@
                       (pointerup)="onHandlePointerUp()"
                       (pointercancel)="onHandlePointerUp()"
                     >
+                      <!--
+                        Pointer-only; not a keyboard or screen-reader
+                        interaction target (item 10) — the Start/End time
+                        selects below are the accessible, fully-usable
+                        equivalent for narrowing this same selection.
+                      -->
                       <span
                         class="selection-handle selection-handle--start"
                         (pointerdown)="onHandlePointerDown('start', $event)"
