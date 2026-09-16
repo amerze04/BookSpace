@@ -9,7 +9,14 @@ export const routes: Routes = [
   },
   {
     path: '',
+    // Both are needed: canActivate guards entry into the shell itself, but
+    // once the shell is active, navigating between its already-loaded
+    // children (home -> resources -> my-bookings, ...) never re-runs it —
+    // canActivateChild is what re-validates the session (and transparently
+    // refreshes an expired access token via AuthService.hasValidSession(),
+    // see auth.guard.ts) on every one of those child navigations too.
     canActivate: [authGuard],
+    canActivateChild: [authGuard],
     loadComponent: () => import('./layout/shell/shell.component').then((m) => m.ShellComponent),
     children: [
       {
@@ -36,9 +43,19 @@ export const routes: Routes = [
               ),
           },
           {
-            // WP-7 Phase 2 replaces this with the real availability screen.
             path: ':id/availability',
             data: { title: 'Availability' },
+            loadComponent: () =>
+              import('./features/availability/availability.component').then((m) => m.AvailabilityComponent),
+          },
+          {
+            // WP-7 Phase 3 replaces this with the real booking form — the
+            // availability screen's "Continue to booking" (step 6) already
+            // navigates here, carrying the selected span via router state,
+            // the same one-route-at-a-time pattern Phase 1 used for this
+            // very route before Phase 2 existed.
+            path: ':id/book',
+            data: { title: 'Book' },
             loadComponent: () =>
               import('./features/placeholder/placeholder.component').then((m) => m.PlaceholderComponent),
           },

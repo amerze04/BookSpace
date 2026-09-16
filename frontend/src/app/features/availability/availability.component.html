@@ -1,0 +1,279 @@
+@if (loading()) {
+  <p class="state-message">Loading resource…</p>
+} @else if (notFound()) {
+  <div class="state-message">
+    <p>This resource doesn't exist, or you don't have access to it.</p>
+    <a routerLink="/resources" class="retry-button">Back to Resources</a>
+  </div>
+} @else if (loadError()) {
+  <div class="state-message state-message--error">
+    <p>Couldn't load this resource.</p>
+    <button type="button" class="retry-button" (click)="retry()">Try again</button>
+  </div>
+} @else if (resource(); as resource) {
+  <div class="availability">
+    <div class="summary-card">
+      <span class="resource-icon">
+        <app-resource-type-icon [type]="resource.resourceType" />
+      </span>
+
+      <div class="summary-text">
+        <h2>{{ resource.name }}</h2>
+        <p class="summary-meta">
+          {{ typeLabel(resource.resourceType) }} • {{ capacityLabel(resource) }} • {{ approvalLabel(resource) }}
+        </p>
+      </div>
+
+      <a class="view-details-link" [routerLink]="['/resources', resource.id]">
+        View details
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path
+            d="M9 6l6 6-6 6"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </a>
+    </div>
+
+    <div class="date-nav">
+      <div class="date-range-controls">
+        <button type="button" class="nav-arrow" aria-label="Previous week" (click)="shiftWeek(-1)">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M15 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+
+        <div class="range-picker-wrapper">
+          <button type="button" class="range-display" (click)="toggleRangePicker()">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path d="M4 10h16M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+            {{ formattedRange() }}
+            <svg viewBox="0 0 24 24" aria-hidden="true" class="chevron">
+              <path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+
+          @if (showRangePicker()) {
+            <div class="range-popover">
+              <label class="date-field">
+                From
+                <input type="date" [value]="draftFrom()" (change)="onDraftFromChange($event)" />
+              </label>
+              <label class="date-field">
+                To
+                <input type="date" [value]="draftTo()" (change)="onDraftToChange($event)" />
+              </label>
+
+              @if (draftError()) {
+                <p class="draft-error">{{ draftError() }}</p>
+              }
+
+              <div class="popover-actions">
+                <button type="button" class="secondary-button" (click)="cancelRangePicker()">Cancel</button>
+                <button type="button" class="primary-button" (click)="applyRangePicker()">Apply</button>
+              </div>
+            </div>
+          }
+        </div>
+
+        <button type="button" class="nav-arrow" aria-label="Next week" (click)="shiftWeek(1)">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+
+        <button type="button" class="today-button" (click)="goToToday()">Today</button>
+      </div>
+
+      @if (showQuantityStepper()) {
+        <div class="quantity-control">
+          <span class="quantity-label">Quantity</span>
+          <div class="stepper">
+            <button type="button" (click)="decrementQuantity()" [disabled]="quantity() <= 1" aria-label="Decrease quantity">
+              −
+            </button>
+            <span class="stepper-value">{{ quantity() }}</span>
+            <button
+              type="button"
+              (click)="incrementQuantity()"
+              [disabled]="quantity() >= resource.capacity"
+              aria-label="Increase quantity"
+            >
+              +
+            </button>
+          </div>
+        </div>
+      }
+
+      <span class="timezone-note">Times shown in {{ resource.timeZoneId }}</span>
+    </div>
+
+    <div class="caption-row">
+      <p class="range-hint">Select up to 90 days.</p>
+      @if (showQuantityStepper()) {
+        <p class="quantity-hint">Select how many units you need.</p>
+      }
+    </div>
+
+    @if (availabilityLoading()) {
+      <p class="state-message">Loading availability…</p>
+    } @else if (availabilityError()) {
+      <div class="state-message state-message--error">
+        <p>Couldn't load availability for this range.</p>
+        <button type="button" class="retry-button" (click)="retryAvailability()">Try again</button>
+      </div>
+    } @else if (isArchivedResource()) {
+      <p class="state-message">This resource is archived and isn't bookable.</p>
+    } @else {
+      <div class="grid">
+        <div class="grid-axis">
+          <span class="axis-spacer"></span>
+          <div class="axis-ticks">
+            @for (tick of axisTicks(); track tick) {
+              <span class="axis-tick" [style.left.%]="tickLeftPercent(tick)">{{ formatTick(tick) }}</span>
+            }
+          </div>
+        </div>
+
+        <div class="grid-rows">
+          @for (row of dayRows(); track row.date) {
+            <div class="grid-row">
+              <span class="day-label">{{ dayLabel(row.date) }}</span>
+              <div class="day-track">
+                @if (row.segments.length === 0) {
+                  <span class="no-hours">{{ emptyDayLabel(row.date) }}</span>
+                } @else {
+                  @for (segment of row.segments; track segment.startMinutes) {
+                    <button
+                      type="button"
+                      class="segment"
+                      [class.selected]="isSegmentSelected(segment)"
+                      [attr.aria-pressed]="isSegmentSelected(segment)"
+                      [attr.aria-label]="segmentAccessibleLabel(row.date, segment)"
+                      [style.left.%]="segmentLeftPercent(segment)"
+                      [style.width.%]="segmentWidthPercent(segment)"
+                      (click)="selectSegment(segment)"
+                    >
+                      {{ segmentLabel(segment) }}
+                    </button>
+                  }
+                }
+
+                @if (selectedSegment(); as selected) {
+                  @if (selected.date === row.date) {
+                    <div
+                      class="selection-overlay"
+                      aria-hidden="true"
+                      [style.left.%]="selectionOverlayLeftPercent()"
+                      [style.width.%]="selectionOverlayWidthPercent()"
+                      (pointerdown)="onOverlayPointerDown($event)"
+                      (pointermove)="onOverlayPointerMove($event)"
+                      (pointerup)="onHandlePointerUp()"
+                      (pointercancel)="onHandlePointerUp()"
+                    >
+                      <!--
+                        Pointer-only; not a keyboard or screen-reader
+                        interaction target (item 10) — the Start/End time
+                        selects below are the accessible, fully-usable
+                        equivalent for narrowing this same selection.
+                      -->
+                      <span
+                        class="selection-handle selection-handle--start"
+                        (pointerdown)="onHandlePointerDown('start', $event)"
+                        (pointermove)="onHandlePointerMove('start', $event)"
+                        (pointerup)="onHandlePointerUp()"
+                        (pointercancel)="onHandlePointerUp()"
+                      ></span>
+                      <span
+                        class="selection-handle selection-handle--end"
+                        (pointerdown)="onHandlePointerDown('end', $event)"
+                        (pointermove)="onHandlePointerMove('end', $event)"
+                        (pointerup)="onHandlePointerUp()"
+                        (pointercancel)="onHandlePointerUp()"
+                      ></span>
+                    </div>
+                  }
+                }
+              </div>
+            </div>
+          }
+        </div>
+      </div>
+
+      @if (selectedSegment(); as segment) {
+        <div class="selection-panel">
+          <div class="selection-info">
+            <span class="selection-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.6" />
+                <path d="M4 10h16M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              </svg>
+            </span>
+            <div>
+              <span class="selection-label">Selected time</span>
+              <p class="selection-summary">
+                {{ selectedDateLabel() }} • {{ selectedTimeRangeLabel() }} • {{ selectedDurationLabel() }}
+                @if (showQuantityStepper()) {
+                  • Quantity: {{ quantity() }}
+                }
+              </p>
+            </div>
+          </div>
+
+          <label class="time-field">
+            Start time
+            <select [value]="selectedStartMinutes()" (change)="onSelectedStartChange($event)">
+              @for (opt of startTimeOptions(); track opt.minutes) {
+                <option [value]="opt.minutes">{{ opt.label }}</option>
+              }
+            </select>
+          </label>
+
+          <label class="time-field">
+            End time
+            <select [value]="selectedEndMinutes()" (change)="onSelectedEndChange($event)">
+              @for (opt of endTimeOptions(); track opt.minutes) {
+                <option [value]="opt.minutes">{{ opt.label }}</option>
+              }
+            </select>
+          </label>
+
+          @if (durationError(); as error) {
+            <p class="duration-error">{{ error }}</p>
+          } @else if (resource.requiresApproval) {
+            <span class="info-tag">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6" />
+                <path d="M12 8v.01M12 11v5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              </svg>
+              Approval required
+            </span>
+          } @else if (showQuantityStepper()) {
+            <span class="info-tag">{{ segment.remainingCapacity }} units remaining during this time</span>
+          }
+
+          <div class="selection-actions">
+            <button
+              type="button"
+              class="primary-button continue-button"
+              [disabled]="!!durationError()"
+              (click)="continueToBooking(resource)"
+            >
+              Continue to booking
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+            <button type="button" class="clear-selection-link" (click)="clearSelection()">Clear selection</button>
+          </div>
+        </div>
+      }
+    }
+  </div>
+}

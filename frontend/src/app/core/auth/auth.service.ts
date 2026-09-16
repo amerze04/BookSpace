@@ -6,6 +6,7 @@ import {
   filter,
   finalize,
   firstValueFrom,
+  from,
   fromEvent,
   map,
   of,
@@ -19,7 +20,7 @@ import {
 import { environment } from '../../../environments/environment';
 import { skipErrorToast } from '../http/skip-error-toast';
 import { DecodedAccessToken, decodeAccessToken, isAccessTokenExpired } from './jwt-decode';
-import { releaseRefreshLock, tryAcquireRefreshLock } from './refresh-lock';
+import { isWebLocksSupported, releaseRefreshLock, runWithWebLock, tryAcquireRefreshLock } from './refresh-lock';
 
 // Login and refresh both hand back this same shape — the backend's own name
 // for it (TokenIssuer's output, decisions/0015) is IssuedTokens.
@@ -201,19 +202,58 @@ export class AuthService {
     return this.refreshInFlight;
   }
 
+  // Web Locks (navigator.locks) is a true mutex — see refresh-lock.ts — so
+  // every tab just runs the same coordinated function under it, rather than
+  // this tab's own "am I the leader or a follower" branch. The localStorage
+  // lock is the fallback for a browser without Web Locks, where that
+  // leader/follower split (and its own timeout-based takeover) is still the
+  // best available approximation.
   private startRefresh(refreshToken: string): Observable<string> {
+    if (isWebLocksSupported()) {
+      return from(runWithWebLock(() => firstValueFrom(this.performRefreshIfNeeded(refreshToken))));
+    }
+
     const lockId = tryAcquireRefreshLock(AuthService.REFRESH_LOCK_TTL_MS);
-    return lockId ? this.performRefresh(refreshToken, lockId) : this.waitForPeerRefresh(refreshToken);
+    if (lockId) {
+      return this.performRefreshIfNeeded(refreshToken).pipe(finalize(() => releaseRefreshLock(lockId)));
+    }
+    return this.waitForPeerRefresh(refreshToken);
   }
 
-  private performRefresh(refreshToken: string, lockId: string): Observable<string> {
+  // Re-checks storage before ever calling the network, against the refresh
+  // token this call actually started with — not against local expiry, which
+  // would wrongly no-op a caller that asked to refresh precisely because the
+  // server just rejected an access token that still *looks* unexpired
+  // locally. Only a refresh token that has changed since this call started
+  // proves a peer tab already rotated it while this call waited for the
+  // lock; handing decisions/0011's reuse-detection that same, now-stale
+  // token again would look exactly like theft, so the token already in
+  // storage is adopted instead of refreshing again.
+  private performRefreshIfNeeded(refreshTokenAtStart: string): Observable<string> {
+    const currentRefreshToken = this.refreshToken;
+    if (!currentRefreshToken) {
+      this.clearSession();
+      return throwError(() => new Error('Session ended while waiting to refresh.'));
+    }
+
+    if (currentRefreshToken !== refreshTokenAtStart) {
+      const currentAccessToken = this.accessToken;
+      if (currentAccessToken) {
+        this.claimsSignal.set(this.readStoredClaims());
+        return of(currentAccessToken);
+      }
+      // Storage shows a rotation happened but no access token to show for
+      // it (a rare interleaving) — fall through and refresh for real below,
+      // with whatever refresh token is current now.
+    }
+
     // Captured before the call goes out. logout() (or a terminal failure
     // elsewhere) bumps this — if it moves before the response comes back, the
     // session this response would restore no longer exists, and it must not
     // be resurrected (item 6: logout racing an in-flight refresh).
     const generationAtStart = this.sessionGeneration;
 
-    return this.http.post<IssuedTokens>(`${environment.apiBaseUrl}/auth/refresh`, { refreshToken }).pipe(
+    return this.http.post<IssuedTokens>(`${environment.apiBaseUrl}/auth/refresh`, { refreshToken: currentRefreshToken }).pipe(
       map((response) => {
         if (this.sessionGeneration !== generationAtStart) {
           throw new Error('Session ended while a refresh was in flight; discarding its result.');
@@ -233,15 +273,15 @@ export class AuthService {
         }
         return throwError(() => error);
       }),
-      finalize(() => releaseRefreshLock(lockId)),
     );
   }
 
-  // Lost the lock to another tab. Waits for that tab's result — signalled the
-  // only way a tab actually can signal another one here, a `storage` event on
-  // the keys a refresh (or a logout) touches — rather than making its own
-  // call. A timeout with no event at all means the leader tab likely crashed
-  // or was closed mid-refresh; this tab then takes its own turn.
+  // Lost the localStorage lock to another tab (Web Locks fallback path only).
+  // Waits for that tab's result — signalled the only way a tab actually can
+  // signal another one here, a `storage` event on the keys a refresh (or a
+  // logout) touches — rather than making its own call. A timeout with no
+  // event at all means the leader tab likely crashed or was closed
+  // mid-refresh; this tab then takes its own turn.
   private waitForPeerRefresh(refreshToken: string): Observable<string> {
     return race(
       fromEvent<StorageEvent>(window, 'storage').pipe(

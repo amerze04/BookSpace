@@ -17,7 +17,12 @@ type TestableResourceListComponent = ResourceListComponent & {
   totalCount: () => number;
   loading: () => boolean;
   loadError: () => boolean;
-  isTruncated: () => boolean;
+  page: () => number;
+  totalPages: () => number;
+  hasPreviousPage: () => boolean;
+  hasNextPage: () => boolean;
+  goToPreviousPage(): void;
+  goToNextPage(): void;
   selectedType: () => ResourceType | null;
   includeArchived: () => boolean;
   showMoreFilters: () => boolean;
@@ -55,15 +60,21 @@ function fakeResource(overrides: Partial<ResourceSummary> = {}): ResourceSummary
   };
 }
 
-function fakePage(items: ResourceSummary[], totalCount = items.length): PagedResult<ResourceSummary> {
+function fakePage(
+  items: ResourceSummary[],
+  totalCount = items.length,
+  page = 1,
+  pageSize = 100,
+): PagedResult<ResourceSummary> {
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   return {
     items,
-    page: 1,
-    pageSize: 100,
+    page,
+    pageSize,
     totalCount,
-    totalPages: 1,
-    hasPreviousPage: false,
-    hasNextPage: false,
+    totalPages,
+    hasPreviousPage: page > 1,
+    hasNextPage: page < totalPages,
   };
 }
 
@@ -93,6 +104,27 @@ describe('ResourceListComponent', () => {
     return TestBed.createComponent(ResourceListComponent).componentInstance as TestableResourceListComponent;
   }
 
+  // Every other test in this file drives the component instance directly
+  // (signals/methods only) — this is the one exception, for item 9/10's
+  // fixes, which live entirely in the template rather than in any exposed
+  // signal or method, so there's nothing to assert on without rendering it.
+  function createRenderedFixture() {
+    navigate = vi.fn().mockResolvedValue(true);
+
+    TestBed.configureTestingModule({
+      imports: [ResourceListComponent],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: Router, useValue: { navigate } },
+        { provide: ActivatedRoute, useValue: {} },
+      ],
+    });
+
+    httpMock = TestBed.inject(HttpTestingController);
+    return TestBed.createComponent(ResourceListComponent);
+  }
+
   // Flushes the construction-time fetch (every test triggers one, since
   // ResourceListComponent loads as soon as it's created) with a plain,
   // non-truncated page, so tests about later behaviour don't also have to
@@ -107,11 +139,12 @@ describe('ResourceListComponent', () => {
     httpMock.verify();
   });
 
-  it('fetches at construction with the shared page-size ceiling and no type filter', () => {
+  it('fetches at construction with the shared page-size ceiling, page 1, and no type filter', () => {
     const component = createFixture();
 
     const req = httpMock.expectOne((r) => r.url === `${API}/resources`);
     expect(req.request.params.get('pageSize')).toBe('100');
+    expect(req.request.params.get('page')).toBe('1');
     expect(req.request.params.has('type')).toBe(false);
 
     req.flush(fakePage([fakeResource(), fakeResource({ id: 'r2', name: 'Pool Cars', capacity: 5 })], 2));
@@ -119,19 +152,100 @@ describe('ResourceListComponent', () => {
     expect(component.items().length).toBe(2);
     expect(component.totalCount()).toBe(2);
     expect(component.loading()).toBe(false);
-    expect(component.isTruncated()).toBe(false);
+    expect(component.totalPages()).toBe(1);
+    expect(component.hasNextPage()).toBe(false);
   });
 
-  it('flags the list as truncated when the server reports more rows than this page could carry', () => {
-    const component = createFixture();
+  // Item 8: real pagination, not a "narrow by type" truncation notice — a
+  // tenant with more resources than one page can carry can actually reach
+  // the rest.
+  describe('pagination', () => {
+    it('exposes hasNextPage/totalPages when the server reports more rows than one page could carry', () => {
+      const component = createFixture();
 
-    httpMock
-      .expectOne((r) => r.url === `${API}/resources`)
-      .flush(fakePage(Array.from({ length: 100 }, (_, i) => fakeResource({ id: `r${i}` })), 150));
+      httpMock
+        .expectOne((r) => r.url === `${API}/resources`)
+        .flush(fakePage(Array.from({ length: 100 }, (_, i) => fakeResource({ id: `r${i}` })), 150));
 
-    expect(component.items().length).toBe(100);
-    expect(component.totalCount()).toBe(150);
-    expect(component.isTruncated()).toBe(true);
+      expect(component.items().length).toBe(100);
+      expect(component.totalCount()).toBe(150);
+      expect(component.totalPages()).toBe(2);
+      expect(component.hasNextPage()).toBe(true);
+      expect(component.hasPreviousPage()).toBe(false);
+    });
+
+    it('goToNextPage requests page 2 and updates hasPreviousPage/hasNextPage from the response', () => {
+      const component = createFixture();
+      httpMock
+        .expectOne((r) => r.url === `${API}/resources`)
+        .flush(fakePage(Array.from({ length: 100 }, (_, i) => fakeResource({ id: `r${i}` })), 150));
+
+      component.goToNextPage();
+
+      const req = httpMock.expectOne((r) => r.url === `${API}/resources`);
+      expect(req.request.params.get('page')).toBe('2');
+      req.flush(fakePage(Array.from({ length: 50 }, (_, i) => fakeResource({ id: `s${i}` })), 150, 2));
+
+      expect(component.page()).toBe(2);
+      expect(component.hasPreviousPage()).toBe(true);
+      expect(component.hasNextPage()).toBe(false);
+      expect(component.items()).toHaveLength(50);
+    });
+
+    it('goToNextPage does nothing when there is no next page', () => {
+      const component = createLoadedComponent(); // a single page, hasNextPage false by default
+
+      component.goToNextPage();
+
+      httpMock.expectNone((r) => r.url === `${API}/resources`);
+    });
+
+    it('goToPreviousPage does nothing on page 1', () => {
+      const component = createLoadedComponent();
+
+      component.goToPreviousPage();
+
+      httpMock.expectNone((r) => r.url === `${API}/resources`);
+    });
+
+    it('changing the type filter resets to page 1', () => {
+      const component = createFixture();
+      httpMock
+        .expectOne((r) => r.url === `${API}/resources`)
+        .flush(fakePage(Array.from({ length: 100 }, (_, i) => fakeResource({ id: `r${i}` })), 150));
+
+      component.goToNextPage();
+      httpMock
+        .expectOne((r) => r.params.get('page') === '2')
+        .flush(fakePage(Array.from({ length: 50 }, (_, i) => fakeResource({ id: `s${i}` })), 150, 2));
+      expect(component.page()).toBe(2);
+
+      component.selectType('Room');
+
+      const req = httpMock.expectOne((r) => r.url === `${API}/resources`);
+      expect(req.request.params.get('page')).toBe('1');
+      req.flush(fakePage([fakeResource({ resourceType: 'Room' })]));
+      expect(component.page()).toBe(1);
+    });
+
+    it('toggling "include archived" resets to page 1', () => {
+      const component = createFixture();
+      httpMock
+        .expectOne((r) => r.url === `${API}/resources`)
+        .flush(fakePage(Array.from({ length: 100 }, (_, i) => fakeResource({ id: `r${i}` })), 150));
+
+      component.goToNextPage();
+      httpMock
+        .expectOne((r) => r.params.get('page') === '2')
+        .flush(fakePage(Array.from({ length: 50 }, (_, i) => fakeResource({ id: `s${i}` })), 150, 2));
+
+      component.onIncludeArchivedChange(fakeCheckboxEvent(true));
+
+      const req = httpMock.expectOne((r) => r.url === `${API}/resources`);
+      expect(req.request.params.get('page')).toBe('1');
+      req.flush(fakePage([fakeResource()]));
+      expect(component.page()).toBe(1);
+    });
   });
 
   it('re-requests with the matching type when a pill is selected', () => {
@@ -369,6 +483,66 @@ describe('ResourceListComponent', () => {
       const withoutArchived = httpMock.expectOne((r) => r.url === `${API}/resources`);
       expect(withoutArchived.request.params.has('includeArchived')).toBe(false);
       withoutArchived.flush(fakePage([fakeResource()]));
+    });
+  });
+
+  // Items 9 and 10 — both live entirely in the template.
+  describe('rendered card markup', () => {
+    it('shows "Book resource" for an active resource and no archived notice', () => {
+      const fixture = createRenderedFixture();
+      httpMock.expectOne((r) => r.url === `${API}/resources`).flush(fakePage([fakeResource({ isArchived: false })]));
+      fixture.detectChanges();
+
+      const el = fixture.nativeElement as HTMLElement;
+      expect(el.querySelector('.book-link')).not.toBeNull();
+      expect(el.querySelector('.archived-notice')).toBeNull();
+    });
+
+    // Item 9: an archived resource's card must not offer a CTA that leads
+    // into a known dead end (the availability screen correctly refuses
+    // booking, but routing there anyway is still a bad flow).
+    it('shows a plain archived notice instead of "Book resource" for an archived resource', () => {
+      const fixture = createRenderedFixture();
+      httpMock.expectOne((r) => r.url === `${API}/resources`).flush(fakePage([fakeResource({ isArchived: true })]));
+      fixture.detectChanges();
+
+      const el = fixture.nativeElement as HTMLElement;
+      expect(el.querySelector('.book-link')).toBeNull();
+      expect(el.querySelector('.archived-notice')?.textContent).toContain('Archived');
+    });
+
+    // Item 10: the card's only real, keyboard-reachable "view details"
+    // interaction is now a genuine anchor, not a role="link" div wrapping
+    // another real anchor (nested interactive elements).
+    it('exposes "view details" as a real anchor, not a div with role="link"', () => {
+      const fixture = createRenderedFixture();
+      httpMock.expectOne((r) => r.url === `${API}/resources`).flush(fakePage([fakeResource()]));
+      fixture.detectChanges();
+
+      const el = fixture.nativeElement as HTMLElement;
+      expect(el.querySelector('.resource-card')?.getAttribute('role')).toBeNull();
+      expect(el.querySelector('.resource-card')?.getAttribute('tabindex')).toBeNull();
+      const titleLink = el.querySelector('.card-title-link');
+      expect(titleLink?.tagName).toBe('A');
+      expect(titleLink?.getAttribute('aria-label')).toBe('View Conference Room A');
+    });
+
+    // Item 10: filters that behave as filters, not fake tabs.
+    it('uses a plain button group with aria-pressed for the type filters, not tab/tablist roles', () => {
+      const fixture = createRenderedFixture();
+      httpMock.expectOne((r) => r.url === `${API}/resources`).flush(fakePage([fakeResource()]));
+      fixture.detectChanges();
+
+      const el = fixture.nativeElement as HTMLElement;
+      expect(el.querySelector('.type-filters')?.getAttribute('role')).toBe('group');
+      const pills = Array.from(el.querySelectorAll('.type-pill'));
+      expect(pills.length).toBeGreaterThan(0);
+      for (const pill of pills) {
+        expect(pill.getAttribute('role')).toBeNull();
+        expect(pill.hasAttribute('aria-pressed')).toBe(true);
+      }
+      const allPill = pills.find((p) => p.textContent?.trim() === 'All');
+      expect(allPill?.getAttribute('aria-pressed')).toBe('true');
     });
   });
 });

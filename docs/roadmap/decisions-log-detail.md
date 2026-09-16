@@ -88,6 +88,13 @@ feature, the reasoning matters as much as the answer.
     nothing at that entropy). Rotation keeps the `FamilyId` and inherits the
     original expiry. **Reuse of a revoked token kills the whole family**;
     expiry kills only that token.
+    **Amended 2026-09-16** (frontend hardening pass, item 12): the
+    body-based/`localStorage`-held token storage question — twice deferred
+    as "not yet" (WP-6, then this pass's own research) — is now decided
+    **permanently**: no migration to an httpOnly cookie. The owner accepts
+    the risk of an XSS hole exfiltrating the refresh token rather than take
+    on the backend `AllowCredentials`/`Set-Cookie`/CSRF work a cookie would
+    require.
 12. [`0012`](../decisions/0012-rbac-enforcement-model.md) — RBAC via four
     named policies plus a deny-by-default `FallbackPolicy`, so a new endpoint is
     protected unless it opts out. `TenantMember` deliberately **excludes**

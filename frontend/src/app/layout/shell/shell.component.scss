@@ -146,8 +146,17 @@
   }
 }
 
+// A flex column, not a plain block, so a routed page can opt into filling
+// the available height exactly (`:host { flex: 1; min-height: 0 }`) instead
+// of depending on percentage-height resolution through a block box — which
+// is what kept the availability screen's row-scrolling from working. Pages
+// that don't opt in keep the default `flex: 0 1 auto`, so they size to
+// their own content and scroll this container exactly as before.
 .content {
   flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   padding: 2rem;
   overflow: auto;
 }

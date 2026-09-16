@@ -57,6 +57,7 @@ describe('ShellComponent breadcrumb', () => {
 
   afterEach(() => {
     breadcrumbService.setOverride(null);
+    breadcrumbService.setInsertBeforeLast(null);
   });
 
   it('shows a single crumb for a flat, top-level route', () => {
@@ -109,6 +110,40 @@ describe('ShellComponent breadcrumb', () => {
     // a crumb out of nowhere.
     const component = createComponent([]);
     breadcrumbService.setOverride('Conference Room A');
+
+    expect(component.breadcrumb()).toEqual([]);
+  });
+
+  it('inserts insertBeforeLast just before the last crumb, without replacing it', () => {
+    // The availability screen's own case: its route chain only ever
+    // contributes ['Resources', 'Availability'] (a sibling of `:id`, not a
+    // child of it), so there is no 'Resource details' crumb to override —
+    // the resource name has to be inserted instead.
+    const component = createComponent([{ title: 'Resources' }, { title: 'Availability' }]);
+
+    breadcrumbService.setInsertBeforeLast('Conference Room A');
+
+    expect(component.breadcrumb()).toEqual(['Resources', 'Conference Room A', 'Availability']);
+    expect(component.title()).toBe('Availability');
+  });
+
+  it('applies insertBeforeLast after override, so both can compose', () => {
+    const component = createComponent([{ title: 'Resources' }, { title: 'Resource details' }]);
+
+    breadcrumbService.setOverride('Not applicable here');
+    breadcrumbService.setInsertBeforeLast('Conference Room A');
+
+    // override replaces the last crumb first ('Resource details' ->
+    // 'Not applicable here'), then insertBeforeLast splices in ahead of
+    // whatever is now last — exercised together only to prove the two
+    // signals don't clobber each other, not because a real screen combines
+    // them this way.
+    expect(component.breadcrumb()).toEqual(['Resources', 'Conference Room A', 'Not applicable here']);
+  });
+
+  it('ignores a leftover insertBeforeLast on a route with no crumbs at all', () => {
+    const component = createComponent([]);
+    breadcrumbService.setInsertBeforeLast('Conference Room A');
 
     expect(component.breadcrumb()).toEqual([]);
   });

@@ -66,3 +66,24 @@ export function releaseRefreshLock(id: string): void {
     localStorage.removeItem(LOCK_KEY);
   }
 }
+
+// Web Locks API (navigator.locks) is a true cross-tab mutex — a lock is held
+// for exactly as long as the callback's promise is pending, with no TTL to
+// misjudge and no window where two tabs can both believe they hold it, which
+// is precisely what the localStorage-based lock above can't guarantee. It has
+// been supported in every evergreen browser (Chrome/Edge 69+, Firefox 96+,
+// Safari 15.4+) since well before this app's realistic target environment, so
+// it's used as the primary mechanism; the localStorage lock above stays as
+// the fallback for whatever doesn't have it.
+export function isWebLocksSupported(): boolean {
+  return typeof navigator !== 'undefined' && typeof navigator.locks?.request === 'function';
+}
+
+const WEB_LOCK_NAME = 'bookspace.refresh';
+
+// Runs `fn` under the named lock, held for the lifetime of the returned
+// promise. Rejection of `fn` propagates normally; the lock is always released
+// on settlement, by the browser itself.
+export function runWithWebLock<T>(fn: () => Promise<T>): Promise<T> {
+  return navigator.locks.request(WEB_LOCK_NAME, () => fn());
+}

@@ -16,7 +16,23 @@ export class BreadcrumbService {
   private readonly overrideSignal = signal<string | null>(null);
   readonly override = this.overrideSignal.asReadonly();
 
+  // WP-7 Phase 2: the availability screen sits at `/resources/:id/availability`,
+  // a route that's a *sibling* of `:id` rather than nested under it
+  // (app.routes.ts), so its own route-title chain only ever contributes
+  // `['Resources', 'Availability']` — two crumbs, with nothing standing for
+  // the resource itself. `override` can't fix that: it replaces the *last*
+  // crumb, and 'Availability' is meant to stay. This is a second, independent
+  // slot that ShellComponent splices in just before the last crumb instead —
+  // giving 'Resources > Conference Room A > Availability' without restructuring
+  // routing or touching how ResourceDetailComponent's own override behaves.
+  private readonly insertBeforeLastSignal = signal<string | null>(null);
+  readonly insertBeforeLast = this.insertBeforeLastSignal.asReadonly();
+
   setOverride(label: string | null): void {
     this.overrideSignal.set(label);
+  }
+
+  setInsertBeforeLast(label: string | null): void {
+    this.insertBeforeLastSignal.set(label);
   }
 }

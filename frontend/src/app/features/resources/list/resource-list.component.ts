@@ -1,16 +1,19 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Router, RouterLink } from '@angular/router';
 import { Subject, debounceTime, distinctUntilChanged } from 'rxjs';
 import { ResourcesService } from '../resources.service';
 import { ResourceSummary, ResourceType } from '../resources.models';
+import { ResourceTypeIconComponent } from '../../../shared/resource-type/resource-type-icon.component';
+import { resourceCapacityLabel, resourceTypeLabel } from '../../../shared/resource-type/resource-type';
 
-// A generous page rather than a real pagination UI — there is no client-side
-// filtering left to justify fetching the API's own max (that workaround is
-// gone, see the 2026-09-15 note below), but nothing yet asks for a "next
-// page" control either, and a tenant with over 100 resources is still the
-// exception CLAUDE.md's own filter-gap note flagged as worth revisiting only
-// if it actually happens.
+// A generous page size — a tenant with over 100 resources is still the
+// exception CLAUDE.md's own filter-gap note flagged, so this stays large
+// enough that Previous/Next rarely has anything to do — but no longer the
+// *only* way to reach the rest (item 8): GET /resources already returns
+// real page metadata (PagedResult's totalPages/hasNextPage/hasPreviousPage),
+// so paging through it properly needed no backend change, just using what
+// was already on the wire.
 const RESOURCE_LIST_PAGE_SIZE = 100;
 
 // How long the search box waits after the last keystroke before firing a
@@ -36,17 +39,6 @@ const TYPE_FILTERS: TypeFilterOption[] = [
   { label: 'Other', value: 'Other' },
 ];
 
-// The singular label shown on a card, as opposed to TYPE_FILTERS' plural
-// pill labels ("Rooms" the filter, "Room" the resource) — two different
-// pieces of copy for the same enum value, not one reused awkwardly for both.
-const RESOURCE_TYPE_LABELS: Record<ResourceType, string> = {
-  Room: 'Room',
-  Equipment: 'Equipment',
-  Vehicle: 'Vehicle',
-  LabSlot: 'Lab slot',
-  Other: 'Other',
-};
-
 // The "Approval" dropdown's three states, mapped onto
 // ListResourcesParams.requiresApproval (true / false / omitted) in load() —
 // a real server round-trip since 2026-09-15, not a client-side predicate.
@@ -54,7 +46,7 @@ export type ApprovalFilter = 'all' | 'required' | 'notRequired';
 
 @Component({
   selector: 'app-resource-list',
-  imports: [RouterLink],
+  imports: [RouterLink, ResourceTypeIconComponent],
   templateUrl: './resource-list.component.html',
   styleUrl: './resource-list.component.scss',
 })
@@ -87,10 +79,17 @@ export class ResourceListComponent {
   protected readonly loading = signal(true);
   protected readonly loadError = signal(false);
 
-  // True only when the server reports more rows exist than this fetch could
-  // carry (RESOURCE_LIST_PAGE_SIZE) — meaningful again now that every filter
-  // on this screen narrows the fetch itself rather than merely what's shown.
-  protected readonly isTruncated = computed(() => this.totalCount() > this.items().length);
+  // Real pagination (item 8), not a "narrow your filters" truncation
+  // notice: page/totalPages/hasPreviousPage/hasNextPage all come straight
+  // off the server's own PagedResult, never recomputed client-side (the
+  // same "one source, not two that could disagree" reasoning
+  // core/http/paged-result.ts's own comment already applies to
+  // totalPages/hasNextPage/hasPreviousPage being mirrored rather than
+  // derived).
+  protected readonly page = signal(1);
+  protected readonly totalPages = signal(1);
+  protected readonly hasPreviousPage = signal(false);
+  protected readonly hasNextPage = signal(false);
 
   // Guards against a stale response overwriting a newer one if a second
   // request goes out before the first returns (a type pill click racing a
@@ -108,7 +107,7 @@ export class ResourceListComponent {
     // doesn't outlive the component.
     this.searchRequestChanges$
       .pipe(debounceTime(SEARCH_DEBOUNCE_MS), distinctUntilChanged(), takeUntilDestroyed())
-      .subscribe(() => this.load());
+      .subscribe(() => this.resetToFirstPageAndLoad());
   }
 
   protected selectType(type: ResourceType | null): void {
@@ -116,7 +115,7 @@ export class ResourceListComponent {
       return;
     }
     this.selectedType.set(type);
-    this.load();
+    this.resetToFirstPageAndLoad();
   }
 
   protected onSearchInput(event: Event): void {
@@ -127,7 +126,7 @@ export class ResourceListComponent {
 
   protected onApprovalFilterChange(event: Event): void {
     this.approvalFilter.set((event.target as HTMLSelectElement).value as ApprovalFilter);
-    this.load();
+    this.resetToFirstPageAndLoad();
   }
 
   protected toggleMoreFilters(): void {
@@ -136,10 +135,35 @@ export class ResourceListComponent {
 
   protected onIncludeArchivedChange(event: Event): void {
     this.includeArchived.set((event.target as HTMLInputElement).checked);
-    this.load();
+    this.resetToFirstPageAndLoad();
   }
 
   protected retry(): void {
+    this.load();
+  }
+
+  // Item 8: any filter changing the *set* of matching resources has to go
+  // back to page 1 — staying on, say, page 3 of a filter that now has only
+  // one page would otherwise show "no results" for a filter that actually
+  // has plenty, just not that far in.
+  private resetToFirstPageAndLoad(): void {
+    this.page.set(1);
+    this.load();
+  }
+
+  protected goToPreviousPage(): void {
+    if (!this.hasPreviousPage()) {
+      return;
+    }
+    this.page.update((p) => p - 1);
+    this.load();
+  }
+
+  protected goToNextPage(): void {
+    if (!this.hasNextPage()) {
+      return;
+    }
+    this.page.update((p) => p + 1);
     this.load();
   }
 
@@ -147,17 +171,15 @@ export class ResourceListComponent {
     void this.router.navigate(['/resources', resourceId]);
   }
 
+  // Delegates to the shared helper (extracted 2026-09-16, WP-7 Phase 2) —
+  // kept as a method here rather than called directly from the template so
+  // existing call sites and tests don't change shape.
   protected typeLabel(type: ResourceType): string {
-    return RESOURCE_TYPE_LABELS[type];
+    return resourceTypeLabel(type);
   }
 
-  // Derived purely from Capacity, never from ResourceType or the resource's
-  // name — decisions/0005 already makes Capacity the one axis that means
-  // exclusive vs. pooled, and CLAUDE.md §11 rules out inventing a rule like
-  // "Hot Desk Area says 'Multiple desks'" that isn't backed by any field the
-  // API actually returns.
   protected capacityLabel(resource: ResourceSummary): string {
-    return resource.capacity === 1 ? 'Single resource' : `${resource.capacity} units`;
+    return resourceCapacityLabel(resource);
   }
 
   private load(): void {
@@ -169,6 +191,7 @@ export class ResourceListComponent {
 
     this.resourcesService
       .list({
+        page: this.page(),
         pageSize: RESOURCE_LIST_PAGE_SIZE,
         type: this.selectedType() ?? undefined,
         // Only sent when it says something other than the backend's own
@@ -181,12 +204,15 @@ export class ResourceListComponent {
         requiresApproval: approval === 'all' ? undefined : approval === 'required',
       })
       .subscribe({
-        next: (page) => {
+        next: (result) => {
           if (requestId !== this.latestRequestId) {
             return; // a newer request already landed; this one is stale
           }
-          this.items.set(page.items);
-          this.totalCount.set(page.totalCount);
+          this.items.set(result.items);
+          this.totalCount.set(result.totalCount);
+          this.totalPages.set(result.totalPages);
+          this.hasPreviousPage.set(result.hasPreviousPage);
+          this.hasNextPage.set(result.hasNextPage);
           this.loading.set(false);
         },
         error: () => {

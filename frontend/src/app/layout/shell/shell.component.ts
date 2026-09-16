@@ -78,11 +78,22 @@ export class ShellComponent {
   // resource's own name is not something any static `data: { title }` could
   // carry. Falls back to the plain route chain before a page loads anything,
   // or on a route that never sets an override at all.
+  //
+  // insertBeforeLast then splices a second, independent crumb in just before
+  // whatever is now last — the availability screen's own case (see
+  // BreadcrumbService's comment): its route chain never contributed a crumb
+  // for the resource at all, so there is nothing here to *replace*, only
+  // something to insert.
   protected readonly breadcrumb = computed(() => {
     const chain = this.routeTitleChain();
     const override = this.breadcrumbService.override();
+    const insertBeforeLast = this.breadcrumbService.insertBeforeLast();
 
-    return override && chain.length > 0 ? [...chain.slice(0, -1), override] : chain;
+    const withOverride = override && chain.length > 0 ? [...chain.slice(0, -1), override] : chain;
+
+    return insertBeforeLast && withOverride.length > 0
+      ? [...withOverride.slice(0, -1), insertBeforeLast, withOverride[withOverride.length - 1]]
+      : withOverride;
   });
 
   // The page heading always matches the breadcrumb's last crumb — one

@@ -43,13 +43,12 @@
     </div>
   </div>
 
-  <div class="type-filters" role="tablist" aria-label="Filter by resource type">
+  <div class="type-filters" role="group" aria-label="Filter by resource type">
     @for (filter of typeFilters; track filter.label) {
       <button
         type="button"
         class="type-pill"
-        role="tab"
-        [attr.aria-selected]="selectedType() === filter.value"
+        [attr.aria-pressed]="selectedType() === filter.value"
         [class.active]="selectedType() === filter.value"
         (click)="selectType(filter.value)"
       >
@@ -57,12 +56,6 @@
       </button>
     }
   </div>
-
-  @if (isTruncated()) {
-    <p class="truncation-notice">
-      Showing {{ items().length }} of {{ totalCount() }} resources — narrow by type to see the rest.
-    </p>
-  }
 
   @if (loading()) {
     <p class="state-message">Loading resources…</p>
@@ -76,68 +69,20 @@
   } @else {
     <div class="resource-grid">
       @for (resource of items(); track resource.id) {
-        <div
-          class="resource-card"
-          role="link"
-          tabindex="0"
-          [attr.aria-label]="'View ' + resource.name"
-          (click)="goToDetail(resource.id)"
-          (keydown.enter)="goToDetail(resource.id)"
-        >
+        <div class="resource-card" (click)="goToDetail(resource.id)">
           <div class="card-header">
             <span class="resource-icon">
-              @switch (resource.resourceType) {
-                @case ('Room') {
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="1.6" />
-                    <path d="M9 4v16M9 12h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-                  </svg>
-                }
-                @case ('Equipment') {
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path
-                      d="M14.7 6.3a3 3 0 0 1-4 4L5 16l3 3 5.7-5.7a3 3 0 0 1 4-4l-2 2-1.4-1.4 2-2Z"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.6"
-                      stroke-linejoin="round"
-                    />
-                  </svg>
-                }
-                @case ('Vehicle') {
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path
-                      d="M5 16v-3.5L7 8h10l2 4.5V16M5 16a1.5 1.5 0 0 0 3 0M16 16a1.5 1.5 0 0 0 3 0M5 16h14"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.6"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                  </svg>
-                }
-                @case ('LabSlot') {
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path
-                      d="M10 3h4M10 3v6l-5 9a1.5 1.5 0 0 0 1.3 2.2h11.4A1.5 1.5 0 0 0 19 18l-5-9V3"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.6"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                  </svg>
-                }
-                @default {
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="1.6" />
-                    <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.6" />
-                  </svg>
-                }
-              }
+              <app-resource-type-icon [type]="resource.resourceType" />
             </span>
             <div class="card-title">
-              <h3>{{ resource.name }}</h3>
+              <a
+                class="card-title-link"
+                [routerLink]="['/resources', resource.id]"
+                [attr.aria-label]="'View ' + resource.name"
+                (click)="$event.stopPropagation()"
+              >
+                <h3>{{ resource.name }}</h3>
+              </a>
               <span class="type-label">{{ typeLabel(resource.resourceType) }}</span>
             </div>
           </div>
@@ -165,25 +110,52 @@
             }
           </div>
 
-          <a
-            class="book-link"
-            [routerLink]="['/resources', resource.id, 'availability']"
-            (click)="$event.stopPropagation()"
-          >
-            Book resource
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M5 12h14M13 6l6 6-6 6"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.6"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
-          </a>
+          @if (resource.isArchived) {
+            <span class="archived-notice">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M4 7h16v3H4V7Zm1 4h14v9H5v-9Z"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linejoin="round"
+                />
+              </svg>
+              Archived — not bookable
+            </span>
+          } @else {
+            <a
+              class="book-link"
+              [routerLink]="['/resources', resource.id, 'availability']"
+              (click)="$event.stopPropagation()"
+            >
+              Book resource
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M5 12h14M13 6l6 6-6 6"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </a>
+          }
         </div>
       }
     </div>
+
+    @if (totalPages() > 1) {
+      <nav class="pagination" aria-label="Resource list pages">
+        <button type="button" class="pagination-button" [disabled]="!hasPreviousPage()" (click)="goToPreviousPage()">
+          Previous
+        </button>
+        <span class="pagination-status">Page {{ page() }} of {{ totalPages() }} ({{ totalCount() }} resources)</span>
+        <button type="button" class="pagination-button" [disabled]="!hasNextPage()" (click)="goToNextPage()">
+          Next
+        </button>
+      </nav>
+    }
   }
 </div>
