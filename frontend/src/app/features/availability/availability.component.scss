@@ -1,0 +1,688 @@
+// This host has to actually fill the shell's content area, or nothing below
+// it can be told "take the rest of the space and scroll internally" — which
+// is the whole point of pinning the resource card and date controls while
+// only the rows move.
+//
+// `flex: 1` is what does it: shell.component.scss's .content is a flex
+// column, so this host is a flex item and gets the remaining height
+// directly. `height: 100%` stays as a fallback for a plain-block parent —
+// it was the *only* mechanism in the previous two attempts, and relying on
+// percentage resolution through a block box is exactly why they didn't take.
+// min-height: 0 overrides the flex default of min-height: auto, without
+// which this would refuse to shrink below its content and push the page
+// into scrolling again.
+:host {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+
+.state-message {
+  padding: 3rem 0;
+  text-align: center;
+  color: var(--color-text-secondary);
+
+  &--error {
+    color: var(--color-error);
+  }
+}
+
+.retry-button {
+  display: inline-block;
+  margin-top: 0.5rem;
+  padding: 0.5rem 1.1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--color-bg);
+  }
+}
+
+// flex: 1 (a flex child of :host, which now actually has a definite height)
+// is what lets .grid below claim "the rest of the available space" via its
+// own flex: 1 — without a definite chain all the way from :host down, a
+// flex child has nothing finite to fill and the whole page scrolls instead
+// of just the rows (the owner's own correction: the date controls must
+// always stay visible). min-height: 0 overrides the flex default of
+// min-height: auto, which would otherwise let this grow to fit .grid's
+// content instead of clipping it.
+.availability {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  flex: 1;
+  min-height: 0;
+}
+
+.summary-card {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  padding: 1.25rem 1.5rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 4%);
+}
+
+.resource-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+
+  app-resource-type-icon {
+    width: 1.4rem;
+    height: 1.4rem;
+  }
+}
+
+.summary-text {
+  flex: 1;
+  min-width: 0;
+
+  h2 {
+    margin: 0 0 0.2rem;
+    font-size: 1.15rem;
+    color: var(--color-text);
+  }
+}
+
+.summary-meta {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+}
+
+.view-details-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  flex-shrink: 0;
+  color: var(--color-primary);
+  font-weight: 600;
+  font-size: 0.9rem;
+  text-decoration: none;
+  white-space: nowrap;
+
+  &:hover {
+    color: var(--color-primary-hover);
+  }
+
+  svg {
+    width: 1.1rem;
+    height: 1.1rem;
+  }
+}
+
+// Grid, not flex, so the caption row below can mirror the same three-column
+// layout (date-range-controls / quantity-control / timezone-note) and land
+// each caption directly under the control it describes, whether or not the
+// quantity column exists on this resource — see the matching .caption-row
+// grid below.
+.date-nav {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 1rem 1.5rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  flex-wrap: wrap;
+}
+
+.date-range-controls {
+  grid-column: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.nav-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+
+  &:hover {
+    background: var(--color-bg);
+  }
+
+  svg {
+    width: 1.1rem;
+    height: 1.1rem;
+  }
+}
+
+.range-picker-wrapper {
+  position: relative;
+}
+
+.range-display {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.9rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  white-space: nowrap;
+
+  &:hover {
+    background: var(--color-bg);
+  }
+
+  svg {
+    width: 1.1rem;
+    height: 1.1rem;
+    color: var(--color-text-secondary);
+    flex-shrink: 0;
+  }
+
+  .chevron {
+    width: 0.9rem;
+    height: 0.9rem;
+  }
+}
+
+.range-popover {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  left: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  min-width: 15rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 10%);
+}
+
+// .date-field (the range popover) and .time-field (the selection panel)
+// share one "labeled form control" rule set.
+.date-field,
+.time-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+}
+
+.date-field input,
+.time-field select {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  font-size: 0.85rem;
+  color: var(--color-text);
+}
+
+.draft-error {
+  margin: 0;
+  color: var(--color-error);
+  font-size: 0.8rem;
+}
+
+.popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+// .secondary-button and .today-button share one rule set — a "plain
+// bordered button" look used in two different contexts (popover cancel vs.
+// the nav row) rather than two near-identical declarations.
+.secondary-button,
+.today-button {
+  padding: 0.45rem 0.9rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+
+  &:hover {
+    background: var(--color-bg);
+  }
+}
+
+.primary-button {
+  padding: 0.45rem 0.9rem;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--color-primary);
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--color-primary-hover);
+  }
+
+  &:disabled {
+    background: var(--color-border);
+    color: var(--color-text-secondary);
+    cursor: not-allowed;
+  }
+}
+
+.quantity-control {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.quantity-label {
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 0.2rem;
+
+  button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.8rem;
+    height: 1.8rem;
+    border: none;
+    border-radius: var(--radius-md);
+    background: var(--color-bg);
+    color: var(--color-text);
+    font-size: 1rem;
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+      background: var(--color-primary-soft);
+      color: var(--color-primary);
+    }
+
+    &:disabled {
+      color: var(--color-text-secondary);
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+  }
+}
+
+.stepper-value {
+  min-width: 1.5rem;
+  text-align: center;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.timezone-note {
+  grid-column: 3;
+  justify-self: end;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.caption-row {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 1.25rem;
+  padding: 0 0.25rem;
+}
+
+.range-hint,
+.quantity-hint {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+}
+
+.range-hint {
+  grid-column: 1;
+}
+
+.quantity-hint {
+  grid-column: 2;
+  white-space: nowrap;
+}
+
+// The day-label column's width is repeated (grid-axis's spacer, each row's
+// own label) rather than named as a CSS variable — the two other grids on
+// this page (.date-nav, .caption-row) each define their own layout locally
+// too, and a third convention just for this one number would be more
+// indirection than the single reused literal is worth.
+$day-label-width: 8rem;
+
+// flex: 1 + min-height: 0 is the pair that actually makes a flex child
+// scrollable instead of just growing to fit its content — min-height: 0
+// overrides a flex item's default min-height: auto, which would otherwise
+// let .grid-rows below force this whole box (and the page) to grow past the
+// available space rather than clipping and scrolling internally.
+.grid {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+// Stays outside .grid-rows entirely, rather than sticky-positioned inside
+// it, so the axis header is never part of what scrolls — the hour ticks are
+// exactly what a row's own bars are read against, so they have to stay put.
+.grid-axis {
+  flex: 0 0 auto;
+  display: flex;
+  padding: 0.75rem 1.25rem 0.5rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+// The one part of this screen that scrolls — the owner's own correction:
+// previously the whole page scrolled once there were enough rows (a custom
+// range can be up to 90 days), pushing the date controls out of view. Now
+// only this box scrolls, so the range/quantity controls above it are always
+// reachable without scrolling away from them first.
+.grid-rows {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.axis-spacer {
+  flex: 0 0 #{$day-label-width};
+}
+
+.axis-ticks {
+  position: relative;
+  flex: 1;
+  height: 1rem;
+}
+
+// Positioned via [style.left.%] (tickLeftPercent) at its true fraction along
+// the axis — translateX(-50%) centers the label on that point the way the
+// design's own ticks read, rather than starting the text exactly at it.
+.axis-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.grid-row {
+  display: flex;
+  align-items: center;
+  padding: 0.6rem 1.25rem;
+  border-bottom: 1px solid var(--color-border);
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.day-label {
+  flex: 0 0 #{$day-label-width};
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.day-track {
+  position: relative;
+  flex: 1;
+  height: 2.25rem;
+}
+
+.no-hours {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding-left: 0.5rem;
+  color: var(--color-text-secondary);
+  font-size: 0.85rem;
+  background: var(--color-bg);
+  border-radius: var(--radius-md);
+}
+
+// A bookable span, clickable (step 6). Stays green even once clicked — only
+// an outline marks it as "the bar the current selection came from" — rather
+// than turning solid burgundy, per the owner's own correction: filling the
+// whole bar hid exactly which part of it (Start-to-End) was actually
+// selected. The burgundy .selection-overlay below is what shows that.
+.segment {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.4rem;
+  overflow: hidden;
+  border: none;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-success) 16%, white);
+  color: color-mix(in srgb, var(--color-success) 70%, black);
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-family: inherit;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+
+  &.selected {
+    outline: 2px solid var(--color-primary);
+    outline-offset: -2px;
+  }
+}
+
+// The precise Start-to-End sub-range within the clicked bar. pointer-events:
+// none on the overlay itself lets a click pass through to the .segment
+// button beneath it (re-clicking the same bar is a harmless no-op); only the
+// two handles opt back in, since those are what step 6's drag interaction
+// grabs.
+// pointer-events: auto (not none) — the body itself is now draggable too
+// (owner's request: sliding the whole window, not just resizing an edge),
+// so it needs to actually receive its own pointerdown/pointermove.
+.selection-overlay {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 1;
+  background: var(--color-primary);
+  border-radius: var(--radius-md);
+  cursor: grab;
+  touch-action: none;
+
+  &:active {
+    cursor: grabbing;
+  }
+}
+
+// A round handle at each edge, half outside the overlay so it's easy to
+// grab without obscuring the time label underneath. touch-action: none stops
+// the browser's own scroll/zoom gestures from competing with the drag on
+// touch devices, and the larger invisible padding (via a bigger box than the
+// visible dot) gives the drag a more forgiving hit target than the 0.85rem
+// circle alone would.
+.selection-handle {
+  position: absolute;
+  top: 50%;
+  width: 1.6rem;
+  height: 1.6rem;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  cursor: ew-resize;
+  touch-action: none;
+
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 0.85rem;
+    height: 0.85rem;
+    border: 2px solid var(--color-primary);
+    border-radius: 50%;
+    background: var(--color-surface);
+  }
+
+  &--start {
+    left: 0;
+  }
+
+  &--end {
+    left: 100%;
+  }
+}
+
+.duration-error {
+  margin: 0;
+  color: var(--color-error);
+  font-size: 0.8rem;
+}
+
+// The "Selected time" summary panel (step 6) — a light burgundy-tinted card
+// distinct from the white grid above it, matching the design. flex-wrap so
+// narrow viewports stack the three groups (info / time fields / action)
+// instead of overflowing.
+.selection-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 1.25rem 1.5rem;
+  background: var(--color-primary-soft);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.selection-info {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  flex: 1;
+  min-width: 14rem;
+}
+
+.selection-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--color-surface);
+  color: var(--color-primary);
+
+  svg {
+    width: 1.1rem;
+    height: 1.1rem;
+  }
+}
+
+.selection-label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.selection-summary {
+  margin: 0.15rem 0 0;
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+}
+
+.info-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+
+  svg {
+    width: 1rem;
+    height: 1rem;
+  }
+}
+
+.selection-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.4rem;
+}
+
+.continue-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+
+  svg {
+    width: 1.1rem;
+    height: 1.1rem;
+  }
+}
+
+.clear-selection-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-primary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--color-primary-hover);
+  }
+}

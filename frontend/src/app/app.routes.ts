@@ -36,9 +36,19 @@ export const routes: Routes = [
               ),
           },
           {
-            // WP-7 Phase 2 replaces this with the real availability screen.
             path: ':id/availability',
             data: { title: 'Availability' },
+            loadComponent: () =>
+              import('./features/availability/availability.component').then((m) => m.AvailabilityComponent),
+          },
+          {
+            // WP-7 Phase 3 replaces this with the real booking form — the
+            // availability screen's "Continue to booking" (step 6) already
+            // navigates here, carrying the selected span via router state,
+            // the same one-route-at-a-time pattern Phase 1 used for this
+            // very route before Phase 2 existed.
+            path: ':id/book',
+            data: { title: 'Book' },
             loadComponent: () =>
               import('./features/placeholder/placeholder.component').then((m) => m.PlaceholderComponent),
           },

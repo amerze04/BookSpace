@@ -12,7 +12,8 @@ phase to be built seriously and split into its own reviewable steps, rather
 than compressed — mirrored in wp7-plan.md's own phasing.
 
 - [x] Resource list and detail views. **Done 2026-09-15** (Phase 1).
-- [ ] Availability view for a resource and date range.
+- [x] Availability view for a resource and date range. **Done 2026-09-16**
+      (Phase 2).
 - [ ] Booking form for one-off and recurring bookings, with clear validation
       feedback.
 - [ ] Calendar view rendering bookings, including recurring series, without
@@ -84,8 +85,129 @@ Notes:
 - `docs/wp7-plan.md`'s own §7 records the one deliberately-out-of-scope
   gap (resource admin CRUD) and the browser-local-time display default;
   neither changed during Phase 1.
-- The type-icon SVG mapping and type-label strings are duplicated between
-  the list and detail components rather than extracted — only the second
-  occurrence so far (`BrandMarkComponent`'s own precedent extracts on the
-  third). A likely third user is the booking form, Phase 3.
+- The type-icon SVG mapping and type-label strings were duplicated between
+  the list and detail components — only the second occurrence at the time
+  (`BrandMarkComponent`'s own precedent extracts on the third). Resolved in
+  Phase 2 step 2, below, once the availability screen became the third
+  caller, not deferred to Phase 3 as this note originally guessed.
+
+**Phase 2 (availability view) is done, 2026-09-16**, in seven steps — full
+step-by-step detail in `docs/wp7-plan.md`. `AvailabilityService` (one
+`get()` against `GET /resources/{id}/availability`); `features/availability/`
+(the resource summary card, a resource-local date-range navigator with a
+custom-range popover, a quantity stepper for pooled resources, and a custom
+hour-axis grid — no calendar library, per `wp7-plan.md` §3's settled call —
+rendering bookable bars the viewer can click, narrow via Start/End dropdowns
+or drag, and carry forward to booking). `RESOURCE_TYPE_LABELS`/the type-icon
+SVG switch, flagged as duplicated after Phase 1, were extracted this phase
+(the third occurrence, per `BrandMarkComponent`'s own precedent) into
+`shared/resource-type/`. Route landed on `:id/availability` (replacing
+Phase 1's placeholder) plus a new `:id/book` placeholder for Phase 3.
+199 vitest tests pass, 0 failed.
+
+**The grid's own math lives in `features/availability/availability-grid.ts`
+and `local-date.ts`, kept out of the component since none of it is
+Angular-specific.** The hard part: `BookableIntervalDetail` carries UTC
+instants, but the grid draws in the *resource's* local time (decision
+`0003`), and an interval can in principle span a local midnight (decision
+`0022`'s "`ClosesAt = 23:59:59` means the following midnight" chaining into
+the next day's own opening window) — so `splitIntervalByLocalDay` clips each
+interval into one `DaySegment` per local day it touches. Selecting a
+sub-range within a segment needed a *precise* UTC instant for "Continue to
+booking," which only the original interval carried — solved by giving each
+`DaySegment` its own `startUtc`/`endUtc`, walked forward from the interval's
+own `startUtc` by local minutes elapsed (`addMinutesToUtc`) rather than a
+full local-to-UTC converter, which would have duplicated DST-transition
+policy that's deliberately backend-only (§4.3). Exact for every resource in
+this app's seed data (none span a DST transition) and for any ordinary
+business-hours resource; the one case it doesn't perfectly cover (a DST
+transition landing inside an overnight multi-day segment) is documented in
+`DaySegment`'s own comment rather than hidden, and backstopped by
+`dbo.CreateBooking`'s own re-validation under lock at actual submission
+time — a wrong pre-fill here is a UX rough edge, never a double-booking risk.
+
+**Selection went through four rounds of owner-driven refinement after the
+first pass, each landed as its own reviewable increment:**
+1. Min/max booking duration wasn't enforced at all in the first pass
+   (deliberately deferred to Phase 3, per the original plan) — the owner
+   asked for it in the availability screen itself. `startTimeOptions`/
+   `endTimeOptions` are now bounded by the resource's own
+   `minDurationMinutes`/`maxDurationMinutes` (a `null` minimum still
+   requires one 15-minute step; a `null` maximum is genuinely unbounded), a
+   `durationError` computed catches the one case dropdown bounds can't
+   route around (a segment itself shorter than the resource's minimum), and
+   the default selection on a click changed from "the whole segment" to
+   "segment start through the resource's own max duration" — never itself
+   invalid, where selecting the whole segment sometimes was.
+2. The clicked bar originally turned solid burgundy, hiding which part of
+   it was actually selected — the bar now stays green with a thin outline
+   marking "this is the active bar," and a separate `.selection-overlay`
+   shows the exact Start-to-End sub-range on top, with two draggable
+   circular handles at its edges (the Pointer Capture API —
+   `setPointerCapture` — rather than document-level mousemove/mouseup
+   listeners, covering mouse/touch/pen alike with no manual teardown).
+3. The overlay's whole body is now draggable too (not just its edges),
+   translating both Start and End together by the same 15-minute-snapped
+   delta, clamped to the segment's own bounds, preserving the selected
+   duration exactly.
+4. Clicking anywhere outside the active selection's own UI (a different bar
+   aside — that already reselects) now clears it, the same as the explicit
+   "Clear selection" link, via the same `document:click` listener already
+   watching for the range popover's own outside-click dismissal.
+
+**A genuine debugging detour, worth remembering for any future "pin the
+chrome, scroll only this one region" screen** (the calendar, Phase 5, is a
+likely next case): the owner's request that only the grid's rows scroll,
+not the whole page, took three attempts. The first two used `height: 100%`
+percentage sizing that silently did nothing, because percentage height only
+resolves against a containing block with a *definite* height, and the
+actual chain from the shell's `.content` down to `.grid-rows` had a plain
+`display: block` link partway down (`AvailabilityComponent`'s own `:host`)
+with no height rule at all — it sized to its own content instead of the
+space available, so nothing below it was ever actually bounded. The fix
+that worked made `.content` (shell) a flex column and `:host` a flex item
+with `flex: 1; min-height: 0` — a *definite*-height chain via flexbox at
+every link, not percentages hoping to resolve through however many
+intermediate elements happen to be there. `npx ng build` succeeding at each
+wrong attempt never caught this, because it only proves the CSS compiled,
+not that the cascade does what's intended.
+
+**Also raised the SCSS per-component style budget**
+(`frontend/angular.json`, `anyComponentStyle.maximumError`: 8kB → 16kB,
+warning left at 4kB) after hitting the old hard ceiling twice in a row on
+this screen, once it grew a popover, a stepper, a grid, a selection overlay
+and drag handles. A deliberate, flagged trade against continuing to trim
+real functionality to fit an arbitrary WP-6-era number (one hover effect
+was cut in an earlier round specifically to fit under it — not repeated).
+
+**Owner question mid-phase, not a bug**: asked why Acme's two resources
+showed no blackout gaps in the default 7-day view. A subagent queried the
+live API directly, authenticated as `approver@acme.test` (row-level
+security means a bare `sqlcmd` session sees nothing without
+`sp_set_session_context`, so the API is the only fast way to check) and
+confirmed both resources' seeded blackouts (3D Printer: Sep 10–11;
+Conference Room A: Dec 25–26) simply fall outside the default Sep 16–22
+window — nothing missing or broken. Also surfaced, as an aside: the WP-7
+plan's own note about a seeded Pending 3D Printer booking (a Phase 6 demo
+fixture) doesn't currently exist in the database. Flagged, not chased
+further — out of scope for a read-only check, and not this phase's concern.
+
+**Verification**: `npx ng test --watch=false` — 17 test files, 199 passed,
+0 failed. `npx ng build` — clean (the SCSS budget warning only, comfortably
+under the raised ceiling). Unlike Phase 1, the owner performed a live
+click-through directly this time — browse a resource, pick/adjust a date
+range, select and narrow a bookable bar (via dropdowns and both drag modes),
+Continue to booking landing on the Phase 3 placeholder — and confirmed it
+works, closing the verification gap Phase 1 had to leave open.
+
+Notes:
+- `resources/:id/book` exists now only as a placeholder; Phase 3 replaces
+  it and has to honor the router-state contract Phase 2 already established:
+  `{ startUtc, endUtc, quantity }`.
+- The `.claude/skills/report-back/SKILL.md` end-of-task report format was
+  revised twice mid-phase at the owner's request (summary now states
+  what/why/how; only genuinely important code gets a per-file explanation,
+  tests get one consolidated "what this batch proves" line instead of
+  per-file ones, docs stay listed-only) — a process change, not a WP-7
+  feature, but worth knowing since every report from here on follows it.
 

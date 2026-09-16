@@ -612,7 +612,8 @@ split into its own reviewable steps. Full narrative:
 [`docs/roadmap/wp7.md`](docs/roadmap/wp7.md).
 
 - [x] Resource list and detail views. Done 2026-09-15 (Phase 1).
-- [ ] Availability view for a resource and date range.
+- [x] Availability view for a resource and date range. Done 2026-09-16
+      (Phase 2).
 - [ ] Booking form for one-off and recurring bookings, with clear
       validation feedback.
 - [ ] Calendar view rendering bookings, including recurring series, without
@@ -630,8 +631,11 @@ Acceptance criteria (none yet met — all four still open):
 Notes: Phase 1 deliberately does not render the admin resource CRUD actions
 the provided designs show — flagged rather than silently dropped. No
 browser-automation tool was available to click through Phase 1's own
-walkthrough — flagged as a verification gap, recommended before treating
-Phase 1 as fully signed off.
+walkthrough — flagged as a verification gap; Phase 2's flow, by contrast,
+was clicked through live by the owner directly and confirmed working.
+`resources/:id/book` (Phase 3's own route) already exists as a placeholder —
+Phase 2's "Continue to booking" navigates there carrying the selected UTC
+span and quantity via router state, the contract Phase 3 needs to honor.
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across

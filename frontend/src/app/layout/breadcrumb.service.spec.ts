@@ -16,4 +16,19 @@ describe('BreadcrumbService', () => {
     service.setOverride(null);
     expect(service.override()).toBeNull();
   });
+
+  it('starts with no insertBeforeLast, independently of override', () => {
+    const service = TestBed.inject(BreadcrumbService);
+    expect(service.insertBeforeLast()).toBeNull();
+  });
+
+  it('reflects whatever insertBeforeLast was last set, including clearing it back to null', () => {
+    const service = TestBed.inject(BreadcrumbService);
+
+    service.setInsertBeforeLast('Conference Room A');
+    expect(service.insertBeforeLast()).toBe('Conference Room A');
+
+    service.setInsertBeforeLast(null);
+    expect(service.insertBeforeLast()).toBeNull();
+  });
 });

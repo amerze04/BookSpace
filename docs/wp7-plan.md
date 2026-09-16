@@ -22,6 +22,13 @@ reversed to real backend query params, CLAUDE.md's "Resource list filters
 extended for WP-7" entry) and its subsequent redo. 89 vitest tests pass, 0
 failed. See §5 below for what each step delivered.
 
+**Phase 2 (availability view) is done, 2026-09-16** — seven steps, including
+four rounds of owner-driven refinement on step 6's selection interaction
+(min/max duration enforcement, a burgundy sub-range overlay instead of the
+whole bar filling solid, dragging the overlay as a whole, click-elsewhere-
+clears). 199 vitest tests pass, 0 failed; verified live by the owner, not
+just by unit tests. See §5 below for what each step delivered.
+
 ---
 
 ## 1. What WP-7 owes
@@ -378,23 +385,132 @@ plain resource.
 
 **API:** `GET /resources`, `GET /resources/{id}`.
 
-### Phase 2 — Availability view
+### Phase 2 — Availability view — **Done** (2026-09-16)
 
-- `AvailabilityService`: one method against
-  `GET /resources/{id}/availability?from&to&quantity`.
-- A resource-local date-range picker (the 90-day cap surfaced as a client-side
-  bound before the request goes out, not only as a server rejection), a
-  quantity input shown only when `Capacity > 1`.
-- Renders bookable intervals with their `remainingCapacity`; an archived
-  resource's empty/`isArchived` response gets its own explicit empty state,
-  distinct from "closed all week."
-- Selecting an interval carries the chosen span into Phase 3's booking form.
+Full narrative: [`docs/roadmap/wp7.md`](docs/roadmap/wp7.md). Design landed
+mid-phase (`design/availability_view_design.png`) — followed closely, with
+three deliberate deviations agreed with the owner up front: click-a-bar +
+Start/End dropdowns instead of full click-and-drag-to-select (the drag
+interaction was added back later, see step 6 below, once the simpler
+version was working); a rolling 7-day window with prev/next arrows +
+a plain two-date popover instead of a full custom calendar-grid date
+picker; and no attempt to replicate the design's flanking-green-either-side
+look for a narrowed selection — a separate burgundy overlay on top of the
+full green bar instead, which reads more clearly than the mock's own
+implied behavior.
 
-**Screens needed:** availability view (to be designed).
+**Steps:**
 
-**Demo:** pick a range on Conference Room A (single-capacity) and on Pool
-Cars (pooled) and see the different shape of answer — walls vs. a
-remaining-count floor.
+1. **`AvailabilityService` + models, no UI — done.** `availability.models.ts`
+   (`LocalDateString`, `AvailabilityParams`, `BookableInterval`,
+   `AvailabilityResponse`, mirroring `GetResourceAvailabilityQueryResponse`
+   field-for-field) and `availability.service.ts` (one `get(resourceId,
+   params)` call, `skipErrorToast()` since the screen renders its own inline
+   states). **Tests:** `HttpTestingController` spec per param combination.
+
+2. **Shared resource-type icon/label extraction — done.** The third
+   occurrence (list, detail, now this screen) of the per-`ResourceType` SVG
+   switch and label/capacity-label helpers, per `BrandMarkComponent`'s own
+   "extract on third use" precedent flagged at the end of Phase 1. New
+   `shared/resource-type/` (`ResourceTypeIconComponent`,
+   `resourceTypeLabel()`/`resourceCapacityLabel()`); list and detail
+   refactored to use it. Gotcha found: Angular's emulated style
+   encapsulation means a parent component's CSS can't size a *child*
+   component's own template elements directly (`.resource-icon svg` stopped
+   matching once the `svg` moved into `ResourceTypeIconComponent`'s own
+   template) — fixed by sizing the child's host element instead
+   (`.resource-icon app-resource-type-icon`) and having the child fill
+   whatever box it's given (`svg { width: 100%; height: 100% }`).
+
+3. **Screen shell — done.** Route wiring (`:id/availability` swapped from
+   Phase 1's placeholder), the resource summary card, loading/404/error
+   states matching `ResourceDetailComponent`'s own pattern. Needed a
+   `BreadcrumbService` addition: a second `insertBeforeLast` signal
+   alongside the existing `override`, because this route is a *sibling* of
+   `:id`, not a child of it — its own route-title chain never contributes a
+   crumb for the resource itself, so there's nothing to replace (what
+   `override` does for the detail page), only something to insert, to get
+   `Resources > Conference Room A > Availability` (three crumbs) rather than
+   clobbering "Availability" the way `override` alone would have.
+
+4. **Date-range navigator + quantity stepper — done.** Rolling 7-day window
+   (prev/next arrows, "Today"), a custom-range popover (two native date
+   inputs) with the 90-day cap enforced client-side
+   (`AvailabilityQueryRules.MaxRangeDays`, mirrored, not re-derived), a
+   quantity stepper shown only for `Capacity > 1` (decision `0005`). New
+   `local-date.ts`: pure calendar-date arithmetic (`resourceLocalToday`,
+   `addDays`, `rangeLengthDays`, `formatLocalDate`) anchored to UTC
+   internally so the *viewer's* own browser timezone can never silently
+   shift a *resource's* calendar date — the exact class of bug decision
+   `0003` exists to keep out. **Owner correction mid-step**: the popover
+   could only be dismissed via its own Cancel button — added toggle-to-close
+   (re-clicking the range display) and click-outside-to-close (a
+   `document:click` listener checking `.closest('.range-picker-wrapper')`).
+
+5. **Fetch + render the grid — done.** Wired to the range/quantity controls;
+   stale-response guard mirroring `ResourceListComponent`'s own
+   `latestRequestId`. New `availability-grid.ts` (kept out of the component
+   since none of it is Angular-specific): `splitIntervalByLocalDay` (an
+   interval can span local midnight — decision `0022`'s "23:59:59 means the
+   following midnight" chaining into the next day's own window — so it's
+   clipped into one `DaySegment` per local day), `buildDayRows`,
+   `computeAxis`/`buildAxisTicks` (one shared 2-hour-tick time axis for the
+   whole visible window), `minuteSpanStylePercent`. Archived-vs-closed
+   distinction per decision `0020`. **A real bug found and fixed mid-step**:
+   piping the availability fetch through `takeUntilDestroyed(this.destroyRef)`
+   corrupted the Angular `TestBed` environment for every test running after
+   one that destroyed the component mid-request — removed; harmless without
+   it, since the method has no long-lived subscription to leak.
+
+6. **Selection, the summary panel, and Continue to booking — done, then
+   refined four more times at the owner's request.** Click a bar to select
+   it; the "Selected time" panel (date/time/duration, an approval-required
+   tag or remaining-units badge, Start/End dropdowns); "Continue to booking"
+   navigates to a new `:id/book` placeholder route carrying `{ startUtc,
+   endUtc, quantity }` via router state. The core problem: turning a
+   *narrowed* local-time selection back into a precise UTC instant, when
+   only the original interval carries one — solved by giving each
+   `DaySegment` its own `startUtc`/`endUtc`, walked forward from the
+   interval's own start by local minutes elapsed rather than a full
+   local-to-UTC converter (which would duplicate DST policy that's
+   deliberately backend-only, §4.3); exact for every resource in this app's
+   seed data, the one uncovered edge case documented in code rather than
+   hidden, backstopped by `dbo.CreateBooking`'s own re-validation at
+   submission time regardless. Then, in order: (a) min/max duration
+   enforcement, deferred in the first pass, added into the Start/End
+   dropdown bounds plus a defensive `durationError` check, and the default
+   selection changed from "the whole segment" to "segment start through the
+   resource's own max duration" so it's never invalid on click; (b) the
+   selected bar no longer fills solid burgundy — it keeps its green fill
+   with a thin outline, and a separate draggable `.selection-overlay` shows
+   the exact sub-range on top; (c) the overlay's whole body became
+   draggable too, translating both edges together by a 15-minute-snapped
+   delta; (d) clicking anywhere outside the active selection now clears it,
+   same as the explicit "Clear selection" link. All four used the Pointer
+   Capture API (`setPointerCapture`) for dragging — mouse/touch/pen alike,
+   no document-level listener teardown to get wrong.
+   **A genuine debugging detour**, separate from the feature work: the
+   owner's "only the grid scrolls, keep the chrome pinned" request took
+   three attempts, because the first two relied on `height: 100%`
+   percentage sizing through a chain that had an unbounded `display: block`
+   link partway down (this component's own `:host`) — percentages don't
+   resolve against an element with no definite height of its own. Fixed by
+   making the chain flex-based end to end (`flex: 1; min-height: 0` at
+   every link, starting from the shell's `.content`), not percentages.
+   **Also raised `frontend/angular.json`'s `anyComponentStyle` error budget**
+   (8kB → 16kB, warning left at 4kB) after this now-genuinely-complex screen
+   hit the old ceiling twice in a row.
+
+7. **Final verification — done, 2026-09-16.** `npx ng test --watch=false`:
+   **17 test files, 199 passed, 0 failed.** `npx ng build`: clean (SCSS
+   budget warning only). Unlike Phase 1, the owner performed the live
+   click-through directly this session and confirmed the whole flow works —
+   closing the verification gap Phase 1 had left open.
+
+**Demo:** pick a range on Conference Room A (single-capacity, approval-gated)
+and on Pool Cars (pooled) and see the different bar shape — a time range vs.
+a remaining-count floor; select and narrow a bar on each, including a drag,
+and confirm "Continue to booking" carries the right UTC span forward.
 
 **API:** `GET /resources/{id}/availability`.
 
