@@ -27,14 +27,16 @@ Eight steps in §5 below, written before any code as every prior phase was.
 Three calls were settled with the owner first: idempotency is the recurring
 path only (the one-off gap is flagged in §7 with a named owner), manual
 one-off date/time entry is dropped in favour of pre-fill-only, and the phase
-did not wait for a design. Step 1 (models + both services, no UI) landed
-against the live backend's confirmed wire shapes; the design then arrived
-mid-phase (`design/booking_view_design.png`, 2026-09-17) and step 2 (the
-route's shell) was built against it. **A fourth call, taken on review of step
+did not wait for a design. **Steps 1–5 are done — the whole one-off half of
+this phase**: models + both services, the route's shell, the one-off form and
+its submit, the Confirmed-vs-Pending outcome panel, and the full rejection
+catalogue. The design arrived mid-phase
+(`design/booking_view_design.png`, 2026-09-17) and everything from step 2 on
+was built against it. Steps 6–7 (the recurring half) are next, and the owner
+is branching/PR-ing at that seam. **A fourth call, taken on review of step
 2**: the selected slot travels from availability to booking as **query
 parameters**, not router state — see step 2 for the reasoning and what was
-weighed against it. Step 3 (the one-off form and its submit) followed the same
-day. 316 vitest tests pass, 0 failed.
+weighed against it. 376 vitest tests pass, 0 failed.
 
 **The one-off half of this phase is steps 3–5** (form + submit, the
 Confirmed-vs-Pending outcome, and the full rejection catalogue); steps 6–7 are
@@ -988,7 +990,8 @@ planned (one component, two form groups, not two routes).
    confirmation), and a submit failure shows one generic sentence (step 5
    replaces it with the reason-code catalogue, message *and* placement).
 
-4. **Success, and `Pending` shown as its own outcome.** FR-7.1 — a booking on
+4. **Success, and `Pending` shown as its own outcome — done, 2026-09-17.**
+   FR-7.1 — a booking on
    an approval-gated resource comes back `Pending`, and the member has to be
    told at the moment of booking, not left to discover it in a list later. A
    confirmation panel rather than a toast: `Confirmed` states the reserved span
@@ -1003,7 +1006,35 @@ planned (one component, two form groups, not two routes).
    **Tests:** both outcomes rendering distinctly, the approver list and expiry
    appearing only on `Pending`.
 
-5. **One-off rejection rendering — every reason code, none generic.** One map
+   **Delivered.** 14 new vitest tests (349 total, 0 failed), `npx ng build`
+   clean. The panel replaces the form entirely once a booking exists, and the
+   "Need to make a change?" bar goes with it — going back to pick a different
+   time is advice for a booking that hasn't happened yet.
+
+   **Everything in it reads the create *response*, never the selection the
+   form was built from.** The two agree today; a panel that quietly showed the
+   request instead of the response would be the wrong one to trust if they
+   ever didn't. That is asserted directly — a response naming a different span
+   than the form asked for renders the response's.
+
+   `Confirmed` states the reservation plainly. `Pending` says, in the lead
+   sentence rather than a footnote, that the time is **not held yet**; names
+   who decides from `ResourceDetail.approvers` (already loaded — nothing extra
+   is fetched), falling back to "a tenant administrator" when a resource lists
+   none, since decision `0018` leaves a TenantAdmin able to approve anything
+   in the tenant; and gives the expiry from `approval.expiresAtUtc`, with
+   FR-7.4's "no configured expiry" getting its own sentence rather than a
+   blank date. Colour (green vs amber) carries the same distinction the
+   heading and copy do rather than being the only thing that does.
+
+   **One deliberate mixing of zones**, worth knowing: the booked span reads in
+   the *resource's* timezone (plus the viewer's own, when they differ), the
+   same as the form above it — but the approval expiry reads in the
+   **viewer's** zone, named explicitly. An expiry is not a fact about the
+   room's schedule; it is a deadline a person watches.
+
+5. **One-off rejection rendering — every reason code, none generic — done,
+   2026-09-17.** One map
    from reason code to message *and placement*, in its own file so the
    catalogue is greppable against `ReasonCodes` rather than scattered across
    throw-site-shaped `if`s:
@@ -1030,6 +1061,56 @@ planned (one component, two form groups, not two routes).
    - `ResourceNotFound` (404) reuses step 2's own not-found state.
    **Tests:** one per code, asserting message *and* placement, plus the
    status-0 branch taking priority over reason-code handling.
+
+   **Delivered.** `booking-rejection.ts` (`describeBookingRejection`) resolves
+   an error into message, placement and which actions to offer; the component
+   never branches on a reason code itself. 27 new vitest tests (376 total, 0
+   failed), `npx ng build` clean.
+
+   **Every mapped code was triggered against the running API**, not assumed —
+   a typo in a code string fails silently into the generic message, which is
+   exactly the failure this catalogue exists to prevent. Confirmed live:
+   `OutsideAvailability` (422, a 03:00 local slot), `BlackoutPeriod` (422,
+   booking into the Sep 23 blackout), `BookingDurationOutOfRange` (422, both
+   under the 60-minute minimum and over the 180-minute maximum),
+   `ResourceNotFound` (404), `CapacityExceeded` (409), `ValidationFailed`
+   (400, an over-long title) — plus `SlotUnavailable` (409) and
+   `BookingInThePast` (422) from step 3's own probes. Nothing was created:
+   every one is a refusal.
+
+   **A discrepancy this turned up, flagged not fixed** (CLAUDE.md §6): that
+   section says an exclusive resource "can only ever produce
+   [`SlotUnavailable`], since `Capacity = 1` admits no quantity but 1". The
+   live API answers **`CapacityExceeded`** for `quantity: 3` on a capacity-1
+   resource — because the validator deliberately has no upper bound on
+   quantity (`CreateBookingCommandRequestValidator`: "what is too many depends
+   on the resource's Capacity, which this cannot see"), so an over-large
+   quantity *can* be asked for and is refused by the procedure. The rule's
+   premise holds for what can succeed, not for what can be sent. Owner's call
+   whether to reword §6.
+   Handled on the client either way: the booking form now clamps the
+   URL-supplied quantity to the resource's capacity, since on an exclusive
+   resource the stepper is hidden and an unclamped `?quantity=9` would be a
+   dead end — every submit refused with no control to correct it.
+
+   **Placement, as built:** `SlotUnavailable`, `CapacityExceeded` and
+   `ConcurrencyConflict` are top-of-form **with** a link back to availability;
+   `ResourceArchived`, `BlackoutPeriod`, `OutsideAvailability` and
+   `BookingInThePast` are top-of-form **without** one, because re-checking
+   cannot change a rule refusal and offering the action would imply it might.
+   `BookingDurationOutOfRange` lands on the duration control;
+   `ValidationFailed` maps `Title`/`Quantity` onto their own controls and
+   anything else (the instants, the resource id — fields this form has no
+   control for, since they come from the URL) to a top-of-form "pick a slot
+   again". `ResourceNotFound` hands over to step 2's not-found state.
+
+   **The two unknown-outcome cases share one answer.** A `status === 0` (the
+   request reached no server; `HttpErrorResponse.error` is a `ProgressEvent`,
+   so this is checked *before* any reason-code branch) and a 5xx (which did
+   reach the server, so `dbo.CreateBooking` may well have committed) both say
+   the booking **may** have been created and link to My Bookings. Neither
+   offers a retry, anywhere — §7's idempotency gap as the member experiences
+   it.
 
 6. **The recurring toggle and its fields.** A segmented one-off/recurring
    control on the same screen (one component, two form groups — not two

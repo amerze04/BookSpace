@@ -15,6 +15,7 @@ import {
   utcToResourceLocal,
 } from '../availability/local-date';
 import { BookingSelection, parseBookingSelection } from './booking-arrival';
+import { BookingFieldName, BookingRejection, describeBookingRejection } from './booking-rejection';
 import { BookingsService } from './bookings.service';
 import { CreateBookingResponse, MAX_BOOKING_TITLE_LENGTH } from './booking.models';
 
@@ -28,9 +29,9 @@ interface SpanLabels {
   timeRange: string;
 }
 
-function spanLabels(selection: BookingSelection, timeZoneId: string): SpanLabels {
-  const start = utcToResourceLocal(selection.startUtc, timeZoneId);
-  const end = utcToResourceLocal(selection.endUtc, timeZoneId);
+function spanLabels(span: { startUtc: string; endUtc: string }, timeZoneId: string): SpanLabels {
+  const start = utcToResourceLocal(span.startUtc, timeZoneId);
+  const end = utcToResourceLocal(span.endUtc, timeZoneId);
 
   // An overnight span lands on two calendar days, so the end carries its own
   // date rather than being read against the start's.
@@ -43,6 +44,19 @@ function spanLabels(selection: BookingSelection, timeZoneId: string): SpanLabels
     date: formatLocalDateWithWeekdayAndYear(start.date),
     timeRange: `${formatMinutesOfDay(start.minutesOfDay)} – ${endLabel}`,
   };
+}
+
+// One instant, read in one zone: "Fri, Sep 18, 2026, 11:03". Used for the
+// approval expiry, which — unlike the booked span — is not a fact about the
+// resource's schedule but a deadline people watch, so it reads in the
+// viewer's own zone with that zone named.
+function instantLabel(utcIso: string, timeZoneId: string): string {
+  const instant = utcToResourceLocal(utcIso, timeZoneId);
+  return `${formatLocalDateWithWeekdayAndYear(instant.date)}, ${formatMinutesOfDay(instant.minutesOfDay)}`;
+}
+
+function durationMinutesBetween(startUtc: string, endUtc: string): number {
+  return Math.round((Date.parse(endUtc) - Date.parse(startUtc)) / 60_000);
 }
 
 // WP-7 Phase 3 step 2: the booking route's shell — the resource it is about,
@@ -118,7 +132,17 @@ export class BookingComponent {
   // slot's number over. The nearest .NET analogue is a property with a
   // backing field that a recomputed dependency invalidates — except here the
   // framework does the invalidating.
-  protected readonly quantity = linkedSignal(() => this.selection()?.quantity ?? 1);
+  //
+  // Clamped to the resource's own capacity, because the quantity arrives in
+  // the URL and nothing stops a hand-edited `?quantity=9` on a resource that
+  // has one unit. Unclamped, that submits a request the server can only
+  // refuse (verified: a capacity-1 resource answers 409 CapacityExceeded for
+  // quantity 3) — and on an exclusive resource the stepper is hidden, so
+  // there would be no control to correct it with. Capacity 1 admits no
+  // quantity but 1 (decision `0005`), which is exactly what this then sends.
+  protected readonly quantity = linkedSignal(() =>
+    Math.min(this.selection()?.quantity ?? 1, this.resource()?.capacity ?? 1),
+  );
 
   // Capacity 1 admits no quantity but 1 (decision `0005`'s amendment), so the
   // stepper is absent entirely rather than shown disabled — the same call
@@ -132,19 +156,22 @@ export class BookingComponent {
   // the created booking to land.
   protected readonly created = signal<CreateBookingResponse | null>(null);
 
-  // Deliberately a single string for now: step 5 replaces it with the
-  // reason-code catalogue (message *and* placement, per code), which is a
-  // piece of work in its own right and is why this isn't being half-built
-  // here.
-  protected readonly submitFailed = signal(false);
+  // Step 5: what the last submit was refused for, already resolved into
+  // message *and* placement by `booking-rejection.ts` — this component never
+  // branches on a reason code itself.
+  protected readonly rejection = signal<BookingRejection | null>(null);
 
   protected readonly durationMinutes = computed(() => {
     const selection = this.selection();
-    if (!selection) {
-      return 0;
-    }
-    return Math.round((Date.parse(selection.endUtc) - Date.parse(selection.startUtc)) / 60_000);
+    return selection ? durationMinutesBetween(selection.startUtc, selection.endUtc) : 0;
   });
+
+  // A server-reported message wins over the client-side check for the same
+  // control: if the backend refused the value, that is the more authoritative
+  // answer — the same precedence `LoginComponent.fieldError` already applies.
+  private serverFieldMessage(field: BookingFieldName): string | null {
+    return this.rejection()?.fieldMessages[field] ?? null;
+  }
 
   // Checked against the resource's *own* minDurationMinutes/maxDurationMinutes
   // and nothing else. `null` means "no rule configured", never a default — the
@@ -157,6 +184,11 @@ export class BookingComponent {
   // before spending a round trip, and so the request this form builds is one
   // the API could actually accept.
   protected readonly durationError = computed<string | null>(() => {
+    const fromServer = this.serverFieldMessage('duration');
+    if (fromServer) {
+      return fromServer;
+    }
+
     const resource = this.resource();
     const selection = this.selection();
     if (!resource || !selection) {
@@ -180,11 +212,14 @@ export class BookingComponent {
   // Bookings.Title is NVARCHAR(200) and the validator refuses more
   // (MaxTitleLength) — the input is bounded by maxlength as well, so this
   // catches a paste that slips past it rather than being the only guard.
-  protected readonly titleError = computed<string | null>(() =>
-    this.title().length > MAX_BOOKING_TITLE_LENGTH
-      ? `A title can be at most ${MAX_BOOKING_TITLE_LENGTH} characters.`
-      : null,
-  );
+  protected readonly titleError = computed<string | null>(() => {
+    if (this.title().length > MAX_BOOKING_TITLE_LENGTH) {
+      return `A title can be at most ${MAX_BOOKING_TITLE_LENGTH} characters.`;
+    }
+    return this.serverFieldMessage('title');
+  });
+
+  protected readonly quantityError = computed<string | null>(() => this.serverFieldMessage('quantity'));
 
   // The span in the resource's own timezone — what "Thu, Sep 24, 09:15" means
   // for the room itself (decision `0003`), which is the reading the
@@ -220,6 +255,63 @@ export class BookingComponent {
   protected readonly quantityRaisedAboveChecked = computed(() => {
     const selection = this.selection();
     return selection !== null && this.quantity() > selection.quantity;
+  });
+
+  // ---- Step 4: the outcome ----
+  //
+  // Everything below reads the **created booking**, never the selection the
+  // form was built from: what was reserved is whatever the server says was
+  // reserved. The two agree today, but a confirmation panel that quietly
+  // showed the request instead of the response would be the wrong one to
+  // trust if they ever disagreed.
+
+  // FR-7.1. The distinction this whole panel exists to make: a booking on an
+  // approval-gated resource is created Pending, and the member has to be told
+  // at the moment of booking rather than discovering it in a list later.
+  protected readonly isPending = computed(() => this.created()?.status === 'Pending');
+
+  // The create response names its instants startsAtUtc/endsAtUtc after the
+  // columns, while a selection (and a bookable interval) uses startUtc/endUtc
+  // — mapped here rather than teaching spanLabels both spellings.
+  private createdSpanUtc(): { startUtc: string; endUtc: string } | null {
+    const created = this.created();
+    return created ? { startUtc: created.startsAtUtc, endUtc: created.endsAtUtc } : null;
+  }
+
+  protected readonly createdSpan = computed<SpanLabels | null>(() => {
+    const resource = this.resource();
+    const span = this.createdSpanUtc();
+    return resource && span ? spanLabels(span, resource.timeZoneId) : null;
+  });
+
+  protected readonly createdViewerSpan = computed<SpanLabels | null>(() => {
+    const resource = this.resource();
+    const span = this.createdSpanUtc();
+    if (!resource || !span || this.viewerTimeZoneId === resource.timeZoneId) {
+      return null;
+    }
+    return spanLabels(span, this.viewerTimeZoneId);
+  });
+
+  protected readonly createdDurationLabel = computed(() => {
+    const created = this.created();
+    return created ? formatDurationWords(durationMinutesBetween(created.startsAtUtc, created.endsAtUtc)) : '';
+  });
+
+  // Who actually decides. A resource's assigned approvers (decision `0018`:
+  // own-tenant, active, Approver/TenantAdmin) are listed by name — the detail
+  // read already carries them, so nothing extra is fetched. With none
+  // assigned, a TenantAdmin is still able to approve anything in the tenant,
+  // which is what the empty case says rather than leaving the member with no
+  // answer at all.
+  protected readonly approverNames = computed(() => this.resource()?.approvers.map((a) => a.fullName) ?? []);
+
+  // FR-7.4: a tenant that has set no ApprovalExpiryHours leaves requests
+  // pending indefinitely — a legitimate configuration, not a missing value,
+  // so null gets its own sentence rather than a blank date.
+  protected readonly approvalExpiryLabel = computed<string | null>(() => {
+    const expiresAtUtc = this.created()?.approval?.expiresAtUtc;
+    return expiresAtUtc ? instantLabel(expiresAtUtc, this.viewerTimeZoneId) : null;
   });
 
   protected readonly canSubmit = computed(
@@ -325,7 +417,7 @@ export class BookingComponent {
     }
 
     this.submitting.set(true);
-    this.submitFailed.set(false);
+    this.rejection.set(null);
 
     const title = this.title().trim();
 
@@ -344,12 +436,20 @@ export class BookingComponent {
           this.created.set(response);
           this.submitting.set(false);
         },
-        error: () => {
-          // Step 5 replaces this with the per-reason-code catalogue: message
-          // *and* placement, including the transport-failure case that must
-          // say the booking may have been created rather than offer a retry.
-          this.submitFailed.set(true);
+        error: (error: unknown) => {
+          const rejection = describeBookingRejection(error);
           this.submitting.set(false);
+
+          // A resource that isn't there any more (or never was, for this
+          // caller) isn't a message on a form — it's step 2's own not-found
+          // state, which is what the rest of this screen already shows for it.
+          if (rejection.resourceNotFound) {
+            this.resource.set(null);
+            this.notFound.set(true);
+            return;
+          }
+
+          this.rejection.set(rejection);
         },
       });
   }

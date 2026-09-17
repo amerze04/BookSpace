@@ -86,15 +86,112 @@
         <a class="secondary-button" routerLink="/resources">Browse resources</a>
       </section>
     } @else if (created(); as created) {
-      <!-- Step 4 replaces this with the real confirmation panel: Confirmed vs
-           Pending stated distinctly (FR-7.1), who decides, and when the
-           approval request expires. -->
-      <section class="panel panel--created">
-        <h2>{{ created.status === 'Pending' ? 'Booking requested' : 'Booking confirmed' }}</h2>
-        <p>
-          {{ resourceZoneSpan()?.date }}, {{ resourceZoneSpan()?.timeRange }} ({{ resource.timeZoneId }}).
+      <!-- FR-7.1: the two outcomes are stated distinctly, not as one generic
+           success. A Pending booking holds nothing yet, and saying so here is
+           the whole point of the panel. -->
+      <section class="panel panel--outcome" [class.panel--pending]="isPending()">
+        <span class="outcome-icon" [class.outcome-icon--pending]="isPending()" aria-hidden="true">
+          @if (isPending()) {
+            <svg viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+          } @else {
+            <svg viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path
+                d="m8.5 12.3 2.4 2.4 4.6-4.9"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          }
+        </span>
+
+        <h2>{{ isPending() ? 'Booking requested' : 'Booking confirmed' }}</h2>
+
+        <p class="outcome-lead">
+          @if (isPending()) {
+            Your request for {{ resource.name }} has been sent for approval. The time is
+            <strong>not held for you yet</strong> — you'll be told once it's decided.
+          } @else {
+            {{ resource.name }} is reserved for you.
+          }
         </p>
-        <a class="secondary-button" routerLink="/my-bookings">View my bookings</a>
+
+        <dl class="outcome-rows">
+          <div class="summary-row">
+            <dt>Date</dt>
+            <dd>{{ createdSpan()?.date }}</dd>
+          </div>
+          <div class="summary-row">
+            <dt>Time</dt>
+            <dd>{{ createdSpan()?.timeRange }} ({{ resource.timeZoneId }})</dd>
+          </div>
+          @if (createdViewerSpan(); as viewerSpan) {
+            <div class="summary-row">
+              <dt>Your time</dt>
+              <dd>{{ viewerSpan.timeRange }} ({{ viewerTimeZoneId }})</dd>
+            </div>
+          }
+          <div class="summary-row">
+            <dt>Duration</dt>
+            <dd>{{ createdDurationLabel() }}</dd>
+          </div>
+          @if (resource.capacity > 1) {
+            <div class="summary-row">
+              <dt>Quantity</dt>
+              <dd>{{ created.quantity }}</dd>
+            </div>
+          }
+          @if (created.title) {
+            <div class="summary-row">
+              <dt>Title</dt>
+              <dd>{{ created.title }}</dd>
+            </div>
+          }
+        </dl>
+
+        @if (isPending()) {
+          <div class="approval-notice">
+            <svg class="notice-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+            <div>
+              <!-- Decision `0018`: a resource's own approvers decide. With
+                   none assigned, a TenantAdmin still can — so the empty case
+                   answers "who decides" rather than leaving it blank. -->
+              <p class="notice-title">
+                @if (approverNames().length > 0) {
+                  Waiting on {{ approverNames().join(', ') }}
+                } @else {
+                  Waiting on a tenant administrator
+                }
+              </p>
+              <!-- FR-7.4: a tenant with no configured expiry leaves requests
+                   pending indefinitely — a real configuration, not a gap. -->
+              <p class="notice-text">
+                @if (approvalExpiryLabel(); as expiry) {
+                  This request expires on {{ expiry }} ({{ viewerTimeZoneId }}) if it hasn't been decided by then.
+                } @else {
+                  This request doesn't expire — it stays pending until it's decided.
+                }
+              </p>
+            </div>
+          </div>
+        }
+
+        <div class="outcome-actions">
+          <!-- /my-bookings is still WP-6's placeholder; Phase 4 gives it a
+               real destination. The link is correct today and simply becomes
+               useful then — not a dead route. -->
+          <a class="primary-button" routerLink="/my-bookings">View my bookings</a>
+          <a class="secondary-button" [routerLink]="['/resources', resource.id, 'availability']">Book another time</a>
+        </div>
       </section>
     } @else if (selection(); as selection) {
       <div class="booking-layout">
@@ -170,7 +267,9 @@
                   +
                 </button>
               </div>
-              @if (quantityRaisedAboveChecked()) {
+              @if (quantityError(); as quantityMessage) {
+                <p class="field-error" role="alert">{{ quantityMessage }}</p>
+              } @else if (quantityRaisedAboveChecked()) {
                 <p class="field-hint">
                   Availability was checked for {{ selection.quantity }}
                   {{ selection.quantity === 1 ? 'unit' : 'units' }}, so a larger quantity may not be free.
@@ -260,11 +359,33 @@
             </div>
           }
 
-          @if (submitFailed()) {
-            <!-- Step 5 replaces this with the per-reason-code catalogue. -->
-            <p class="field-error" role="alert">
-              Couldn't create this booking. Check the availability calendar and try a different slot.
-            </p>
+          <!-- Step 5: the reason the last submit was refused, already resolved
+               into message and placement by booking-rejection.ts. Field-level
+               messages render against their own controls (see durationError /
+               titleError / quantityError above); what lands here is everything
+               with no control to blame. -->
+          @if (rejection(); as rejection) {
+            @if (rejection.formMessage; as message) {
+              <div class="submit-error" role="alert">
+                <p>{{ message }}</p>
+
+                @if (rejection.recheckAvailability) {
+                  <!-- Only when looking again could genuinely change the
+                       answer — a rule refusal offers nothing, so it suggests
+                       nothing. -->
+                  <a class="secondary-button" [routerLink]="['/resources', resource.id, 'availability']">
+                    Check availability
+                  </a>
+                }
+
+                @if (rejection.mayHaveBeenCreated) {
+                  <!-- Never a retry button: POST /bookings has no idempotency
+                       key (wp7-plan.md §7), so repeating a request whose
+                       outcome is unknown can create a second booking. -->
+                  <a class="secondary-button" routerLink="/my-bookings">Check My Bookings</a>
+                }
+              </div>
+            }
           }
 
           <button type="button" class="primary-button confirm-button" [disabled]="!canSubmit()" (click)="confirmBooking()">

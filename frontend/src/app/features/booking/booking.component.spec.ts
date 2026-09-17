@@ -1,11 +1,12 @@
 import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { ActivatedRoute, convertToParamMap } from '@angular/router';
+import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 import { BehaviorSubject } from 'rxjs';
 import { BookingComponent } from './booking.component';
 import { BookingSelection } from './booking-arrival';
 import { CreateBookingResponse } from './booking.models';
+import { BookingRejection } from './booking-rejection';
 import { BreadcrumbService } from '../../layout/breadcrumb.service';
 import { ResourceDetail } from '../resources/resources.models';
 
@@ -39,9 +40,16 @@ type TestableBookingComponent = BookingComponent & {
   viewerTimeZoneId: string;
   canSubmit: () => boolean;
   submitting: () => boolean;
-  submitFailed: () => boolean;
+  rejection: () => BookingRejection | null;
+  quantityError: () => string | null;
   created: () => CreateBookingResponse | null;
   confirmBooking(): void;
+  isPending: () => boolean;
+  createdSpan: () => { date: string; timeRange: string } | null;
+  createdViewerSpan: () => { date: string; timeRange: string } | null;
+  createdDurationLabel: () => string;
+  approverNames: () => string[];
+  approvalExpiryLabel: () => string | null;
 };
 
 function fakeDetail(overrides: Partial<ResourceDetail> = {}): ResourceDetail {
@@ -89,6 +97,11 @@ describe('BookingComponent', () => {
       providers: [
         provideHttpClient(),
         provideHttpClientTesting(),
+        // A real Router, so the tests that actually render the template (the
+        // outcome panel's own links) get working RouterLinks. The
+        // ActivatedRoute stub below still wins for the route params, being
+        // provided last.
+        provideRouter([]),
         {
           provide: ActivatedRoute,
           useValue: {
@@ -350,7 +363,7 @@ describe('BookingComponent', () => {
 
         expect(component.created()?.status).toBe('Pending');
         expect(component.submitting()).toBe(false);
-        expect(component.submitFailed()).toBe(false);
+        expect(component.rejection()).toBeNull();
       });
 
       it('surfaces a rejection without retrying it', () => {
@@ -362,7 +375,7 @@ describe('BookingComponent', () => {
           { status: 409, statusText: 'Conflict' },
         );
 
-        expect(component.submitFailed()).toBe(true);
+        expect(component.rejection()?.formMessage).toContain('booked this time while you were filling in the form');
         expect(component.submitting()).toBe(false);
         expect(component.created()).toBeNull();
         // No automatic retry — the whole point of the §7 gap's mitigation.
@@ -464,6 +477,22 @@ describe('BookingComponent', () => {
         expect(component.quantityRaisedAboveChecked()).toBe(false);
       });
 
+      // The quantity arrives in the URL, so a hand-edited value can exceed
+      // what the resource has — and on an exclusive resource the stepper is
+      // hidden, leaving no control to correct it with. Verified against the
+      // live API: a capacity-1 resource answers 409 CapacityExceeded for a
+      // quantity of 3, so an unclamped value could only ever be refused.
+      it('clamps a URL quantity larger than the resource\'s capacity', () => {
+        const component = loaded({ capacity: 1 }, { ...selectionParams, quantity: '9' });
+
+        expect(component.quantity()).toBe(1);
+
+        component.confirmBooking();
+        const req = httpMock.expectOne(`${API}/bookings`);
+        expect((req.request.body as { quantity: number }).quantity).toBe(1);
+        req.flush(createdResponse(), { status: 201, statusText: 'Created' });
+      });
+
       it('clamps the stepper between 1 and the resource\'s capacity', () => {
         const component = loaded({ capacity: 2 });
 
@@ -553,6 +582,270 @@ describe('BookingComponent', () => {
         expect(component.viewerZoneSpan()).not.toBeNull();
         expect(component.viewerZoneSpan()).not.toEqual(component.resourceZoneSpan());
       });
+    });
+  });
+
+  // Step 5. The catalogue itself is covered in booking-rejection.spec.ts;
+  // these are about what the screen *does* with it — where each message
+  // lands, and which actions it offers.
+  describe('rendering a rejection', () => {
+    function submitAndFail(
+      status: number,
+      body: string | object,
+      detailOverrides: Partial<ResourceDetail> = {},
+    ) {
+      const fixture = createFixture('r1');
+      const component = fixture.componentInstance as TestableBookingComponent;
+      httpMock.expectOne(`${API}/resources/r1`).flush(fakeDetail(detailOverrides));
+
+      component.confirmBooking();
+      httpMock.expectOne(`${API}/bookings`).flush(body, { status, statusText: 'Error' });
+      fixture.detectChanges();
+
+      const root = fixture.nativeElement as HTMLElement;
+      return {
+        component,
+        root,
+        submitError: () => root.querySelector('.submit-error'),
+        actionHrefs: () =>
+          Array.from(root.querySelectorAll('.submit-error a')).map((a) => a.getAttribute('href')),
+      };
+    }
+
+    function problemBody(status: number, reasonCode: string, errors?: Record<string, string[]>) {
+      return { title: 'Rejected', status, reasonCode, correlationId: 'c1', ...(errors ? { errors } : {}) };
+    }
+
+    it('shows a taken slot at the top of the form, with a link back to availability', () => {
+      const { submitError, actionHrefs } = submitAndFail(409, problemBody(409, 'SlotUnavailable'));
+
+      expect(submitError()?.textContent).toContain('booked this time while you were filling in the form');
+      expect(actionHrefs()).toEqual(['/resources/r1/availability']);
+    });
+
+    // Re-checking cannot change a rule refusal, so no action is offered.
+    it('offers no action for a rule refusal', () => {
+      const { submitError, actionHrefs } = submitAndFail(422, problemBody(422, 'BlackoutPeriod'));
+
+      expect(submitError()?.textContent).toContain('blackout period');
+      expect(actionHrefs()).toEqual([]);
+    });
+
+    it('puts a duration refusal against the duration control, not the top of the form', () => {
+      const { component, submitError, root } = submitAndFail(
+        422,
+        problemBody(422, 'BookingDurationOutOfRange'),
+      );
+
+      expect(component.durationError()).toContain('length is outside what the resource allows');
+      expect(submitError()).toBeNull();
+      expect(root.querySelector('.field-error')?.textContent).toContain('length is outside');
+    });
+
+    it('puts a title validation failure against the title input', () => {
+      const { component, submitError } = submitAndFail(
+        400,
+        problemBody(400, 'ValidationFailed', { Title: ['Too long.'] }),
+      );
+
+      expect(component.titleError()).toBe('Too long.');
+      expect(submitError()).toBeNull();
+    });
+
+    it('puts a quantity validation failure against the stepper', () => {
+      const { component } = submitAndFail(
+        400,
+        problemBody(400, 'ValidationFailed', { Quantity: ['Quantity must be greater than zero.'] }),
+        { capacity: 4 },
+      );
+
+      expect(component.quantityError()).toBe('Quantity must be greater than zero.');
+    });
+
+    // The flagged idempotency gap, as the member sees it: no retry button
+    // anywhere, and a link to check whether the booking exists.
+    it('offers a way to check, never a retry, when the outcome is unknown', () => {
+      const { component, submitError, actionHrefs, root } = submitAndFail(0, new ProgressEvent('error'));
+
+      expect(component.rejection()?.mayHaveBeenCreated).toBe(true);
+      expect(submitError()?.textContent).toContain('may have been created');
+      expect(actionHrefs()).toEqual(['/my-bookings']);
+      expect(root.querySelector('button.confirm-button')?.textContent).not.toContain('Try again');
+    });
+
+    it('switches to the not-found state when the resource is gone', () => {
+      const { component, root } = submitAndFail(404, problemBody(404, 'ResourceNotFound'));
+
+      expect(component.notFound()).toBe(true);
+      expect(root.textContent).toContain("doesn't exist, or you don't have access");
+      expect(root.querySelector('.submit-error')).toBeNull();
+    });
+
+    it('clears the previous rejection when the form is submitted again', () => {
+      const fixture = createFixture('r1');
+      const component = fixture.componentInstance as TestableBookingComponent;
+      httpMock.expectOne(`${API}/resources/r1`).flush(fakeDetail());
+
+      component.confirmBooking();
+      httpMock
+        .expectOne(`${API}/bookings`)
+        .flush(problemBody(409, 'SlotUnavailable'), { status: 409, statusText: 'Conflict' });
+      expect(component.rejection()).not.toBeNull();
+
+      component.confirmBooking();
+      const retry = httpMock.expectOne(`${API}/bookings`);
+      expect(component.rejection()).toBeNull();
+      retry.flush(
+        {
+          id: 'b1',
+          resourceId: 'r1',
+          userId: 'u1',
+          startsAtUtc: '2026-09-24T13:15:00Z',
+          endsAtUtc: '2026-09-24T15:30:00Z',
+          quantity: 1,
+          title: null,
+          status: 'Confirmed',
+          createdAtUtc: '2026-09-17T09:00:00Z',
+          approval: null,
+        },
+        { status: 201, statusText: 'Created' },
+      );
+    });
+  });
+
+  // FR-7.1. Step 4: the two outcomes are told apart at the moment of
+  // booking, not left for the member to discover in a list later.
+  describe('the outcome panel', () => {
+    function submitAndFlush(
+      detailOverrides: Partial<ResourceDetail>,
+      response: Partial<CreateBookingResponse>,
+    ) {
+      const fixture = createFixture('r1');
+      const component = fixture.componentInstance as TestableBookingComponent;
+      httpMock.expectOne(`${API}/resources/r1`).flush(fakeDetail(detailOverrides));
+
+      component.confirmBooking();
+      httpMock.expectOne(`${API}/bookings`).flush(
+        {
+          id: 'b1',
+          resourceId: 'r1',
+          userId: 'u1',
+          startsAtUtc: '2026-09-24T13:15:00Z',
+          endsAtUtc: '2026-09-24T15:30:00Z',
+          quantity: 1,
+          title: null,
+          status: 'Confirmed',
+          createdAtUtc: '2026-09-17T09:00:00Z',
+          approval: null,
+          ...response,
+        },
+        { status: 201, statusText: 'Created' },
+      );
+      fixture.detectChanges();
+      return { fixture, component, text: () => (fixture.nativeElement as HTMLElement).textContent ?? '' };
+    }
+
+    it('states a Confirmed booking plainly, with no approval section', () => {
+      const { component, text } = submitAndFlush({ requiresApproval: false, timeZoneId: 'UTC' }, {});
+
+      expect(component.isPending()).toBe(false);
+      expect(text()).toContain('Booking confirmed');
+      expect(text()).toContain('is reserved for you');
+      expect(text()).not.toContain('not held for you yet');
+      expect(text()).not.toContain('Waiting on');
+    });
+
+    it('shows the reserved span, duration and title from the response', () => {
+      const { component, text } = submitAndFlush(
+        { timeZoneId: 'UTC' },
+        { title: 'Sprint review' },
+      );
+
+      expect(component.createdSpan()).toEqual({ date: 'Thu, Sep 24, 2026', timeRange: '13:15 – 15:30' });
+      expect(component.createdDurationLabel()).toBe('2 hours 15 minutes');
+      expect(text()).toContain('Sprint review');
+    });
+
+    // The panel reads the *response*, not the form's own selection: what was
+    // reserved is whatever the server says was reserved.
+    it('renders the server\'s span even when it differs from what was asked for', () => {
+      const { component } = submitAndFlush(
+        { timeZoneId: 'UTC' },
+        { startsAtUtc: '2026-09-24T08:00:00Z', endsAtUtc: '2026-09-24T09:00:00Z' },
+      );
+
+      expect(component.createdSpan()?.timeRange).toBe('08:00 – 09:00');
+      expect(component.createdDurationLabel()).toBe('1 hour');
+    });
+
+    it('tells a Pending booking apart, names who decides, and says the slot is not held', () => {
+      const { component, text } = submitAndFlush(
+        {
+          requiresApproval: true,
+          timeZoneId: 'UTC',
+          approvers: [
+            { userId: 'u9', fullName: 'Resource Approver' },
+            { userId: 'u8', fullName: 'Second Approver' },
+          ],
+        },
+        { status: 'Pending', approval: { approvalRequestId: 'a1', expiresAtUtc: '2026-09-18T09:00:00Z' } },
+      );
+
+      expect(component.isPending()).toBe(true);
+      expect(text()).toContain('Booking requested');
+      expect(text()).toContain('not held for you yet');
+      expect(text()).toContain('Waiting on Resource Approver, Second Approver');
+      expect(text()).toContain('This request expires on');
+      expect(text()).not.toContain('is reserved for you');
+    });
+
+    // Decision `0018`: a resource's own approvers decide — but a TenantAdmin
+    // can approve anything in the tenant, so "nobody assigned" still has an
+    // answer to "who decides".
+    it('names a tenant administrator when the resource lists no approvers', () => {
+      const { text } = submitAndFlush(
+        { requiresApproval: true, approvers: [] },
+        { status: 'Pending', approval: { approvalRequestId: 'a1', expiresAtUtc: '2026-09-18T09:00:00Z' } },
+      );
+
+      expect(text()).toContain('Waiting on a tenant administrator');
+    });
+
+    // FR-7.4: a tenant with no configured ApprovalExpiryHours leaves requests
+    // pending indefinitely — a legitimate configuration, not a missing value.
+    it('says so when an approval request never expires', () => {
+      const { component, text } = submitAndFlush(
+        { requiresApproval: true },
+        { status: 'Pending', approval: { approvalRequestId: 'a1', expiresAtUtc: null } },
+      );
+
+      expect(component.approvalExpiryLabel()).toBeNull();
+      expect(text()).toContain("doesn't expire");
+      expect(text()).not.toContain('This request expires on');
+    });
+
+    it('offers a way onward, and the form is gone', () => {
+      const { fixture } = submitAndFlush({ requiresApproval: false }, {});
+      const root = fixture.nativeElement as HTMLElement;
+
+      const links = Array.from(root.querySelectorAll('.outcome-actions a')).map((a) => a.getAttribute('href'));
+      expect(links).toEqual(['/my-bookings', '/resources/r1/availability']);
+      // The form and the "need to make a change?" bar belong to a booking
+      // that hasn't happened yet.
+      expect(root.querySelector('#booking-title')).toBeNull();
+      expect(root.querySelector('.change-bar')).toBeNull();
+    });
+
+    it('shows the quantity for a pooled resource', () => {
+      const { text } = submitAndFlush({ capacity: 4 }, { quantity: 3 });
+      expect(text()).toContain('Quantity');
+    });
+
+    // Decision `0005`'s amendment: Capacity 1 admits no quantity but 1, so
+    // stating it would be noise.
+    it('omits the quantity for an exclusive resource', () => {
+      const { text } = submitAndFlush({ capacity: 1 }, { quantity: 1 });
+      expect(text()).not.toContain('Quantity');
     });
   });
 
