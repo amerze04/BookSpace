@@ -22,13 +22,18 @@ reversed to real backend query params, CLAUDE.md's "Resource list filters
 extended for WP-7" entry) and its subsequent redo. 89 vitest tests pass, 0
 failed. See §5 below for what each step delivered.
 
-**Phase 3 (booking form) is in progress — step 1 done 2026-09-17.** Eight
-steps in §5 below, written before any code as every prior phase was. Three
-calls were settled with the owner first: idempotency is the recurring path
-only (the one-off gap is flagged in §7 with a named owner), manual one-off
-date/time entry is dropped in favour of pre-fill-only, and the phase does not
-wait for a design. Step 1 (models + both services, no UI) landed against the
-live backend's confirmed wire shapes — 254 vitest tests pass, 0 failed.
+**Phase 3 (booking form) is in progress — steps 1 and 2 done 2026-09-17.**
+Eight steps in §5 below, written before any code as every prior phase was.
+Three calls were settled with the owner first: idempotency is the recurring
+path only (the one-off gap is flagged in §7 with a named owner), manual
+one-off date/time entry is dropped in favour of pre-fill-only, and the phase
+did not wait for a design. Step 1 (models + both services, no UI) landed
+against the live backend's confirmed wire shapes; the design then arrived
+mid-phase (`design/booking_view_design.png`, 2026-09-17) and step 2 (the
+route's shell) was built against it. **A fourth call, taken on review of step
+2**: the selected slot travels from availability to booking as **query
+parameters**, not router state — see step 2 for the reasoning and what was
+weighed against it. 291 vitest tests pass, 0 failed.
 
 **Phase 2 (availability view) is done, 2026-09-16** — seven steps, including
 four rounds of owner-driven refinement on step 6's selection interaction
@@ -173,7 +178,7 @@ with no design to build against.
 | 1 | **Resource list** | Provided — `design/resources_design.png`. Admin actions (New resource, per-card `⋮` menu) not built; see §3. |
 | 1 | **Resource detail** | Provided — `design/resource_details_design.png`. "Edit resource" not built; "Check availability" routes to Phase 2. |
 | 2 | **Availability view** | Needed before Phase 2 starts. |
-| 3 | **Booking form** (one-off + recurring, validation states) | None provided. Phase 3 does not wait for one — built against the visual identity and the availability screen's own vocabulary, as Phase 2 did before its design landed mid-phase. |
+| 3 | **Booking form** (one-off + recurring, validation states) | Provided mid-phase, 2026-09-17 — `design/booking_view_design.png`. Covers the one-time half only; the owner's instruction is that choosing "Recurring" expands the recurrence fields in place, under Title, in the same component. Deviations recorded in Phase 3's step 2 below. |
 | 4 | **My Bookings** (list, detail, cancel confirmation, series-vs-occurrence cancel choice) | Needed before Phase 4 starts. |
 | 5 | **Calendar** (month/week view, event card, empty/loading/overflow states) | Needed before Phase 5 starts. |
 | 6 | **Approval queue** (pending list, approve/reject with note) | Needed before Phase 6 starts. |
@@ -475,7 +480,10 @@ implied behavior.
    it; the "Selected time" panel (date/time/duration, an approval-required
    tag or remaining-units badge, Start/End dropdowns); "Continue to booking"
    navigates to a new `:id/book` placeholder route carrying `{ startUtc,
-   endUtc, quantity }` via router state. The core problem: turning a
+   endUtc, quantity }` via router state — **amended 2026-09-17 to query
+   parameters** (`?startUtc=…&endUtc=…&quantity=…`, owner's decision; the
+   reasoning is in Phase 3 step 2 below). It touched one line of this screen,
+   `continueToBooking`. The core problem: turning a
    *narrowed* local-time selection back into a precise UTC instant, when
    only the original interval carries one — solved by giving each
    `DaySegment` its own `startUtc`/`endUtc`, walked forward from the
@@ -621,6 +629,16 @@ summary-panel / form vocabulary, the same way Phase 2 ran before its design
 landed mid-phase. If a design arrives later it is applied as a refinement step,
 not a rebuild.
 
+**Superseded 2026-09-17, the same way Phase 2's design did** — the booking
+design landed mid-phase (`design/booking_view_design.png`), before step 2 was
+written, so nothing had to be reworked. It is followed closely from step 2 on;
+the owner's standing instruction is to adapt where it doesn't fit this app's
+own flow or data and to follow it otherwise. Its one structural gap is
+deliberate and already answered: it shows the one-time half only, and choosing
+"Recurring" expands the recurrence fields **in place, under Title, in the same
+component** rather than routing anywhere — which is what step 6 already
+planned (one component, two form groups, not two routes).
+
 **Steps:**
 
 1. **Models + the two services, no UI — done, 2026-09-17.**
@@ -692,7 +710,8 @@ not a rebuild.
    `BookingsService.create` carries the mirror-image comment — no retry
    anywhere above it, because that endpoint has no key at all (§7).
 
-2. **The booking route's shell — resource load, arrival state, no form yet.**
+2. **The booking route's shell — resource load, arrival state, no form yet —
+   done, 2026-09-17.**
    Replaces the `:id/book` placeholder in `app.routes.ts` with a real
    `features/booking/booking.component.ts`. Resource fetch through the same
    route-id-keyed `switchMap` pipeline `ResourceDetailComponent` and
@@ -702,15 +721,99 @@ not a rebuild.
    `insertBeforeLast`, not `override` — this route is a **sibling** of `:id`,
    exactly like `:id/availability`, so the resource's own crumb has to be
    inserted rather than replacing "Book".
-   **Reads Phase 2's router-state contract** (`{ startUtc, endUtc, quantity }`)
-   once, in the constructor. Worth knowing and worth a comment: that state
-   survives a page reload (the History API persists it with the session-history
-   entry) but not a fresh deep-link or a new tab — so "no selection" is a
-   normal state, not an error, and it renders the "pick a time first" panel the
-   manual-entry call above settled on. An archived resource renders the same
-   not-bookable notice the list and detail screens already do.
-   **Tests:** the arrival-with-state and arrival-without-state branches, the
-   404/error/retry paths, the breadcrumb insertion, and the archived case.
+   **Reads Phase 2's selected-slot contract** (`{ startUtc, endUtc, quantity }`).
+   "No selection" is a normal state, not an error — it renders the "pick a time
+   first" panel the manual-entry call above settled on. An archived resource
+   renders the same not-bookable notice the list and detail screens already do.
+   **Tests:** the arrival-with-selection and arrival-without-selection
+   branches, the 404/error/retry paths, the breadcrumb insertion, and the
+   archived case.
+
+   **Delivered, against the design that landed the same day.** 37 new vitest
+   tests (291 total, 0 failed), `npx ng build` clean — the booking chunk
+   carries no new SCSS budget warning. The screen renders the design's own
+   structure: the resource summary card (icon, name, type/capacity/approval
+   chips, description, "View details →"), the panel area below it, and the
+   "Need to make a change? … Back to availability" bar. Where the form goes,
+   step 2 renders a one-line note; steps 3–7 fill it.
+
+   **The selected slot travels as query parameters, not router state — the
+   owner's decision, taken on review of step 2 and applied the same day.** The
+   first implementation used router state (the History API's per-entry state
+   object; ASP.NET's `TempData` is the closest analogue). It survives a reload,
+   but it is invisible in the URL and cannot be shared, bookmarked or opened in
+   a new tab, so "here's the slot, book it" was not expressible as a link and
+   nothing — neither the owner nor a test — could see what the screen had been
+   handed. `/resources/{id}/book?startUtc=2026-09-24T13:15:00Z&endUtc=…&quantity=1`
+   is visible, shareable, survives a reload and works with back/forward.
+   Alternatives weighed and rejected: a **shared signal service** (empty after
+   a reload, and it makes the booking screen silently depend on the
+   availability screen having run in this same session), **sessionStorage**
+   (solves reload, not sharing, and adds staleness nothing owns), and a
+   **backend "hold" record** (the strongest option, and what a ticketing site
+   does — but it is a backend change mid-frontend-WP, §7, and it would put a
+   second claim on capacity beside `dbo.CreateBooking`'s, with an expiry job
+   and a cleanup path to match).
+
+   **The URL is not a trust boundary, and nothing pretends otherwise.** Anyone
+   can hand-edit these parameters — but `dbo.CreateBooking` re-checks
+   availability, blackouts and peak capacity under its own lock at submit time
+   regardless of what the client pre-filled, so an edited URL earns an ordinary
+   `SlotUnavailable`/`OutsideAvailability` rejection, exactly as a stale shared
+   link would. Nor does this reopen the "no manual date/time entry" call above:
+   that was about the *client* never inverting local→UTC, and these parameters
+   are UTC instants, same as router state was.
+
+   **Both halves of the contract live in `booking-arrival.ts`** — the writer
+   (`buildBookingQueryParams`, called by the availability screen) and the
+   reader (`parseBookingSelection`) — so the parameter names exist once and
+   cannot drift. That is why the *availability* feature imports from the
+   *booking* feature here: the consumer owns the contract. Kept out of the
+   components for the same reason `availability-grid.ts` was: none of it is
+   Angular-specific (`QueryParamSource` is a one-method interface Angular's own
+   `ParamMap` satisfies structurally) and the validation is worth testing on
+   its own.
+
+   **Validated, never cast**, and the rules mirror the server's so the form
+   never builds a request the API would only refuse: both instants must carry a
+   zone designator (`CreateBookingCommandRequestValidator.CarryAZone` — without
+   this a zone-less `2026-09-24T13:15:00` in the URL would be read as the
+   *viewer's* local time and silently shift the booking by their offset, the
+   exact class of bug CLAUDE.md §4.3 keeps out of this client), the interval
+   must be real and forward (`CK_Bookings_Interval`), and quantity must be a
+   positive integer (`CK_Bookings_Quantity`, parsed with `Number` rather than
+   `parseInt`, which would read `"2 rooms"` as 2). Anything else resolves to
+   `null` — the ordinary "pick a time first" panel, not an error.
+   What survives is normalized to whole-second UTC by a new
+   `local-date.ts` helper (`toWholeSecondUtcIso`), used on both sides: the
+   availability screen writes `…T08:00:00Z` rather than the `.000Z` its own
+   `toISOString()` produces, and an offset form in a hand-edited URL resolves
+   to the identical selection. `POST /bookings` refuses fractional seconds
+   outright, so step 3's submit now has nothing left to truncate.
+
+   **Deviations from the design, each deliberate:**
+   - **No resource photo.** The design shows one in both the header card and
+     the summary card; no resource carries an image on the API
+     (`GetResourceQueryResponse` has no such field), and adding one would be a
+     backend change inside a frontend package (§7's rule). The type icon every
+     other resource screen already uses stands in its place.
+   - **The page heading reads "Book resource" and so does the last crumb**,
+     where the design has the heading "Book resource" over a shorter "Book"
+     crumb. `ShellComponent` derives the heading *from* the last crumb on
+     purpose (one source, so the two can't disagree), so honouring both would
+     mean reopening that decision for one screen. The heading is the more
+     prominent of the two, so it won.
+   - **No "Home" crumb.** The design's breadcrumb starts at Home; this app's
+     breadcrumb has been the matched route-title chain since WP-6 and no other
+     screen shows one either. An app-wide breadcrumb change is not step 2's to
+     make — flagged here rather than done quietly.
+   - **An archived resource gets its own panel** ("Archived — not bookable"),
+     which the design has no state for — the same treatment the list and
+     detail screens already give in place of their booking CTAs, rather than a
+     form that could only ever be refused with `ResourceArchived` on submit.
+   - **Quantity is absent from the design** (its example is a single-capacity
+     room). It arrives in step 3 as the same stepper Phase 2 uses, shown only
+     for `Capacity > 1` (decision `0005`).
 
 3. **One-off form + submit.** Title (optional, 200-char bound mirrored from
    `CreateBookingCommandRequestValidator.MaxTitleLength`), the quantity stepper

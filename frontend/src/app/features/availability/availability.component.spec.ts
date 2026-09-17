@@ -1048,7 +1048,7 @@ describe('AvailabilityComponent', () => {
       component.continueToBooking(fakeDetail({ id: 'r1', timeZoneId: 'UTC', minDurationMinutes: null, maxDurationMinutes: null }));
       expect(routerNavigate).toHaveBeenCalledWith(
         ['/resources', 'r1', 'book'],
-        { state: { startUtc: '2026-09-21T08:00:00.000Z', endUtc: '2026-09-21T08:10:00.000Z', quantity: 1 } },
+        { queryParams: { startUtc: '2026-09-21T08:00:00Z', endUtc: '2026-09-21T08:10:00Z', quantity: '1' } },
       );
     });
 
@@ -1091,6 +1091,11 @@ describe('AvailabilityComponent', () => {
       expect(component.selectedEndMinutes()).toBe(12 * 60); // untouched — still after the new Start
     });
 
+    // Query parameters, not router state (owner's decision, 2026-09-17): the
+    // selected slot is part of the booking screen's URL, so it can be shared,
+    // bookmarked and reopened. The instants are whole-second and UTC —
+    // buildBookingQueryParams drops the ".000" toISOString() produces, since
+    // the API refuses fractional seconds.
     it('continueToBooking navigates to the book route carrying the selected UTC span and quantity', () => {
       const fixture = createFixture();
       const component = fixture.componentInstance as TestableAvailabilityComponent;
@@ -1109,10 +1114,10 @@ describe('AvailabilityComponent', () => {
       expect(routerNavigate).toHaveBeenCalledWith(
         ['/resources', 'r1', 'book'],
         {
-          state: {
-            startUtc: '2026-09-21T09:00:00.000Z',
-            endUtc: '2026-09-21T11:00:00.000Z',
-            quantity: 1,
+          queryParams: {
+            startUtc: '2026-09-21T09:00:00Z',
+            endUtc: '2026-09-21T11:00:00Z',
+            quantity: '1',
           },
         },
       );

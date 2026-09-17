@@ -202,8 +202,14 @@ works, closing the verification gap Phase 1 had to leave open.
 
 Notes:
 - `resources/:id/book` exists now only as a placeholder; Phase 3 replaces
-  it and has to honor the router-state contract Phase 2 already established:
-  `{ startUtc, endUtc, quantity }`.
+  it and has to honor the selected-slot contract Phase 2 already established:
+  `{ startUtc, endUtc, quantity }`. **Amended 2026-09-17** (owner's decision,
+  during Phase 3 step 2): that hand-over was router state and is now **query
+  parameters** — `?startUtc=…&endUtc=…&quantity=…` — so a selected slot is
+  shareable, bookmarkable and visible in the URL, which the History API's
+  per-entry state never was. Both halves of the contract live in
+  `features/booking/booking-arrival.ts`; `continueToBooking` is the only line
+  of the availability screen it touched.
 - The `.claude/skills/report-back/SKILL.md` end-of-task report format was
   revised twice mid-phase at the owner's request (summary now states
   what/why/how; only genuinely important code gets a per-file explanation,

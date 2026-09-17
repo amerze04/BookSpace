@@ -163,6 +163,18 @@ export function addMinutesToUtc(utcIso: string, minutes: number): string {
   return new Date(new Date(utcIso).getTime() + minutes * 60_000).toISOString();
 }
 
+// Drops any sub-second part and renders the instant as UTC: both
+// "2026-09-24T13:15:00.000Z" and "2026-09-24T15:15:00.499+02:00" become
+// "2026-09-24T13:15:00Z". Used when an instant leaves this app — into the
+// booking URL, and from there into POST /bookings — because
+// CreateBookingCommandRequestValidator refuses fractional seconds outright
+// (datetime2(0) would round them, and the create response would then disagree
+// with the row a client reads back — CLAUDE.md §4.3).
+export function toWholeSecondUtcIso(utcIso: string): string {
+  const ms = Date.parse(utcIso);
+  return new Date(Math.floor(ms / 1000) * 1000).toISOString().replace('.000Z', 'Z');
+}
+
 // 480 -> "08:00", 1080 -> "18:00". Deliberately not wrapped mod 1440: a
 // segment that runs to local midnight ends at minute 1440, and "24:00" reads
 // as unambiguously "end of this day" where "00:00" would look like the day's

@@ -7,6 +7,7 @@ import {
   formatMinutesOfDay,
   rangeLengthDays,
   resourceLocalToday,
+  toWholeSecondUtcIso,
   utcToResourceLocal,
 } from './local-date';
 
@@ -140,6 +141,27 @@ describe('local-date', () => {
       // (decision 0022's "ClosesAt = 23:59:59 means the following
       // midnight") — "00:00" would misread as the day just starting.
       expect(formatMinutesOfDay(24 * 60)).toBe('24:00');
+    });
+  });
+
+  // What an instant looks like once it leaves this app — into the booking URL
+  // and from there into POST /bookings, which refuses fractional seconds
+  // outright (CLAUDE.md §4.3).
+  describe('toWholeSecondUtcIso', () => {
+    it('drops the sub-second part toISOString always emits', () => {
+      expect(toWholeSecondUtcIso('2026-09-21T08:00:00.000Z')).toBe('2026-09-21T08:00:00Z');
+    });
+
+    it('truncates rather than rounds, so an instant never moves forward', () => {
+      expect(toWholeSecondUtcIso('2026-09-21T08:00:00.999Z')).toBe('2026-09-21T08:00:00Z');
+    });
+
+    it('converts an explicit offset to the same instant in UTC', () => {
+      expect(toWholeSecondUtcIso('2026-09-21T10:00:00+02:00')).toBe('2026-09-21T08:00:00Z');
+    });
+
+    it('leaves an already-whole-second UTC instant untouched', () => {
+      expect(toWholeSecondUtcIso('2026-09-21T08:00:00Z')).toBe('2026-09-21T08:00:00Z');
     });
   });
 });

@@ -635,7 +635,11 @@ walkthrough — flagged as a verification gap; Phase 2's flow, by contrast,
 was clicked through live by the owner directly and confirmed working.
 `resources/:id/book` (Phase 3's own route) already exists as a placeholder —
 Phase 2's "Continue to booking" navigates there carrying the selected UTC
-span and quantity via router state, the contract Phase 3 needs to honor.
+span and quantity, the contract Phase 3 needs to honor. That hand-over was
+router state until 2026-09-17, when the owner had it moved to **query
+parameters** (`?startUtc=…&endUtc=…&quantity=…`) so a chosen slot is
+shareable, bookmarkable and visible; `features/booking/booking-arrival.ts`
+owns both halves of it.
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across

@@ -1,0 +1,129 @@
+@if (loading()) {
+  <p class="state-message">Loading resource…</p>
+} @else if (notFound()) {
+  <div class="state-message">
+    <p>This resource doesn't exist, or you don't have access to it.</p>
+    <a routerLink="/resources" class="retry-button">Back to Resources</a>
+  </div>
+} @else if (loadError()) {
+  <div class="state-message state-message--error">
+    <p>Couldn't load this resource.</p>
+    <button type="button" class="retry-button" (click)="retry()">Try again</button>
+  </div>
+} @else if (resource(); as resource) {
+  <div class="booking">
+    <!-- The design shows a photo of the room here. No resource carries an
+         image on the API (GetResourceQueryResponse has no such field, and
+         inventing one would be a backend change inside a frontend package),
+         so the type icon every other resource screen already uses stands in
+         its place. -->
+    <section class="summary-card">
+      <span class="resource-icon">
+        <app-resource-type-icon [type]="resource.resourceType" />
+      </span>
+
+      <div class="summary-text">
+        <h2>{{ resource.name }}</h2>
+
+        <p class="chips">
+          <span class="chip">
+            <span class="chip-icon">
+              <app-resource-type-icon [type]="resource.resourceType" />
+            </span>
+            {{ typeLabel(resource.resourceType) }}
+          </span>
+
+          <span class="chip">
+            <svg class="chip-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="9" cy="9" r="3" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path
+                d="M3.5 19a5.5 5.5 0 0 1 11 0M16 7.2a3 3 0 0 1 0 5.6M17.5 19a5.4 5.4 0 0 0-2.2-4.3"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+              />
+            </svg>
+            {{ capacityLabel(resource) }}
+          </span>
+
+          <span class="chip">
+            <svg class="chip-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+            {{ approvalLabel(resource) }}
+          </span>
+        </p>
+
+        @if (resource.description) {
+          <p class="summary-description">{{ resource.description }}</p>
+        }
+      </div>
+
+      <a class="view-details-link" [routerLink]="['/resources', resource.id]">
+        View details
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path
+            d="M9 6l6 6-6 6"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </a>
+    </section>
+
+    @if (isArchived()) {
+      <section class="panel panel--notice">
+        <h2>Archived — not bookable</h2>
+        <p>
+          This resource has been archived, so no new bookings can be made against it. Existing bookings are
+          unaffected.
+        </p>
+        <a class="secondary-button" routerLink="/resources">Browse resources</a>
+      </section>
+    } @else if (selection(); as selection) {
+      <div class="booking-layout">
+        <section class="panel">
+          <h2>Booking details</h2>
+          <!-- Step 3 replaces this with the real form: the one-time/recurring
+               toggle, the read-back of the selected span in the resource's
+               own timezone, quantity, and the title field. -->
+          <p class="panel-note">
+            A time is selected and carried over from the availability calendar. The booking form lands here in the
+            next step.
+          </p>
+        </section>
+      </div>
+    } @else {
+      <section class="panel panel--empty">
+        <h2>Pick a time first</h2>
+        <p>
+          Choose an available slot on {{ resource.name }}'s availability calendar, then continue to booking — times
+          are shown in the resource's own timezone ({{ resource.timeZoneId }}).
+        </p>
+        <a class="primary-button" [routerLink]="['/resources', resource.id, 'availability']">Go to availability</a>
+      </section>
+    }
+
+    @if (!isArchived() && selection()) {
+      <section class="change-bar">
+        <svg class="change-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+          <path d="M12 11v5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+          <circle cx="12" cy="8" r="0.9" fill="currentColor" />
+        </svg>
+
+        <div class="change-text">
+          <p class="change-title">Need to make a change?</p>
+          <p class="change-hint">To choose a different date or time, go back to the availability calendar.</p>
+        </div>
+
+        <a class="secondary-button" [routerLink]="['/resources', resource.id, 'availability']">Back to availability</a>
+      </section>
+    }
+  </div>
+}

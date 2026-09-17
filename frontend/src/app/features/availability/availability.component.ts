@@ -8,6 +8,10 @@ import { ResourcesService } from '../resources/resources.service';
 import { ResourceDetail } from '../resources/resources.models';
 import { ResourceTypeIconComponent } from '../../shared/resource-type/resource-type-icon.component';
 import { resourceCapacityLabel, resourceTypeLabel } from '../../shared/resource-type/resource-type';
+// The booking feature owns the selected-slot URL contract (both halves live in
+// booking-arrival.ts), so this screen imports the writer rather than spelling
+// the parameter names out a second time — see that file's header.
+import { buildBookingQueryParams } from '../booking/booking-arrival';
 import { AvailabilityService } from './availability.service';
 import { AvailabilityResponse, LocalDateString } from './availability.models';
 import {
@@ -643,14 +647,16 @@ export class AvailabilityComponent {
     const startUtc = resourceLocalMinutesToUtc(segment, this.selectedStartMinutes(), resource.timeZoneId);
     const endUtc = resourceLocalMinutesToUtc(segment, this.selectedEndMinutes(), resource.timeZoneId);
 
-    // Phase 3 builds the real booking form at this route; for now it's the
-    // same placeholder every other not-yet-built screen loads — the router
-    // state is what Phase 3 reads to pre-fill the form, carried forward now
-    // so nothing has to be re-derived once that screen exists (mirrors
-    // Phase 1's own precedent of wiring a route to a placeholder ahead of
-    // the phase that gives it a real destination).
+    // **Query parameters, not router state** (owner's decision, 2026-09-17 —
+    // the first implementation used `state`). The selected slot is now part
+    // of the booking screen's URL, so it can be shared, bookmarked, opened in
+    // a new tab and read off the address bar, none of which the History API's
+    // invisible per-entry state could do. buildBookingQueryParams owns the
+    // parameter names and the whole-second UTC formatting; the booking screen
+    // reads the same contract back through parseBookingSelection, so the two
+    // cannot drift.
     void this.router.navigate(['/resources', resource.id, 'book'], {
-      state: { startUtc, endUtc, quantity: this.quantity() },
+      queryParams: buildBookingQueryParams({ startUtc, endUtc, quantity: this.quantity() }),
     });
   }
 
