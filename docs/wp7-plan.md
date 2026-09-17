@@ -540,6 +540,67 @@ implied behavior.
    before the fix was kept. The resource list's own `[value]` select is *not*
    affected — its options are static and never rebuilt — so it was left alone.
 
+   **Three further owner-requested changes, 2026-09-17** (alongside the
+   dropdown bug above, and likewise during Phase 3):
+
+   1. **Selecting a bar low in the grid no longer leaves it out of view.**
+      Nothing was scrolling: the selection panel only exists once something is
+      selected, and `.grid` is a flex child, so the panel taking its space
+      shrinks `.grid-rows`' visible height from the bottom while `scrollTop`
+      stays — which puts the row just clicked outside the shortened viewport.
+      `selectSegment` now takes the click event and, in `afterNextRender` (the
+      panel has to have taken its space before "is it still visible" can be
+      answered), calls `scrollIntoView({ block: 'nearest' })` on the clicked
+      button: the minimum scroll needed, and none at all when the bar is
+      already fully visible, so a click near the top isn't yanked elsewhere.
+   2. **The empty space between bars is accounted for** — by item 3's own
+      labelled pills, not by a background track. A full-width silver bed
+      (`.track-base`) was built first and **removed the same day** on the
+      owner's correction: what was actually wanted was no *unexplained* gaps,
+      which the "Unavailable"/"Booked" pills already deliver. Recorded rather
+      than quietly reverted, since the first reading is a plausible one to
+      arrive at again.
+   3. **Unbookable time now says why** — "Unavailable" for a blackout,
+      "Booked" for anything else inside opening hours. **No backend change
+      was needed**, which was the owner's own condition: the availability
+      endpoint answers with bookable time only (decision `0020`), but both
+      missing pieces are already readable by a member —
+      `ResourceDetail.availabilityWindows` for the opening hours, and
+      `GET /resources/{id}/blackout-periods`, which sits on `TenantMember`
+      precisely because (its own handler comment) "a member choosing when to
+      book needs to see when a resource is blacked out". So the reason is
+      *derived*: opening hours minus bookable time is unbookable time, and the
+      blackout list splits that into the two labels. "Booked" is deliberately
+      the fallback rather than a positive test — on a pooled resource, "some
+      units left but fewer than you asked for" is also honestly "Booked".
+      New `blackout-periods.service.ts`/`.models.ts`; the set arithmetic
+      (`buildUnbookableSpans`, `subtractSpans`, `intersectSpans`,
+      `openSpansFor`) lives in `availability-grid.ts` with the rest of the
+      grid math, and `computeAxis` now considers unbookable spans too, so a
+      day whose whole morning is blacked out still has an axis wide enough to
+      draw it. A blackout is a UTC span like a bookable interval and goes
+      through the same `splitIntervalByLocalDay`, so one that crosses local
+      midnight lands on both days without a second conversion.
+      **A closed day says nothing**: no window for that weekday means no
+      label, because "closed" is not "unavailable" — the empty-day text
+      already covers it. And the blackout fetch's failure is deliberately
+      silent (no error state, no retry button): it can only ever turn "Booked"
+      into "Unavailable", so without it the grid is still correct, just less
+      specific.
+      **One pill per continuous reason** (owner's correction, same day): the
+      first version drew one 11:00–13:00 blackout as *two* "Unavailable"
+      pills, 11–12 and 12–13. Not two blackouts — the dev database's 3D
+      Printer carries two *touching* weekday windows (09:00–12:00 and
+      12:00–17:00, replaced at some point by hand; `SeedData.AddWeekdayWindows`
+      creates a single 09:00–17:00 window), and the gap was being cut at that
+      boundary. Contiguous or overlapping windows now merge into one opening
+      span before anything is subtracted, while windows with a real gap
+      between them stay apart — merging across a genuine split shift would
+      mislabel closed time as unbookable, which is the mistake in the other
+      direction. The resulting spans are then merged again by kind, so two
+      abutting blackout rows likewise read as one pill, while a blackout
+      meeting booked time stays two.
+
    **A genuine debugging detour**, separate from the feature work: the
    owner's "only the grid scrolls, keep the chrome pinned" request took
    three attempts, because the first two relied on `height: 100%`

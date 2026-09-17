@@ -155,6 +155,24 @@ first pass, each landed as its own reviewable increment:**
    "Clear selection" link, via the same `document:click` listener already
    watching for the range popover's own outside-click dismissal.
 
+**Three owner-requested changes on 2026-09-17, during WP-7 Phase 3.** (1)
+Selecting a bar low in the grid no longer leaves it out of view — the
+selection panel appearing below shrinks the scroll box from the bottom while
+`scrollTop` stays, so `selectSegment` now scrolls the clicked bar back into
+view (`block: 'nearest'`, in `afterNextRender`, once the panel has taken its
+space). (2) The gaps between bars are accounted for by item 3's labelled pills — a
+full-width silver track was built first and removed the same day as not what
+was asked for. (3) Unbookable time inside opening hours is now labelled
+"Unavailable" (a blackout) or "Booked" (anything else) — derived entirely
+client-side from `ResourceDetail.availabilityWindows` and
+`GET /resources/{id}/blackout-periods` (a `TenantMember` read by design), so
+no backend change was needed, which was the owner's own condition. One pill
+per continuous reason: touching/overlapping opening windows merge before
+anything is subtracted (the dev database's 3D Printer has two abutting
+weekday windows, which was splitting one blackout into two pills), and the
+result is merged again by kind. Full detail in `docs/wp7-plan.md`'s Phase 2
+step 6.
+
 **A display bug in this screen's Start/End dropdowns, found by the owner on
 2026-09-17 during WP-7 Phase 3 and fixed the same day.** `<select [value]>`
 with `@for`-rendered options: the binding sets the value property once, a

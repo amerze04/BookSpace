@@ -146,9 +146,26 @@
             <div class="grid-row">
               <span class="day-label">{{ dayLabel(row.date) }}</span>
               <div class="day-track">
-                @if (row.segments.length === 0) {
+                @if (row.segments.length === 0 && row.unbookable.length === 0) {
                   <span class="no-hours">{{ emptyDayLabel(row.date) }}</span>
                 } @else {
+                  <!-- Why the rest of the opening hours isn't offered. The
+                       availability endpoint answers with bookable time only
+                       (decision `0020`), so these are derived: opening hours
+                       minus bookable time, split by whatever a blackout
+                       covers. -->
+                  @for (span of row.unbookable; track span.startMinutes) {
+                    <span
+                      class="unbookable"
+                      [class.unbookable--blackout]="span.kind === 'blackout'"
+                      [style.left.%]="unbookableLeftPercent(span)"
+                      [style.width.%]="unbookableWidthPercent(span)"
+                      [attr.aria-label]="unbookableAccessibleLabel(row.date, span)"
+                    >
+                      <span class="unbookable-label">{{ unbookableLabel(span.kind) }}</span>
+                    </span>
+                  }
+
                   @for (segment of row.segments; track segment.startMinutes) {
                     <button
                       type="button"
@@ -158,7 +175,7 @@
                       [attr.aria-label]="segmentAccessibleLabel(row.date, segment)"
                       [style.left.%]="segmentLeftPercent(segment)"
                       [style.width.%]="segmentWidthPercent(segment)"
-                      (click)="selectSegment(segment)"
+                      (click)="selectSegment(segment, $event)"
                     >
                       {{ segmentLabel(segment) }}
                     </button>

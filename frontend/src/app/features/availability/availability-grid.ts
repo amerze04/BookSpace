@@ -1,5 +1,5 @@
 import { BookableInterval, LocalDateString } from './availability.models';
-import { addDays, addMinutesToUtc, localDateDiffDays, utcToResourceLocal } from './local-date';
+import { addDays, addMinutesToUtc, localDateDiffDays, utcToResourceLocal, weekdayOf } from './local-date';
 
 // Grid-specific rendering math for step 5 — separate from local-date.ts's
 // generic calendar arithmetic because everything here is about turning a
@@ -40,9 +40,56 @@ export interface DaySegment {
   remainingCapacity: number;
 }
 
+// Why a span inside the resource's opening hours is *not* bookable. The
+// availability endpoint answers only with what **is** bookable (decision
+// `0020`), so these are derived client-side by subtracting: opening hours
+// minus bookable time is unbookable time, and a blackout the member can
+// already read (GET /resources/{id}/blackout-periods is on TenantMember
+// precisely so "a member choosing when to book can see when a resource is
+// blacked out") is what tells the two apart.
+//
+//   'blackout' -> covered by a blackout period: "Unavailable"
+//   'booked'   -> inside opening hours, not blacked out, yet not offered:
+//                 something already holds it. "Booked"
+//
+// The second is deliberately the fallback rather than a separate positive
+// test, because it is the only remaining explanation: a pooled resource with
+// some — but fewer than the requested `quantity` — units left reads as
+// "Booked" too, which is the honest answer to "why can't I take this?".
+export type UnbookableKind = 'blackout' | 'booked';
+
+export interface DayUnbookableSpan {
+  startMinutes: number;
+  endMinutes: number;
+  kind: UnbookableKind;
+}
+
 export interface DayRow {
   date: LocalDateString;
   segments: DaySegment[];
+  unbookable: DayUnbookableSpan[];
+}
+
+// A plain minute range on one local day — the shape the set arithmetic below
+// works in, shared by opening windows, bookable segments and blackouts alike.
+interface MinuteSpan {
+  startMinutes: number;
+  endMinutes: number;
+}
+
+// The weekday + opening times of one AvailabilityWindowDetail, structurally
+// rather than by importing the resources feature's own DTO: this module has
+// stayed free of both Angular and the wire types, and one interface is a
+// cheaper way to keep it that way than a cross-feature import.
+export interface OpeningWindow {
+  weekday: string;
+  opensAt: string;
+  closesAt: string;
+}
+
+export interface UtcSpan {
+  startUtc: string;
+  endUtc: string;
 }
 
 const MINUTES_PER_DAY = 24 * 60;
@@ -136,10 +183,15 @@ export function datesInRange(from: LocalDateString, to: LocalDateString): LocalD
   return dates;
 }
 
+// `windows` and `blackouts` are optional because they only feed the
+// *unbookable* half of a row: without them a row still renders exactly as it
+// did before, with its bookable bars and nothing between them.
 export function buildDayRows(
   dates: readonly LocalDateString[],
   intervals: readonly BookableInterval[],
   timeZoneId: string,
+  windows: readonly OpeningWindow[] = [],
+  blackouts: readonly UtcSpan[] = [],
 ): DayRow[] {
   const segmentsByDate = new Map<LocalDateString, DaySegment[]>();
 
@@ -154,10 +206,171 @@ export function buildDayRows(
     }
   }
 
-  return dates.map((date) => ({
-    date,
-    segments: (segmentsByDate.get(date) ?? []).sort((a, b) => a.startMinutes - b.startMinutes),
-  }));
+  // Blackouts are UTC instants like bookable intervals, and can span a local
+  // midnight for the same reasons — so they go through the same splitter
+  // rather than a second, subtly different conversion. remainingCapacity is
+  // irrelevant here and only present to satisfy the shared shape.
+  const blackoutsByDate = new Map<LocalDateString, MinuteSpan[]>();
+  for (const blackout of blackouts) {
+    for (const segment of splitIntervalByLocalDay({ ...blackout, remainingCapacity: 0 }, timeZoneId)) {
+      const existing = blackoutsByDate.get(segment.date);
+      const span = { startMinutes: segment.startMinutes, endMinutes: segment.endMinutes };
+      if (existing) {
+        existing.push(span);
+      } else {
+        blackoutsByDate.set(segment.date, [span]);
+      }
+    }
+  }
+
+  return dates.map((date) => {
+    const segments = (segmentsByDate.get(date) ?? []).sort((a, b) => a.startMinutes - b.startMinutes);
+    return {
+      date,
+      segments,
+      unbookable: buildUnbookableSpans(date, segments, windows, blackoutsByDate.get(date) ?? []),
+    };
+  });
+}
+
+// Opening hours minus bookable time, with whatever a blackout covers labelled
+// as such. Returns nothing at all when the resource has no window for this
+// weekday: a closed day is not "unavailable", it is simply not open, which the
+// row's own empty-day label already says.
+function buildUnbookableSpans(
+  date: LocalDateString,
+  segments: readonly MinuteSpan[],
+  windows: readonly OpeningWindow[],
+  blackouts: readonly MinuteSpan[],
+): DayUnbookableSpan[] {
+  const openSpans = openSpansFor(date, windows);
+  if (openSpans.length === 0) {
+    return [];
+  }
+
+  const spans: DayUnbookableSpan[] = [];
+  for (const gap of subtractSpans(openSpans, segments)) {
+    for (const covered of intersectSpans([gap], blackouts)) {
+      spans.push({ ...covered, kind: 'blackout' });
+    }
+    for (const free of subtractSpans([gap], blackouts)) {
+      spans.push({ ...free, kind: 'booked' });
+    }
+  }
+
+  // One pill per continuous reason, never one per boundary that happened to
+  // fall inside it (owner's correction, 2026-09-17). Two sources can cut a
+  // single stretch in half without any change in *why* it is unbookable: two
+  // touching opening windows — which the seeded 3D Printer really has,
+  // 09:00-12:00 and 12:00-17:00, so one 11:00-13:00 blackout rendered as
+  // "Unavailable 11-12" and "Unavailable 12-13" — and two abutting blackout
+  // rows. mergeSpans on the windows above handles the first; merging the
+  // result by kind here handles the second and anything else.
+  return mergeAdjacentByKind(spans.sort((a, b) => a.startMinutes - b.startMinutes));
+}
+
+function mergeAdjacentByKind(spans: readonly DayUnbookableSpan[]): DayUnbookableSpan[] {
+  const merged: DayUnbookableSpan[] = [];
+
+  for (const span of spans) {
+    const previous = merged[merged.length - 1];
+    if (previous && previous.kind === span.kind && span.startMinutes <= previous.endMinutes) {
+      previous.endMinutes = Math.max(previous.endMinutes, span.endMinutes);
+      continue;
+    }
+    merged.push({ ...span });
+  }
+
+  return merged;
+}
+
+// The resource's own opening hours for one calendar date, in local minutes.
+//
+// Windows that touch or overlap are merged into one span; windows with a real
+// gap between them (a split shift — closed over lunch, say) are not. The
+// distinction matters in both directions: merging across a genuine gap would
+// label closed time as unbookable, while *not* merging two contiguous windows
+// splits a single continuous stretch at a boundary that means nothing to a
+// member — which is exactly what the seeded 3D Printer's own 09:00-12:00 +
+// 12:00-17:00 pair did to one 11:00-13:00 blackout.
+function openSpansFor(date: LocalDateString, windows: readonly OpeningWindow[]): MinuteSpan[] {
+  const weekday = weekdayOf(date);
+  const spans = windows
+    .filter((window) => window.weekday === weekday)
+    .map((window) => ({
+      startMinutes: parseLocalTimeToMinutes(window.opensAt),
+      endMinutes: parseLocalTimeToMinutes(window.closesAt),
+    }))
+    .filter((span) => span.endMinutes > span.startMinutes)
+    .sort((a, b) => a.startMinutes - b.startMinutes);
+
+  return mergeSpans(spans);
+}
+
+// Touching or overlapping spans become one; a real gap keeps them apart.
+function mergeSpans(spans: readonly MinuteSpan[]): MinuteSpan[] {
+  const merged: MinuteSpan[] = [];
+
+  for (const span of [...spans].sort((a, b) => a.startMinutes - b.startMinutes)) {
+    const previous = merged[merged.length - 1];
+    if (previous && span.startMinutes <= previous.endMinutes) {
+      previous.endMinutes = Math.max(previous.endMinutes, span.endMinutes);
+      continue;
+    }
+    merged.push({ ...span });
+  }
+
+  return merged;
+}
+
+// "09:00:00" -> 540. Decision `0022`: a window closing at 23:59:59 means the
+// *following midnight*, so it reads as 1440 rather than 1439 — otherwise the
+// last minute of such a day would always render as an unbookable sliver.
+function parseLocalTimeToMinutes(time: string): number {
+  const [hours, minutes, seconds] = time.split(':').map(Number);
+  if (hours === 23 && minutes === 59 && seconds === 59) {
+    return MINUTES_PER_DAY;
+  }
+  return hours * 60 + minutes;
+}
+
+// `base` minus `cuts`, both as minute ranges on one day. Plain interval
+// arithmetic, kept here beside its only callers rather than generalized.
+function subtractSpans(base: readonly MinuteSpan[], cuts: readonly MinuteSpan[]): MinuteSpan[] {
+  let remaining = base.map((span) => ({ ...span }));
+
+  for (const cut of cuts) {
+    const next: MinuteSpan[] = [];
+    for (const span of remaining) {
+      if (cut.endMinutes <= span.startMinutes || cut.startMinutes >= span.endMinutes) {
+        next.push(span);
+        continue;
+      }
+      if (cut.startMinutes > span.startMinutes) {
+        next.push({ startMinutes: span.startMinutes, endMinutes: cut.startMinutes });
+      }
+      if (cut.endMinutes < span.endMinutes) {
+        next.push({ startMinutes: cut.endMinutes, endMinutes: span.endMinutes });
+      }
+    }
+    remaining = next;
+  }
+
+  return remaining.filter((span) => span.endMinutes > span.startMinutes);
+}
+
+function intersectSpans(left: readonly MinuteSpan[], right: readonly MinuteSpan[]): MinuteSpan[] {
+  const result: MinuteSpan[] = [];
+  for (const a of left) {
+    for (const b of right) {
+      const startMinutes = Math.max(a.startMinutes, b.startMinutes);
+      const endMinutes = Math.min(a.endMinutes, b.endMinutes);
+      if (endMinutes > startMinutes) {
+        result.push({ startMinutes, endMinutes });
+      }
+    }
+  }
+  return result;
 }
 
 export interface GridAxis {
@@ -180,6 +393,14 @@ export function computeAxis(dayRows: readonly DayRow[]): GridAxis {
     for (const segment of row.segments) {
       min = Math.min(min, segment.startMinutes);
       max = Math.max(max, segment.endMinutes);
+    }
+    // Unbookable spans count too, or a day whose whole morning is blacked out
+    // would have that bar clamped against an axis that starts after it — and
+    // a day that is *entirely* blacked out would push the axis nowhere at all
+    // while still needing somewhere to draw.
+    for (const span of row.unbookable) {
+      min = Math.min(min, span.startMinutes);
+      max = Math.max(max, span.endMinutes);
     }
   }
 

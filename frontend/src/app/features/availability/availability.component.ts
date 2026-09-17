@@ -1,4 +1,4 @@
-import { Component, DestroyRef, HostListener, computed, inject, signal } from '@angular/core';
+import { Component, DestroyRef, HostListener, Injector, afterNextRender, computed, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { HttpErrorResponse } from '@angular/common/http';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
@@ -13,6 +13,8 @@ import { resourceCapacityLabel, resourceTypeLabel } from '../../shared/resource-
 // the parameter names out a second time — see that file's header.
 import { buildBookingQueryParams } from '../booking/booking-arrival';
 import { AvailabilityService } from './availability.service';
+import { BlackoutPeriodsService } from './blackout-periods.service';
+import { BlackoutPeriodSummary } from './blackout-periods.models';
 import { AvailabilityResponse, LocalDateString } from './availability.models';
 import {
   addDays,
@@ -28,6 +30,8 @@ import {
 } from './local-date';
 import {
   DaySegment,
+  DayUnbookableSpan,
+  UnbookableKind,
   buildAxisTicks,
   buildDayRows,
   clamp,
@@ -59,6 +63,12 @@ const DEFAULT_WINDOW_DAYS = 7;
 // non-degenerate) and out of anywhere that asserts what the *resource*
 // requires; see durationError's own comment for where that line is drawn.
 const TIME_OPTION_STEP_MINUTES = 15;
+
+// Enough for any plausible number of blackouts overlapping a 90-day window
+// (the range cap), and the API's own maximum page size — this screen has no
+// paging UI for them and no use for one: an unlabelled gap past the ceiling
+// simply reads as "Booked", the same fallback a failed fetch produces.
+const BLACKOUT_PAGE_SIZE = 100;
 
 // A bound for the Start/End dropdowns' own option ranges, not a claim about
 // what the resource requires — used only to stop those two dropdowns from
@@ -158,6 +168,8 @@ export class AvailabilityComponent {
   private readonly router = inject(Router);
   private readonly resourcesService = inject(ResourcesService);
   private readonly availabilityService = inject(AvailabilityService);
+  private readonly blackoutPeriodsService = inject(BlackoutPeriodsService);
+  private readonly injector = inject(Injector);
   private readonly breadcrumbService = inject(BreadcrumbService);
   private readonly destroyRef = inject(DestroyRef);
 
@@ -200,12 +212,31 @@ export class AvailabilityComponent {
   // timeZoneId, not the live fromDate()/toDate()/resource() signals —
   // self-consistent with whatever was actually asked and answered, rather
   // than coupled to the exact instant those signals happen to read at.
+  // Only ever *labels* gaps the availability response already excluded, so a
+  // failed or still-pending blackout fetch costs a reason, never correctness:
+  // the grid then shows those gaps as plain "Booked", which is what they are
+  // as far as this screen can tell without them.
+  protected readonly blackouts = signal<readonly BlackoutPeriodSummary[]>([]);
+
   protected readonly dayRows = computed(() => {
     const response = this.availabilityResponse();
     if (!response) {
       return [];
     }
-    return buildDayRows(datesInRange(response.fromLocalDate, response.toLocalDate), response.intervals, response.timeZoneId);
+    // The resource's own opening windows and its blackouts are what turn "not
+    // offered" into a reason (decision `0020`: the endpoint answers with
+    // bookable time only, never with why the rest isn't).
+    return buildDayRows(
+      datesInRange(response.fromLocalDate, response.toLocalDate),
+      response.intervals,
+      response.timeZoneId,
+      this.resource()?.availabilityWindows ?? [],
+      // The two DTOs name their instants differently — a bookable interval is
+      // startUtc/endUtc, a blackout row is startsAtUtc/endsAtUtc after its own
+      // columns — so they are mapped onto one shape here rather than the grid
+      // module learning both.
+      this.blackouts().map((blackout) => ({ startUtc: blackout.startsAtUtc, endUtc: blackout.endsAtUtc })),
+    );
   });
 
   protected readonly axis = computed(() => computeAxis(this.dayRows()));
@@ -605,12 +636,55 @@ export class AvailabilityComponent {
   // than the resource's minimum (durationError's own remaining case). With
   // no maxDurationMinutes set, effectiveMaxDuration is Infinity and this
   // reduces to the old "whole segment" behavior exactly.
-  protected selectSegment(segment: DaySegment): void {
+  protected selectSegment(segment: DaySegment, event?: Event): void {
     this.selectedSegment.set(segment);
     const resource = this.resource();
     const maxDuration = resource ? effectiveMaxDuration(resource) : Number.POSITIVE_INFINITY;
     this.selectedStartMinutes.set(segment.startMinutes);
     this.selectedEndMinutes.set(Math.min(segment.startMinutes + maxDuration, segment.endMinutes));
+    this.keepSelectionInView(event);
+  }
+
+  // Bug reported by the owner, 2026-09-17: on a range that needs scrolling,
+  // clicking a bar low in the grid left it out of view, so the very row just
+  // clicked had to be scrolled back to.
+  //
+  // Nothing actually scrolls the container. The selection panel below the
+  // grid appears only once something is selected, and `.grid` is a flex child
+  // — so the panel taking its space shrinks `.grid-rows`' visible height by
+  // its own height, while scrollTop stays where it was. The rows nearest the
+  // bottom are exactly the ones that fall outside the shortened viewport, and
+  // the clicked one was, by definition, one of them.
+  //
+  // afterNextRender, not an immediate call: the panel has to have taken its
+  // space before "is this still visible" can be answered. `block: 'nearest'`
+  // then scrolls the minimum amount and does nothing at all when the row is
+  // already fully visible — so a click near the top of the grid stays put
+  // rather than being yanked into a different position.
+  private keepSelectionInView(event?: Event): void {
+    const target = event?.currentTarget;
+    if (!(target instanceof HTMLElement) || typeof target.scrollIntoView !== 'function') {
+      return;
+    }
+
+    afterNextRender(() => target.scrollIntoView({ block: 'nearest' }), { injector: this.injector });
+  }
+
+  protected unbookableLabel(kind: UnbookableKind): string {
+    return kind === 'blackout' ? 'Unavailable' : 'Booked';
+  }
+
+  protected unbookableAccessibleLabel(date: LocalDateString, span: DayUnbookableSpan): string {
+    const reason = span.kind === 'blackout' ? 'unavailable' : 'already booked';
+    return `${formatLocalDateWithFullWeekday(date)}, ${formatMinutesOfDay(span.startMinutes)} to ${formatMinutesOfDay(span.endMinutes)}, ${reason}`;
+  }
+
+  protected unbookableLeftPercent(span: DayUnbookableSpan): number {
+    return minuteSpanStylePercent(span, this.axis()).leftPercent;
+  }
+
+  protected unbookableWidthPercent(span: DayUnbookableSpan): number {
+    return minuteSpanStylePercent(span, this.axis()).widthPercent;
   }
 
   protected clearSelection(): void {
@@ -885,6 +959,42 @@ export class AvailabilityComponent {
           }
           this.availabilityLoading.set(false);
           this.availabilityError.set(true);
+        },
+      });
+
+    this.fetchBlackouts(requestId);
+  }
+
+  // Runs beside the availability request rather than after it, and shares its
+  // request id so the same stale-response guard covers both. Its failure is
+  // deliberately silent: there is no error state and no retry button for it,
+  // because the grid is still correct without it — see the `blackouts` signal.
+  private fetchBlackouts(requestId: number): void {
+    this.blackouts.set([]);
+
+    this.blackoutPeriodsService
+      .list(this.resourceId, {
+        // A day either side of the visible range, in UTC, so a blackout that
+        // starts late on the day before (or ends early on the day after) in
+        // the resource's own timezone is still returned — the endpoint's
+        // filter is an overlap, so a generous window costs nothing but
+        // guarantees the edges are covered whatever the offset.
+        from: `${addDays(this.fromDate(), -1)}T00:00:00Z`,
+        to: `${addDays(this.toDate(), 2)}T00:00:00Z`,
+        pageSize: BLACKOUT_PAGE_SIZE,
+      })
+      .subscribe({
+        next: (result) => {
+          if (requestId !== this.latestAvailabilityRequestId) {
+            return;
+          }
+          this.blackouts.set(result.items);
+        },
+        error: () => {
+          if (requestId !== this.latestAvailabilityRequestId) {
+            return;
+          }
+          this.blackouts.set([]);
         },
       });
   }
