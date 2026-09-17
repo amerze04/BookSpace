@@ -112,11 +112,35 @@ describe('summarizeOccurrences', () => {
     ).toBe('1 booked, 1 skipped, 1 refused');
     expect(summaryLine(summarizeOccurrences([]))).toBe('No occurrences');
   });
+
+  // FR-7.1: every occurrence of a series on an approval-gated resource is
+  // created `Pending`, which holds nothing yet — so "2 booked" would claim two
+  // times that are in fact two requests.
+  it('calls created occurrences requested when the resource gates on approval', () => {
+    const summary = summarizeOccurrences([created('2026-09-24'), created('2026-10-01'), refused('2026-10-08', 'X')]);
+
+    expect(summaryLine(summary, true)).toBe('2 requested, 1 refused');
+    expect(summaryLine(summary, false)).toBe('2 booked, 1 refused');
+  });
 });
 
 describe('occurrenceReasonLabel', () => {
   it('says what happened to a created date', () => {
     expect(occurrenceReasonLabel(created('2026-09-24'))).toBe('Booked');
+  });
+
+  // `Created` is the report's word for "a Booking row exists", not for
+  // "confirmed" — the handler creates it Pending whenever the resource
+  // requires approval.
+  it('calls a created date pending when the resource requires approval', () => {
+    expect(occurrenceReasonLabel(created('2026-09-24'), true)).toBe('Pending approval');
+    expect(occurrenceReasonLabel(created('2026-09-24'), false)).toBe('Booked');
+  });
+
+  // Approval changes nothing about a date that was never created.
+  it('leaves skips and refusals alone either way', () => {
+    expect(occurrenceReasonLabel(refused('2026-10-01', 'SlotUnavailable'), true)).toBe('Already booked');
+    expect(occurrenceReasonLabel(skipped('2027-03-14'), true)).toContain('does not exist on that date');
   });
 
   // Decision `0008`: the local time genuinely does not exist on that date, and

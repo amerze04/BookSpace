@@ -210,7 +210,11 @@
 
 // Shown in place of the one-off fields when no slot was picked — the toggle
 // above stays reachable, which is the whole point of not replacing the screen.
-.pick-first {
+// `.recurrence-unavailable` shares it: a resource with no bookable hours
+// configured replaces the recurring fields the same way this replaces the
+// one-off ones, and for the same reason — the toggle above stays reachable.
+.pick-first,
+.recurrence-unavailable {
   padding: 1.25rem;
   border: 1px dashed var(--color-border);
   border-radius: var(--radius-md);
@@ -222,6 +226,15 @@
 
   .secondary-button {
     margin: 0.75rem 0 0.5rem;
+  }
+}
+
+.recurrence-unavailable {
+  margin-top: 1.5rem;
+
+  .notice-title {
+    margin-bottom: 0.4rem;
+    font-weight: 600;
   }
 }
 

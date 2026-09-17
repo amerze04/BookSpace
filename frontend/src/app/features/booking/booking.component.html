@@ -110,18 +110,23 @@
           </svg>
         </span>
 
-        <h2>{{ seriesCreatedNothing() ? 'Nothing could be booked' : 'Series booked' }}</h2>
+        <!-- FR-7.1: on an approval-gated resource every created occurrence is
+             Pending, so the series was *submitted*, not booked — the same
+             distinction the one-off panel makes with "Booking requested". -->
+        <h2>{{ seriesOutcomeHeading() }}</h2>
 
         <p class="outcome-lead">
           @if (seriesCreatedNothing()) {
             Every date in this series was skipped or refused, so no booking was made. The reasons are below — adjust
             the series and try again.
           } @else {
-            {{ recurrencePatternLabel() }} on {{ resource.name }}, {{ recurrence().localStartTime }}–{{
-              recurrence().localEndTime
-            }}. {{ seriesSummaryLine() }}.
+            <!-- Described from what was *submitted*, never from the live form:
+                 the two can only ever disagree in the member's disfavour. -->
+            {{ submittedPatternLabel() }} on {{ resource.name }}, {{ submittedTimesLabel() }}.
+            {{ seriesSummaryLine() }}.
             @if (resource.requiresApproval) {
-              Each booked date needs approval before it's confirmed.
+              Each date still needs approval before it's confirmed — <strong>these times are not held for you
+              yet</strong>.
             }
           }
         </p>
@@ -270,11 +275,15 @@
           <!-- One screen, two form groups (not two routes): the resource, the
                slot, the quantity and the title are shared, and only the *when*
                differs between them. -->
+          <!-- Disabled while a request is in flight, like every other control
+               that feeds it: switching mode mid-submit would leave the screen
+               describing a request it is no longer showing the form for. -->
           <div class="mode-toggle" role="group" aria-label="Booking type">
             <button
               type="button"
               [class.active]="mode() === 'oneOff'"
               [attr.aria-pressed]="mode() === 'oneOff'"
+              [disabled]="submitting()"
               (click)="setMode('oneOff')"
             >
               One-time
@@ -283,6 +292,7 @@
               type="button"
               [class.active]="mode() === 'recurring'"
               [attr.aria-pressed]="mode() === 'recurring'"
+              [disabled]="submitting()"
               (click)="setMode('recurring')"
             >
               Recurring
@@ -365,14 +375,19 @@
             <div class="quantity-field">
               <span class="field-label" id="booking-quantity-label">Quantity</span>
               <div class="stepper" role="group" aria-labelledby="booking-quantity-label">
-                <button type="button" (click)="decrementQuantity()" [disabled]="quantity() <= 1" aria-label="Decrease quantity">
+                <button
+                  type="button"
+                  (click)="decrementQuantity()"
+                  [disabled]="submitting() || quantity() <= 1"
+                  aria-label="Decrease quantity"
+                >
                   −
                 </button>
                 <span class="stepper-value">{{ quantity() }}</span>
                 <button
                   type="button"
                   (click)="incrementQuantity()"
-                  [disabled]="quantity() >= resource.capacity"
+                  [disabled]="submitting() || quantity() >= resource.capacity"
                   aria-label="Increase quantity"
                 >
                   +
@@ -397,6 +412,7 @@
               type="text"
               [value]="title()"
               (input)="onTitleInput($event)"
+              [disabled]="submitting()"
               [attr.maxlength]="maxTitleLength"
               [attr.aria-invalid]="titleError() !== null"
               aria-describedby="booking-title-hint"
@@ -407,14 +423,32 @@
             }
           </div>
 
-          @if (mode() === 'recurring') {
+          @if (mode() === 'recurring' && recurrenceUnavailableMessage(); as unavailableMessage) {
+            <!-- A resource with no bookable hours at all. Not a validation
+                 error: no value in this form would fix it, and the form itself
+                 would only ever produce occurrences refused with
+                 OutsideAvailability — so the fields are replaced rather than
+                 shown with a message under them, and the submit is off.
+                 Deliberately *not* the same thing as "fully booked", which is
+                 the server's answer to a real request, not a reason to refuse
+                 to make one. -->
+            <div class="recurrence-unavailable" role="note">
+              <p class="notice-title">Recurring bookings aren't available for this resource</p>
+              <p>{{ unavailableMessage }}</p>
+              <a class="secondary-button" [routerLink]="['/resources', resource.id]">View resource details</a>
+            </div>
+          } @else if (mode() === 'recurring') {
             <!-- The recurring group, under the title (the owner's own
                  placement). Every field here is resource-local wall clock, not
                  an instant: POST /recurrence-rules takes the schedule and
                  resolves each occurrence's instant itself, per decision `0003`
                  — which is why these are freely editable where the one-off
-                 half's are read-only. -->
-            <fieldset class="recurrence">
+                 half's are read-only.
+                 Every control is disabled while a submit is in flight: the
+                 request body is fixed the moment it goes out, so a field the
+                 member can still edit is one the screen would go on to
+                 describe wrongly. -->
+            <fieldset class="recurrence" [disabled]="submitting()">
               <legend>Repeat</legend>
 
               <div class="field-row">
@@ -437,6 +471,7 @@
                     min="1"
                     step="1"
                     [value]="recurrence().intervalValue"
+                    [attr.aria-invalid]="recurrenceIntervalError() !== null"
                     (input)="setIntervalValue($event)"
                   />
                 </label>
@@ -447,12 +482,16 @@
                     id="recurrence-start-date"
                     type="date"
                     [value]="recurrence().startDate"
+                    [attr.aria-invalid]="recurrenceStartDateError() !== null"
                     (change)="setStartDate($event)"
                   />
                 </label>
               </div>
 
-              @if (recurrenceErrors().interval; as intervalMessage) {
+              @if (recurrenceStartDateError(); as startDateMessage) {
+                <p class="field-error" role="alert">{{ startDateMessage }}</p>
+              }
+              @if (recurrenceIntervalError(); as intervalMessage) {
                 <p class="field-error" role="alert">{{ intervalMessage }}</p>
               }
 
@@ -490,10 +529,17 @@
 
               <p class="field-hint">Times are in the resource's timezone ({{ resource.timeZoneId }}).</p>
 
-              @if (recurrenceErrors().times; as timesMessage) {
+              <!-- Server first, then the client's own guard, for both of these
+                   — the same precedence titleError and quantityError already
+                   apply. The duration one matters most: every occurrence
+                   shares the series' nominal length, so the handler answers
+                   BookingDurationOutOfRange for the series as a whole, and
+                   before this pass that message had nowhere on this half of
+                   the form to land. -->
+              @if (recurrenceTimesError(); as timesMessage) {
                 <p class="field-error" role="alert">{{ timesMessage }}</p>
               }
-              @if (recurrenceErrors().duration; as durationMessage) {
+              @if (recurrenceDurationError(); as durationMessage) {
                 <p class="field-error" role="alert">{{ durationMessage }}</p>
               }
 
@@ -542,10 +588,10 @@
                 </label>
               </div>
 
-              @if (recurrenceErrors().occurrenceCount; as occurrenceMessage) {
+              @if (recurrenceOccurrenceCountError(); as occurrenceMessage) {
                 <p class="field-error" role="alert">{{ occurrenceMessage }}</p>
               }
-              @if (recurrenceErrors().endDate; as endDateMessage) {
+              @if (recurrenceEndDateError(); as endDateMessage) {
                 <p class="field-error" role="alert">{{ endDateMessage }}</p>
               }
             </fieldset>
@@ -659,14 +705,23 @@
                        so finishing an attempt whose outcome was never observed
                        resolves to the same series rather than creating a
                        second one. Saying why, not just offering the button. -->
+                  <!-- The limit is stated, not implied: the key lives in this
+                       page, so a reload or a change to the form takes the
+                       guarantee with it. -->
                   <p class="field-hint">
-                    Trying again is safe — this request carries a key that resolves to the same series.
+                    Trying again is safe — this request carries a key that resolves to the same series. That holds
+                    while this page stays open and the form is unchanged; if you reload or edit it, check My Bookings
+                    instead.
                   </p>
                   <button type="button" class="secondary-button" (click)="confirmBooking()">Try again</button>
                 } @else {
-                  <!-- Never a retry button here: POST /bookings has no
-                       idempotency key (wp7-plan.md §7), so repeating a request
-                       whose outcome is unknown can create a second booking. -->
+                  <!-- Never a retry button here. For a one-off booking because
+                       POST /bookings has no idempotency key at all (wp7-plan.md
+                       §7); for a series because the key that made a retry safe
+                       belonged to a request this form no longer builds — the
+                       page was reloaded, or a field was edited — so repeating
+                       now would be a *new* attempt that could double the
+                       first. -->
                   <a class="secondary-button" routerLink="/my-bookings">Check My Bookings</a>
                 }
               }
@@ -683,7 +738,10 @@
             }
           </button>
 
-          @if (mode() === 'recurring' && !recurrenceIsValid()) {
+          <!-- Only when there *are* fields to fix: a resource with no bookable
+               hours has its own explanation above, and telling the member to
+               fix a field would send them looking for one that isn't there. -->
+          @if (mode() === 'recurring' && !recurrenceIsValid() && recurrenceUnavailable() === null) {
             <p class="field-hint">Fix the highlighted fields above to complete the series.</p>
           }
         </aside>

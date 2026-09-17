@@ -315,3 +315,142 @@ walkthrough itself remains outstanding** — no automation is available here, so
 what is verified is every request/response pair the screens depend on plus the
 rendering assertions in vitest, not the rendered flow end to end.
 
+
+---
+
+## Recurring-booking hardening pass — 2026-09-17
+
+Not a new phase: a focused review of the recurring half Phase 3 had just
+landed (`feature/ui-bookings-recurrent`), against seven numbered findings.
+Each was checked against the actual implementation, the backend contract it
+consumes, and the existing frontend conventions before anything changed —
+six were confirmed and fixed, one was answered with a decision rather than a
+migration. Baseline afterwards: **556 vitest tests** (was 462), production
+build clean.
+
+**The one that was a crash, not a message (finding 1).** Every date helper in
+`local-date.ts` is `Date` arithmetic underneath, and an invalid `Date` throws
+only at `toISOString()` — so `addDays('', 7)` and `addDays(d, 7e18)` both raise
+`RangeError: Invalid time value` rather than returning something odd.
+`validateRecurrenceForm` derived the implied end date *before* checking the
+primitives it derived from, and it ran inside a `computed` the template reads
+on every keystroke. Two ordinary member actions reached it: **clearing the
+Start date box** (an `<input type="date">` hands back `''`) and **typing a long
+number** into Repeat every or After N occurrences. `Number.isInteger` was the
+wrong guard for the second — `1e21` passes it, and its product with a count is
+what gets multiplied into a `Date`. Fixed by ordering the validation
+structurally (primitives first, derived arithmetic only over primitives that
+passed), switching to `Number.isSafeInteger`, and restating the server's own
+10,000-day pre-check (`IsOccurrenceCountWithinMaxSpan`) so a large pair is
+refused by a day count rather than by `addDays` being handed it. A cleared
+start date with the *end-date* arm selected produced **no error at all**
+before this (`'2026-10-01' < ''` is false), so the form would submit a request
+only a 400 could answer.
+
+**A series read through the one-off form's vocabulary (finding 2).** The
+recurring submit routed its failures through `describeBookingRejection`, which
+knows three controls — title, quantity, duration — and treats every other named
+field as *"the selected time is not valid. Go back to availability and pick a
+slot again."* `POST /recurrence-rules` validates `StartDate`, `IntervalValue`,
+`OccurrenceCount`, `EndDate`, `LocalStartTime`/`LocalEndTime`, `Quantity` and
+`Title`, so most of its 400s pointed the member at a screen that feeds none of
+those fields while the control that held the problem said nothing. Worse, a
+`BookingDurationOutOfRange` for a series mapped to the `duration` field — whose
+message renders inside the one-off panel that recurring mode hides, so it was
+**invisible**. Fixed by splitting `booking-rejection.ts` into shared machinery
+plus a `RejectionDialect`, with the recurring vocabulary in a new
+`recurrence-rejection.ts`: its own field map, its own copy, and no
+"re-check availability" action for a request that never had a slot. Each
+recurring control now shows the server's message in preference to the client's
+own, the same precedence `titleError`/`quantityError` already applied — and an
+edit to a control clears the server message it carried, because a rejection is
+otherwise only cleared *by* the submit it is blocking, which would have locked
+the form permanently on any server-only rule.
+
+**The form stayed editable mid-flight (finding 3).** Only the Confirm button
+was disabled, so a member could switch Weekly to Monthly and 09:00 to 14:00
+while the original request was in the air. Two consequences, both fixed:
+the confirmation panel derived its description from the live form (a 201 for
+the Weekly series was announced as a Monthly one), and the idempotency key's
+promise silently lapsed — `createSeries` keeps a key only for the body it was
+minted for, so an edit after an unobservable outcome meant the next submit
+minted a *fresh* key while the screen still said "trying again is safe", which
+could create a second series if the first had in fact committed. Now every
+control that feeds the request is disabled while it is in flight (one
+`[disabled]` on the `<fieldset>`, plus the title, the stepper and the mode
+toggle), the panel is rendered from a snapshot of what was submitted, and
+`canRetrySeries` is gated on the current form still building byte-identical
+bytes to the pending attempt.
+
+**"Series booked" for occurrences nobody had approved (finding 4).** The
+handler creates each occurrence with `resource.RequiresApproval ? Pending :
+Confirmed`, and the one-off panel one screen over already says a Pending
+booking is "not held for you yet" — while the series panel said *Series
+booked*, *2 booked*, and *Booked* against every date. Now worded off
+`requiresApproval`: **Series submitted** / *2 requested* / **Pending
+approval**, with the same "not held for you yet" sentence. No backend status
+semantics were touched.
+
+**Defaults that started in the past (finding 5).** `defaultRecurrenceFor` took
+the resource's local *date* and used the first window's opening time, so a
+resource open 09:00–17:00 seeded 09:00–10:00 **today** at 15:30 in its own zone
+— a first occurrence already elapsed, refused with `BookingInThePast` after a
+round trip. It also ignored `maxDurationMinutes` when falling back to an hour,
+and could propose a duration shorter than `minDurationMinutes` by clipping to
+closing time — both of which failed the form's *own* guards on open. It now
+takes the resource-local date **and** time, walks forward eight days (a weekday
+only recurs on the eighth) for the first opening span that can hold a legal
+booking, starts at the next quarter hour when that span is already under way,
+honours both duration bounds, and shrinks to what is left of the span rather
+than running past closing. A property test asserts that whatever it proposes
+passes `validateRecurrenceForm`, across five schedules × five times of day.
+
+**A submittable form guaranteed to book nothing (finding 6).**
+`outsideOpeningHours` deliberately says nothing when a resource publishes no
+windows (there is nothing to judge against), so an active resource with an
+empty schedule produced a form that validated cleanly and whose every
+occurrence was certain to come back `OutsideAvailability`. That is now an
+explicit state — `recurrenceUnavailableReason`, with three cases:
+`noOpeningHours`, `durationLimitsConflict` (min > max) and `noBookableWindow`
+(no window long enough for the shortest allowed booking) — which replaces the
+fields with an explanation and disables the submit. **Deliberately not
+conflated with "fully booked" or "blacked out"**: those are answers only the
+server has, they change by the hour, and a series is *expected* to collect some
+of them per occurrence (FR-5.4). The `defaultRecurrenceFor` /
+`recurrenceUnavailableReason` pair is covered by a test asserting the two
+always agree — a null default always comes with a reason to show, and a null
+reason always comes with a default.
+
+**The "Book a recurring series" CTA on the list and detail screens was left
+alone**, which finding 6 raised as optional. The list renders `ResourceSummary`,
+which carries no `availabilityWindows` at all, so it *cannot* know; suppressing
+the CTA only on the detail screen would make the same resource behave
+differently depending on which screen it was reached from, and would leave the
+member with no explanation of why an action had disappeared. The booking screen
+now explains it in place instead.
+
+**Idempotency-key durability: a decision, not a migration (finding 7).** The
+pending `{ key, body }` lives in the component, so a reload, a navigation away
+and back, or a browser crash takes the retry guarantee with it — a later submit
+of the same series mints a new key and could duplicate an attempt that had in
+fact committed. Persisting it (sessionStorage, scoped per user and resource)
+was considered and **rejected for this pass**: it trades one silent failure for
+its mirror image — a key that outlives the attempt it belongs to makes a
+*deliberate* second identical series resolve silently to the first — and it
+needs a stale-key story (TTL, scope, invalidation) that is real design work,
+not a hardening tweak. The honest recovery already exists and is what this app
+says everywhere else an outcome is unknown, so the limit is now **stated on
+screen** instead ("that holds while this page stays open and the form is
+unchanged; if you reload or edit it, check My Bookings instead") and in
+`BookingComponent.pendingAttempt`'s own comment. Worth revisiting if a
+`GET /recurrence-rules` read ever lands: at that point the right fix is to
+*ask* whether the series exists, not to remember a key for longer.
+
+**Verification**: `npx ng test --watch=false` — 27 files, 556 passed, 0 failed;
+`npx ng build` clean (the three SCSS budget warnings pre-date this pass).
+**Every new regression test was proven against the old code**: the six fixed
+behaviours were reverted in place and the suite re-run, failing 34 of the new
+tests and no others, before being restored. The browser walkthrough is still
+outstanding for the same reason as Phase 3's — no automation is available here
+— so what is verified is the rendered DOM in vitest plus the contracts these
+screens consume, not a human click-through.

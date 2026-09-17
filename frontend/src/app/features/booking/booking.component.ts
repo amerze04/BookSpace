@@ -12,7 +12,6 @@ import {
   formatDurationWords,
   formatLocalDateWithWeekdayAndYear,
   formatMinutesOfDay,
-  resourceLocalToday,
   utcToResourceLocal,
 } from '../availability/local-date';
 import {
@@ -23,14 +22,19 @@ import {
 import {
   RecurrenceEndConditionKind,
   RecurrenceFormValue,
+  RecurrenceUnavailableReason,
   ResourceSchedule,
   buildRecurrenceRequest,
+  canComputeImpliedEndDate,
   defaultRecurrenceFor,
   hasRecurrenceErrors,
   impliedEndDate,
+  isValidLocalDate,
   recurrenceFromSelection,
+  recurrenceUnavailableReason,
   validateRecurrenceForm,
 } from './recurrence-form';
+import { RECURRENCE_FIELD_NAMES, describeRecurrenceRejection } from './recurrence-rejection';
 import {
   SeriesOutcome,
   occurrenceReasonLabel,
@@ -101,6 +105,35 @@ const FREQUENCY_UNITS: Record<RecurrenceFrequency, string> = {
   Daily: 'day',
   Weekly: 'week',
   Monthly: 'month',
+};
+
+// "Every week", "Every 2 weeks" — a plain function rather than a method,
+// because the outcome panel has to describe the series that was *submitted*,
+// not the one the form currently holds (see submittedRecurrence).
+function patternLabel(value: RecurrenceFormValue): string {
+  const unit = FREQUENCY_UNITS[value.frequency];
+  return value.intervalValue === 1 ? `Every ${unit}` : `Every ${value.intervalValue} ${unit}s`;
+}
+
+// Why the recurring form cannot be submitted against this resource at all, in
+// a member's words. Not an error against a control — no value they could type
+// would fix any of these — so it replaces the fields rather than sitting under
+// one.
+//
+// Deliberately distinct from "nothing is free": a resource with hours that is
+// simply booked out still gets the form, submits, and receives FR-5.4's
+// per-occurrence answer. These three say the resource has no bookable hours to
+// aim a series at in the first place.
+const RECURRENCE_UNAVAILABLE_COPY: Record<RecurrenceUnavailableReason, string> = {
+  noOpeningHours:
+    "This resource currently has no bookable hours configured, so a recurring series can't be "
+    + 'set up for it yet. An administrator publishes a resource\'s opening hours.',
+  durationLimitsConflict:
+    "This resource's shortest allowed booking is longer than its longest, so no booking length "
+    + 'would be accepted. An administrator can correct its duration limits.',
+  noBookableWindow:
+    "None of this resource's opening hours are long enough for the shortest booking it allows, "
+    + 'so no occurrence could be booked.',
 };
 
 // Only ever seen before the resource has loaded — every real seeding goes
@@ -241,10 +274,17 @@ export class BookingComponent {
 
     const selection = this.selection();
     if (!selection) {
-      // Arrived without a slot: seed from the resource's own schedule, so the
-      // form opens on the first upcoming day it is actually open, at that
-      // day's opening time.
-      return defaultRecurrenceFor(this.schedule(), resourceLocalToday(resource.timeZoneId));
+      // Arrived without a slot: seed from the resource's own schedule *and its
+      // own clock*, so the form opens on the first opening span from now on
+      // that can actually hold a booking — not on this morning's opening time
+      // when it is already the afternoon there.
+      //
+      // Null when the resource's configuration offers no such span at all;
+      // `recurrenceUnavailable` below is what the screen shows for that, and
+      // this falls back to the blank rather than manufacturing something that
+      // fails its own guards.
+      const now = utcToResourceLocal(new Date().toISOString(), resource.timeZoneId);
+      return defaultRecurrenceFor(this.schedule(), now) ?? EMPTY_RECURRENCE;
     }
 
     const start = utcToResourceLocal(selection.startUtc, resource.timeZoneId);
@@ -261,19 +301,72 @@ export class BookingComponent {
     availabilityWindows: this.resource()?.availabilityWindows ?? [],
   }));
 
+  // Why a series cannot be set up against this resource at all — no opening
+  // hours published, or none long enough for the shortest booking it allows.
+  // A configuration fact, so it disables the submit and replaces the fields
+  // rather than being reported against one of them.
+  protected readonly recurrenceUnavailable = computed<RecurrenceUnavailableReason | null>(() =>
+    this.resource() ? recurrenceUnavailableReason(this.schedule()) : null,
+  );
+
+  protected readonly recurrenceUnavailableMessage = computed<string | null>(() => {
+    const reason = this.recurrenceUnavailable();
+    return reason ? RECURRENCE_UNAVAILABLE_COPY[reason] : null;
+  });
+
   protected readonly recurrenceErrors = computed(() =>
     validateRecurrenceForm(this.recurrence(), this.schedule()),
+  );
+
+  // A server-reported message wins over the client's own check for the same
+  // control, exactly as `titleError` and `quantityError` already do: if the
+  // backend refused the value, that is the more authoritative answer.
+  private recurrenceFieldError(field: BookingFieldName, fromForm?: string): string | null {
+    return this.serverFieldMessage(field) ?? fromForm ?? null;
+  }
+
+  protected readonly recurrenceStartDateError = computed(() =>
+    this.recurrenceFieldError('startDate', this.recurrenceErrors().startDate),
+  );
+  protected readonly recurrenceIntervalError = computed(() =>
+    this.recurrenceFieldError('interval', this.recurrenceErrors().interval),
+  );
+  protected readonly recurrenceTimesError = computed(() =>
+    this.recurrenceFieldError('times', this.recurrenceErrors().times),
+  );
+  // The recurring half renders its own duration message: the one-off path's
+  // `durationError` lives inside the panel that is hidden in recurring mode,
+  // so a server `BookingDurationOutOfRange` for a series had nowhere to appear
+  // at all before this pass.
+  protected readonly recurrenceDurationError = computed(() =>
+    this.recurrenceFieldError('duration', this.recurrenceErrors().duration),
+  );
+  protected readonly recurrenceOccurrenceCountError = computed(() =>
+    this.recurrenceFieldError('occurrenceCount', this.recurrenceErrors().occurrenceCount),
+  );
+  protected readonly recurrenceEndDateError = computed(() =>
+    this.recurrenceFieldError('endDate', this.recurrenceErrors().endDate),
   );
 
   // What the series actually implies, shown rather than left for the member to
   // work out — the same arithmetic the span guard uses, so the date on screen
   // is the date the rule really ends on.
+  //
+  // **Every input is checked before the arithmetic runs**, for the reason
+  // `impliedEndDate`'s own header gives: it is `Date` arithmetic underneath
+  // and throws on a cleared date box or an out-of-range count rather than
+  // returning something odd — from a `computed` the template reads on every
+  // keystroke.
   protected readonly recurrenceEndsLabel = computed(() => {
     const value = this.recurrence();
     if (value.endCondition === 'endDate') {
-      return value.endDate ? `On ${formatLocalDateWithWeekdayAndYear(value.endDate)}` : '—';
+      return value.endDate && isValidLocalDate(value.endDate)
+        ? `On ${formatLocalDateWithWeekdayAndYear(value.endDate)}`
+        : '—';
     }
-    if (!Number.isInteger(value.occurrenceCount) || value.occurrenceCount < 1 || value.intervalValue < 1) {
+    if (
+      !canComputeImpliedEndDate(value.frequency, value.intervalValue, value.startDate, value.occurrenceCount)
+    ) {
       return '—';
     }
     const last = impliedEndDate(value.frequency, value.intervalValue, value.startDate, value.occurrenceCount);
@@ -282,11 +375,7 @@ export class BookingComponent {
 
   // "Every week", "Every 2 weeks" — the interval reads naturally rather than
   // as a raw number beside a frequency name.
-  protected readonly recurrencePatternLabel = computed(() => {
-    const { frequency, intervalValue } = this.recurrence();
-    const unit = FREQUENCY_UNITS[frequency];
-    return intervalValue === 1 ? `Every ${unit}` : `Every ${intervalValue} ${unit}s`;
-  });
+  protected readonly recurrencePatternLabel = computed(() => patternLabel(this.recurrence()));
 
   protected readonly submitting = signal(false);
 
@@ -297,14 +386,48 @@ export class BookingComponent {
   // recurrence-outcome.ts.
   protected readonly seriesOutcome = signal<SeriesOutcome | null>(null);
 
+  // The series as it was **submitted**, kept so the outcome panel can describe
+  // what was actually sent rather than what the form happens to hold now.
+  //
+  // Those are not the same thing: the form stays on screen for the length of
+  // the request, and before this pass nothing stopped a member editing it
+  // mid-flight — Weekly 09:00-10:00 goes out, Monthly 14:00-15:00 is on screen
+  // when the 201 lands, and the confirmation described the series nobody
+  // booked. The fields are disabled while submitting now (the first half of
+  // the fix); this is the second, so the panel is faithful even if some future
+  // path writes the form behind a submit.
+  private readonly submittedRecurrence = signal<RecurrenceFormValue | null>(null);
+
+  protected readonly submittedPatternLabel = computed(() => {
+    const value = this.submittedRecurrence();
+    return value ? patternLabel(value) : '';
+  });
+
+  protected readonly submittedTimesLabel = computed(() => {
+    const value = this.submittedRecurrence();
+    return value ? `${value.localStartTime}–${value.localEndTime}` : '';
+  });
+
   protected readonly seriesSummary = computed(() => {
     const outcome = this.seriesOutcome();
     return outcome ? summarizeOccurrences(outcome.occurrences) : null;
   });
 
+  // FR-7.1 again, one screen over from where the one-off panel says it: on an
+  // approval-gated resource a created occurrence is `Pending`, so "3 booked"
+  // would claim three held times that are in fact three requests.
+  protected readonly seriesNeedsApproval = computed(() => this.resource()?.requiresApproval ?? false);
+
   protected readonly seriesSummaryLine = computed(() => {
     const summary = this.seriesSummary();
-    return summary ? summaryLine(summary) : '';
+    return summary ? summaryLine(summary, this.seriesNeedsApproval()) : '';
+  });
+
+  protected readonly seriesOutcomeHeading = computed(() => {
+    if (this.seriesCreatedNothing()) {
+      return 'Nothing could be booked';
+    }
+    return this.seriesNeedsApproval() ? 'Series submitted' : 'Series booked';
   });
 
   // Nothing created is the 422's own shape (the handler compensates its
@@ -543,7 +666,17 @@ export class BookingComponent {
   });
 
   protected readonly recurrenceIsValid = computed(
-    () => this.canSubmitCommon() && !hasRecurrenceErrors(this.recurrenceErrors()),
+    () =>
+      this.canSubmitCommon() &&
+      // A resource with no bookable hours at all: no value in this form could
+      // produce a single bookable occurrence, so there is nothing to submit.
+      this.recurrenceUnavailable() === null &&
+      !hasRecurrenceErrors(this.recurrenceErrors()) &&
+      // Plus anything the server refused that the client's own guards would
+      // not have. Cleared by editing the control it was reported against —
+      // otherwise a server-only rule would lock the form permanently, since a
+      // rejection is only cleared on the submit it is blocking.
+      RECURRENCE_FIELD_NAMES.every((field) => this.serverFieldMessage(field) === null),
   );
 
   private resourceId: string;
@@ -604,7 +737,7 @@ export class BookingComponent {
   }
 
   protected occurrenceLabel(occurrence: RecurrenceOccurrenceReport): string {
-    return occurrenceReasonLabel(occurrence);
+    return occurrenceReasonLabel(occurrence, this.seriesNeedsApproval());
   }
 
   // Back to the form after an all-refused series, with every field still as it
@@ -625,12 +758,35 @@ export class BookingComponent {
   // observed cannot create a second series. This is exactly what the one-off
   // path cannot offer (wp7-plan.md §7), and the difference is worth saying out
   // loud on screen rather than only here.
+  //
+  // **Guarded by the body, not just by the outcome.** The safety is the key's,
+  // and `createSeries` keeps a key only for the exact body it was minted for —
+  // so if the form has changed since the unobservable attempt, the next submit
+  // mints a *fresh* key and can create a second series while the screen is
+  // still promising it cannot. The retry is therefore offered only while the
+  // form still builds byte-identical bytes to the attempt in question; edit
+  // anything and the panel falls back to the one-off path's honest answer
+  // (check My Bookings), which is what it should say for a genuinely different
+  // request whose predecessor may have committed.
   protected readonly canRetrySeries = computed(
-    () => this.mode() === 'recurring' && (this.rejection()?.mayHaveBeenCreated ?? false),
+    () =>
+      this.mode() === 'recurring' &&
+      (this.rejection()?.mayHaveBeenCreated ?? false) &&
+      this.formMatchesPendingAttempt(),
   );
+
+  // Whether the form as it stands would send exactly what the attempt still
+  // waiting to be finished sent.
+  private formMatchesPendingAttempt(): boolean {
+    const pending = this.pendingAttempt();
+    const resource = this.resource();
+    return pending !== null && resource !== null && this.recurrenceBody(resource.id) === pending.body;
+  }
 
   protected onTitleInput(event: Event): void {
     this.title.set((event.target as HTMLInputElement).value);
+    // A server message about the title belongs to the title that earned it.
+    this.clearServerFieldMessages(['title']);
   }
 
   protected readonly frequencies = RECURRENCE_FREQUENCIES;
@@ -675,17 +831,53 @@ export class BookingComponent {
     this.updateRecurrence({ occurrenceCount: numberFrom(event) });
   }
 
+  // Every edit to the recurring form drops the server's messages about it.
+  // Not cosmetic: those messages gate the submit (`recurrenceIsValid`), and a
+  // rejection is otherwise only cleared *by* a submit — so a server-only rule
+  // the client cannot restate would leave the form permanently unsubmittable
+  // with no way for the member to act on the advice it was just given. The
+  // whole recurring group is cleared rather than the one patched field,
+  // because any edit changes the request body's identity anyway (the same
+  // "the body decides what attempt this is" rule `createSeries` works by).
+  //
+  // The form-level parts of the rejection — including the unknown-outcome
+  // warning — deliberately survive: those are about the *previous request*,
+  // and an edit here says nothing about whether it committed.
   private updateRecurrence(patch: Partial<RecurrenceFormValue>): void {
     this.recurrence.update((current) => ({ ...current, ...patch }));
+    this.clearServerFieldMessages(RECURRENCE_FIELD_NAMES);
+  }
+
+  private clearServerFieldMessages(fields: readonly BookingFieldName[]): void {
+    this.rejection.update((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const remaining = { ...current.fieldMessages };
+      let cleared = false;
+      for (const field of fields) {
+        if (field in remaining) {
+          delete remaining[field];
+          cleared = true;
+        }
+      }
+
+      // The same object back when nothing changed, so an edit to an untouched
+      // control doesn't re-notify every computed reading this signal.
+      return cleared ? { ...current, fieldMessages: remaining } : current;
+    });
   }
 
   protected incrementQuantity(): void {
     const capacity = this.resource()?.capacity ?? 1;
     this.quantity.update((q) => Math.min(q + 1, capacity));
+    this.clearServerFieldMessages(['quantity']);
   }
 
   protected decrementQuantity(): void {
     this.quantity.update((q) => Math.max(q - 1, 1));
+    this.clearServerFieldMessages(['quantity']);
   }
 
   // FR-4.1. The one write this screen makes.
@@ -779,18 +971,18 @@ export class BookingComponent {
       return;
     }
 
-    const title = this.title().trim();
-    const request = buildRecurrenceRequest(
-      this.recurrence(),
-      resource.id,
-      this.quantity(),
-      title.length > 0 ? title : null,
-    );
-
+    const submitted = this.recurrence();
+    const request = this.recurrenceRequest(resource.id);
     const body = JSON.stringify(request);
-    const idempotencyKey =
-      this.pendingAttempt?.body === body ? this.pendingAttempt.key : crypto.randomUUID();
-    this.pendingAttempt = { key: idempotencyKey, body };
+
+    const pending = this.pendingAttempt();
+    const idempotencyKey = pending?.body === body ? pending.key : crypto.randomUUID();
+    this.pendingAttempt.set({ key: idempotencyKey, body });
+
+    // What the outcome panel will describe. Taken here, from the values this
+    // request is built out of, rather than read back off the live form when
+    // the response lands.
+    this.submittedRecurrence.set(submitted);
 
     this.submitting.set(true);
     this.rejection.set(null);
@@ -800,7 +992,7 @@ export class BookingComponent {
         this.seriesOutcome.set(seriesOutcomeFromResponse(response));
         this.submitting.set(false);
         // A definitive answer: a later submit is a new attempt, not a retry.
-        this.pendingAttempt = null;
+        this.pendingAttempt.set(null);
       },
       error: (error: unknown) => {
         this.submitting.set(false);
@@ -811,15 +1003,20 @@ export class BookingComponent {
         const refusal = parseSeriesRefusal(error);
         if (refusal) {
           this.seriesOutcome.set(refusal);
-          this.pendingAttempt = null;
+          this.pendingAttempt.set(null);
           return;
         }
 
-        const rejection = describeBookingRejection(error);
+        // The recurring endpoint's own vocabulary, not the one-off form's:
+        // its validation names StartDate/IntervalValue/OccurrenceCount and the
+        // rest, none of which the one-off map knows — so every one of them
+        // used to arrive as "go back to availability and pick a slot again",
+        // pointing at a screen that feeds none of these fields.
+        const rejection = describeRecurrenceRejection(error);
         if (rejection.resourceNotFound) {
           this.resource.set(null);
           this.notFound.set(true);
-          this.pendingAttempt = null;
+          this.pendingAttempt.set(null);
           return;
         }
 
@@ -828,7 +1025,7 @@ export class BookingComponent {
         // "start another". Any other refusal created nothing, so the next
         // submit should be a fresh attempt.
         if (!rejection.mayHaveBeenCreated) {
-          this.pendingAttempt = null;
+          this.pendingAttempt.set(null);
         }
 
         this.rejection.set(rejection);
@@ -836,8 +1033,41 @@ export class BookingComponent {
     });
   }
 
+  // The request the recurring form would send right now. One builder, used
+  // both to submit and to decide whether a pending attempt is still "this"
+  // request — so the two can never disagree about what the body is.
+  private recurrenceRequest(resourceId: string) {
+    const title = this.title().trim();
+    return buildRecurrenceRequest(
+      this.recurrence(),
+      resourceId,
+      this.quantity(),
+      title.length > 0 ? title : null,
+    );
+  }
+
+  private recurrenceBody(resourceId: string): string {
+    return JSON.stringify(this.recurrenceRequest(resourceId));
+  }
+
   // Survives across submits on purpose — see createSeries.
-  private pendingAttempt: { key: string; body: string } | null = null;
+  //
+  // **A signal rather than a plain field**, because `canRetrySeries` now reads
+  // it: the "trying again is safe" promise depends on this attempt still
+  // matching the form, which has to be re-evaluated as the form changes.
+  //
+  // **Deliberately not persisted.** The guarantee is a same-page one: reload
+  // the tab, navigate away and back, or crash the browser and this key is
+  // gone, so a later submit of the same series mints a new one and could
+  // create a second series if the original attempt had in fact committed.
+  // Persisting it (sessionStorage, scoped per user and resource) was
+  // considered and rejected for this pass: it trades one silent failure for
+  // the opposite one — a key that outlives the attempt it belongs to makes a
+  // *deliberate* second identical series resolve to the first — and the
+  // honest recovery already exists and is already what this app says
+  // everywhere else an outcome is unknown. So the limit is stated on screen
+  // ("only while this page is open") instead of being papered over.
+  private readonly pendingAttempt = signal<{ key: string; body: string } | null>(null);
 
   private fetchResource$(id: string): Observable<ResourceLoadResult> {
     this.loading.set(true);

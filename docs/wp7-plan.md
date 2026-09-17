@@ -20,7 +20,8 @@ into its own smaller steps once it is about to start, not all up front.
 | 1 — Resource list & detail | **Done** 2026-09-15 (5 steps) | 89 |
 | 2 — Availability view | **Done** 2026-09-16 (7 steps) | 199 |
 | 3 — Booking form (one-off + recurring) | **Done** 2026-09-17 (8 steps) | 462 |
-| 4 — My Bookings (view, cancel, series cancel) | **Next** | — |
+| — Recurring-booking hardening pass | **Done** 2026-09-17 (7 findings) | 556 |
+| 4 — My Bookings (view, cancel, series cancel) | **Next** — 7 steps planned, approved 2026-09-17 | — |
 | 5 — Calendar (the hard problem) | Not started | — |
 | 6 — Approval queue | Not started | — |
 | 7 — End-to-end wiring + AC sweep | Not started | — |
@@ -43,11 +44,33 @@ booking is reachable directly from a resource via **`?mode=recurring`**
 rather than requiring a slot to be picked first (Phase 3 step 6), from both
 the resource list card and the detail page.
 
+**A hardening pass over the recurring half followed on 2026-09-17**, after
+Phase 3 closed and before Phase 4 started — seven findings reviewed against
+the code, six fixed, one (idempotency-key durability across a reload)
+answered with a decision and on-screen copy rather than a migration. Full
+narrative in [`docs/roadmap/wp7.md`](roadmap/wp7.md); the short version of
+what changed is in CLAUDE.md's WP-7 subsection. Baseline moved from 462 to
+**556 vitest tests**, and each new regression test was proven to fail against
+the pre-fix code before being kept.
+
 ### Where things stand for the next session
 
 - **Phase 4 is next** — My Bookings. It is also what gives `/my-bookings` a
   real destination; the booking screen's own outcome panel already links
   there, and that link is correct-but-inert until then.
+- **Phase 4's step list is written and approved** (§5, seven steps), together
+  with the three calls settled with the owner on 2026-09-17: the design lands
+  before step 1, the list opens on Upcoming, and decision `0002`'s TenantAdmin
+  reach defers to Phase 6 so it is built once, with the screen that needs it.
+- **The My Bookings design is not in `design/` yet** — the owner confirmed on
+  2026-09-17 that it arrives before the phase starts. Unlike Phase 2 (began
+  without one) and Phase 3 (received one mid-build), this phase should not
+  have to invent a visual vocabulary and reconcile it afterwards.
+- **Phase 4 inherits three things the hardening pass established** and should
+  not re-litigate: server field messages take precedence over client ones and
+  are cleared when their control is edited; anything that feeds a submit is
+  disabled while it is in flight; and an outcome panel renders from what was
+  submitted, not from live form state.
 - **The browser walkthrough of Phase 3 is the one outstanding verification.**
   Every request/response pair the screens depend on is checked against the
   running API, and the vitest suite asserts rendering, but no automation
@@ -1401,7 +1424,119 @@ exercised, not just the happy path.
   snapshot decision `0019` describes) and `CancelledByUserId` differing from
   `UserId` reads as "cancelled by an administrator," per decision `0002`.
 
-**Screens needed:** My Bookings list/detail/cancel (to be designed).
+**Screens needed:** My Bookings list/detail/cancel. **The owner confirmed on
+2026-09-17 that the design lands before the phase starts**, so unlike Phase 2
+(which began without one) and Phase 3 (which received one mid-build), this
+phase does not have to establish its own visual vocabulary and then reconcile
+it later.
+
+#### The contract this phase actually consumes
+
+Read off the controller and the DTOs on 2026-09-17, not off this document's
+own §2 summary — the same check Phase 3 ran before it started, and worth
+repeating because three of these constraints are easy to get wrong from
+memory.
+
+| Endpoint | What it returns, and the parts that constrain the UI |
+|---|---|
+| `GET /bookings` | `PagedResult<ListBookingsQueryResponse>`. Filters: `from`, `to`, `status`, `resourceId`, `page`, `pageSize`, `sort`. The row carries `resourceName` and `userName` denormalized on, plus `recurrenceRuleId`, the span, `quantity`, `title`, `status` — **and none of the cancellation fields.** |
+| `GET /bookings/{id}` | `GetBookingQueryResponse`: everything on the row plus `checkedInAtUtc`, the cancellation trio, `createdAtUtc`/`updatedAtUtc`, and `approval`. **404 for anything this caller may not see, never 403** — another member's, another tenant's and a nonexistent id are byte-identical (AC-4 applied within one tenant). |
+| `POST /bookings/{id}/cancel` | Optional `{ reason }`. 200 carries the freed interval and who/when/why. 404 `BookingNotFound`, 422 `BookingNotCancellable`, 409 `ConcurrencyConflict`, 400 `ValidationFailed`. **Deliberately not idempotent** — a second call is 422, because there is an actor and a time to overwrite. |
+| `POST /recurrence-rules/{id}/cancel` | Optional `{ reason }`. 200 carries `cancelledBookingIds` — the ids, not a count, so a client knows exactly what it can stop showing as booked. 404 `RecurrenceRuleNotFound`, 422 `RecurrenceRuleNotCancellable`, 400. Cancels **only occurrences with `EndsAtUtc > now`**; past ones survive. |
+
+Three constraints to hold on to: `sort` is whitelisted server-side to
+`startsAtUtc | createdAtUtc | status`, so a sort control can only ever offer
+those; `from`/`to` must each carry a zone designator and `to > from`, or the
+request is a 400; and `Booking.CanBeCancelled` is *not terminal* **and**
+`EndsAtUtc > now`, which is the predicate the UI mirrors to decide whether a
+cancel action appears at all.
+
+#### Three calls settled before the phase starts (2026-09-17)
+
+1. **The design arrives before step 1.** Owner's confirmation, above.
+2. **Upcoming by default** — the list sends `from = now` and offers Past as a
+   toggle. A member opening My Bookings almost always wants what is ahead, and
+   the alternative fills page 1 with history on any account that has been used
+   for a while. The toggle is a URL parameter, not hidden state, so a filtered
+   view is shareable — the rule Phase 3 step 2 established for the selected
+   slot.
+3. **`scope=Own` only; decision `0002`'s TenantAdmin reach defers to Phase 6.**
+   FR-4.4 is the member's own view, and the queue in Phase 6 already has to
+   send `scope=tenant` — building the widening there means it is built once,
+   with a screen that needs it, instead of adding a role-conditional branch to
+   every step below for a path nothing yet exercises. `userName` is therefore
+   mapped but not rendered in this phase.
+
+#### Steps
+
+1. **Wire types and services.** `booking.models.ts` gains the list, detail and
+   both cancel response types, mirroring the DTOs exactly; `BookingsService`
+   gains `list()`, `getById()` and `cancel()`; `RecurrenceRulesService` gains
+   `cancel()`. No screen, so this step is reviewable as a contract on its own.
+   Tests: an omitted filter is left off the URL entirely rather than sent as a
+   default this file invented (decision `0015`), `from`/`to` go out
+   zone-designated, `sort` can only carry a whitelisted value, and both cancel
+   calls use `skipErrorToast` because their refusals are rendered in place.
+
+2. **The list, read-only.** `/my-bookings` stops being WP-6's placeholder.
+   Rows show resource name, span, status, quantity, title, and a recurrence
+   badge where `recurrenceRuleId` is set. Real pagination off
+   `PagedResult.totalPages`/`hasPreviousPage`/`hasNextPage`, exactly as the
+   resource list does since the 2026-09-16 pass — not a truncation notice.
+   Loading, empty, error and 404 states all present before any action exists.
+
+3. **Filters, in the URL.** Status and Upcoming/Past as query parameters
+   (`?status=&when=`), `when` mapped onto `from`/`to`. Any filter change resets
+   to page 1, the rule the resource list already follows.
+
+4. **The detail screen.** `/my-bookings/:id`, the full detail read. The span
+   renders in the viewer's own zone with the resource's alongside when the two
+   differ — the booking screen's convention, and §3's display default (decision
+   `0003` governs the availability *question*, not how a booked instant is
+   read back). Two cancellation cases have to read correctly rather than as one
+   generic "Cancelled": `cancelledByUserId ≠ userId` is *cancelled by an
+   administrator* (decision `0002`), and `cancelledByUserId = null` with a
+   reason is *a blackout* (decision `0019`'s text snapshot, which
+   `Booking.CancelForBlackout` leaves the actor null for on purpose). A 404
+   reuses the established "doesn't exist, or you don't have access" wording.
+
+5. **Cancel one booking.** Confirm-then-act, with an optional reason.
+   `CanBeCancelled` is mirrored client-side to decide whether the action shows;
+   the server stays the authority. Refusals go through a cancel dialect on the
+   `RejectionDialect` the 2026-09-17 hardening pass introduced — `BookingNotFound`,
+   `BookingNotCancellable`, `ConcurrencyConflict` — rather than a second
+   mapper. **Because cancel is not idempotent it inherits `POST /bookings`'
+   rule exactly**: disabled while in flight, and *no retry button* on an
+   unknown outcome, since a repeat would quietly rewrite who called the meeting
+   off. Success updates from the response rather than blind-refetching.
+
+6. **The series choice.** A booking carrying a `recurrenceRuleId` offers an
+   explicit two-way choice — *this occurrence* or *the whole remaining series*
+   — never one button that is ambiguous about which it means. The copy states
+   what "remaining" means (`EndsAtUtc > now`; past occurrences survive) before
+   the member confirms, not after, and the result reports how many occurrences
+   were actually freed from `cancelledBookingIds` rather than a bare success.
+
+7. **Sweep.** DOM assertions for every state, not signal-level ones — Phase 3's
+   own lesson, and both of its bugs were things a member could see. Accessibility:
+   status conveyed by more than colour, focus handled on the confirm affordance,
+   400px width. Then the live walkthrough in the Demo line below, and the
+   roadmap/CLAUDE.md updates at close.
+
+#### Flagged before starting
+
+- **The list row cannot show "cancelled by an administrator".**
+  `cancelledByUserId` is on the detail response only, which is correct — a page
+  of twenty rows should not carry columns null on all of them — but it means
+  the list shows *Cancelled* and the reason lives one click deeper. Accepted
+  rather than discovered at review.
+- **This app has no modal primitive.** The cancel confirmation is planned as an
+  inline expanding panel rather than a dialog: a focus-trapped modal is a real
+  component with real accessibility obligations, and nothing else in Phase 4
+  needs one. Revisit if the design asks for a true dialog.
+- **No new numbered decision docs are expected**, matching Phases 1–3: the
+  calls above live here, beside the step they govern, unless one starts being
+  cited from outside WP-7.
 
 **Demo:** cancel a one-off booking and confirm the slot frees in Phase 2's
 availability view; cancel one occurrence of a series and confirm the rest

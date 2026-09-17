@@ -80,9 +80,20 @@ const REFUSAL_LABELS: Record<string, string> = {
   ResourceArchived: 'Resource archived',
 };
 
-export function occurrenceReasonLabel(occurrence: RecurrenceOccurrenceReport): string {
+// **`Created` does not mean confirmed.** `CreateRecurrenceSeriesCommandRequestHandler`
+// creates each occurrence with `resource.RequiresApproval ? Pending :
+// Confirmed`, and `dbo.CreateBooking` can downgrade a requested Confirmed to
+// Pending under its own lock besides. A Pending booking holds nothing yet
+// (FR-7.1) — which the one-off panel already says plainly ("not held for you
+// yet") and this used to contradict one screen over by calling every created
+// occurrence "Booked". The report itself carries no status, so the resource's
+// own `requiresApproval` is what decides the word.
+export function occurrenceReasonLabel(
+  occurrence: RecurrenceOccurrenceReport,
+  requiresApproval = false,
+): string {
   if (occurrence.status === 'Created') {
-    return 'Booked';
+    return requiresApproval ? 'Pending approval' : 'Booked';
   }
 
   if (occurrence.status === 'SkippedSpringForwardGap') {
@@ -93,11 +104,13 @@ export function occurrenceReasonLabel(occurrence: RecurrenceOccurrenceReport): s
 }
 
 // "3 booked, 1 skipped, 2 refused" — the summary FR-5.4 asks for, above the
-// per-date list rather than instead of it.
-export function summaryLine(summary: SeriesSummary): string {
+// per-date list rather than instead of it. On an approval-gated resource the
+// created occurrences are Pending, so they are "requested" rather than
+// "booked" — same reasoning as `occurrenceReasonLabel`'s.
+export function summaryLine(summary: SeriesSummary, requiresApproval = false): string {
   const parts: string[] = [];
   if (summary.created > 0) {
-    parts.push(`${summary.created} booked`);
+    parts.push(`${summary.created} ${requiresApproval ? 'requested' : 'booked'}`);
   }
   if (summary.skipped > 0) {
     parts.push(`${summary.skipped} skipped`);

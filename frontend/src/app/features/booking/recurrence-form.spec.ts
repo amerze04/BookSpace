@@ -1,12 +1,16 @@
 import {
   MAX_RECURRENCE_SPAN_YEARS,
+  MAX_START_DATE,
   RecurrenceFormValue,
+  ResourceSchedule,
   buildRecurrenceRequest,
   defaultRecurrenceFor,
   impliedEndDate,
   isOccurrenceCountWithinMaxSpan,
+  isValidLocalDate,
   isWithinMaxSpan,
   recurrenceFromSelection,
+  recurrenceUnavailableReason,
   validateRecurrenceForm,
 } from './recurrence-form';
 
@@ -249,49 +253,307 @@ describe('isWithinMaxSpan / isOccurrenceCountWithinMaxSpan', () => {
   });
 });
 
+// Ordinary things a member does to a form, none of which may reach `Date`
+// arithmetic: `addDays('')` and `addDays(d, 7e18)` both throw `RangeError:
+// Invalid time value` rather than returning something odd, and this function
+// runs inside a `computed` the template reads on every keystroke. Every case
+// below threw before the 2026-09-17 pass; the assertion that matters as much
+// as the message is that none of them throws now.
+describe('validateRecurrenceForm on input the form cannot stop', () => {
+  function errorsFor(overrides: Partial<RecurrenceFormValue>) {
+    return validateRecurrenceForm(form(overrides), NO_LIMITS);
+  }
+
+  it('reports a cleared start date instead of throwing', () => {
+    expect(() => errorsFor({ startDate: '' })).not.toThrow();
+    expect(errorsFor({ startDate: '' }).startDate).toContain('Choose the date');
+  });
+
+  // Weekly and Daily step in days, Monthly in months — three different code
+  // paths into the same helpers.
+  it.each(['Daily', 'Weekly', 'Monthly'] as const)(
+    'survives a cleared start date on a %s series',
+    (frequency) => {
+      expect(() => errorsFor({ frequency, startDate: '' })).not.toThrow();
+    },
+  );
+
+  it('reports a cleared start date on the end-date arm too', () => {
+    // '2026-10-01' < '' is false, so before this pass an empty start date left
+    // *no* error at all on this arm and the form submitted a request the
+    // server could only answer with a 400.
+    const errors = errorsFor({ startDate: '', endCondition: 'endDate', endDate: '2026-10-01' });
+
+    expect(errors.startDate).toBeDefined();
+  });
+
+  it.each(['2026-02-31', '2026-13-01', '26-09-24', 'not-a-date'])(
+    'refuses the malformed start date %s',
+    (startDate) => {
+      expect(() => errorsFor({ startDate })).not.toThrow();
+      expect(errorsFor({ startDate }).startDate).toContain('valid start date');
+    },
+  );
+
+  it('refuses a malformed end date', () => {
+    expect(errorsFor({ endCondition: 'endDate', endDate: '2026-02-30' }).endDate).toContain('valid end date');
+  });
+
+  // The server's own MaxStartDate, restated: past it *its* span checks are
+  // what overflow, so it refuses the start date outright.
+  it('refuses a start date past what the server will accept', () => {
+    expect(errorsFor({ startDate: '9999-01-01' }).startDate).toContain(MAX_START_DATE);
+  });
+
+  // 1e21 passes Number.isInteger — the check this used to make — and its
+  // product with a count is then multiplied into a Date.
+  it.each([1e21, Number.MAX_SAFE_INTEGER + 2, Infinity, NaN])(
+    'refuses the interval %s without computing anything from it',
+    (intervalValue) => {
+      expect(() => errorsFor({ intervalValue })).not.toThrow();
+      expect(errorsFor({ intervalValue }).interval).toBeDefined();
+    },
+  );
+
+  it.each([1e21, Number.MAX_SAFE_INTEGER + 2, Infinity, NaN])(
+    'refuses the occurrence count %s without computing anything from it',
+    (occurrenceCount) => {
+      expect(() => errorsFor({ occurrenceCount })).not.toThrow();
+      expect(errorsFor({ occurrenceCount }).occurrenceCount).toBeDefined();
+    },
+  );
+
+  // Each operand is a safe integer; the product is not, which is the case
+  // `Number.isInteger` on the operands alone would wave through.
+  it('refuses an interval and count whose product is not a safe integer', () => {
+    const errors = errorsFor({ intervalValue: 1e9, occurrenceCount: 1e9 });
+
+    expect(errors.occurrenceCount).toBeDefined();
+  });
+
+  it('refuses a large-but-safe pair by the span it implies, not by either field', () => {
+    expect(errorsFor({ intervalValue: 1_000_000, occurrenceCount: 2 }).occurrenceCount).toBeDefined();
+    // ...while the legal large-interval case item 12 fixed server-side still
+    // passes, which is the whole reason the bound is on the implied span.
+    expect(errorsFor({ frequency: 'Daily', intervalValue: 400, occurrenceCount: 2 }).occurrenceCount).toBeUndefined();
+  });
+
+  it('never throws for any combination of a cleared date and an extreme number', () => {
+    for (const startDate of ['', '2026-09-24', 'nonsense']) {
+      for (const intervalValue of [NaN, 1, 1e21]) {
+        for (const occurrenceCount of [NaN, 4, Number.MAX_SAFE_INTEGER]) {
+          for (const endCondition of ['endDate', 'occurrenceCount'] as const) {
+            expect(() =>
+              errorsFor({ startDate, intervalValue, occurrenceCount, endCondition, endDate: '2027-01-01' }),
+            ).not.toThrow();
+          }
+        }
+      }
+    }
+  });
+});
+
+describe('isValidLocalDate', () => {
+  it('accepts a real calendar date', () => {
+    expect(isValidLocalDate('2026-09-24')).toBe(true);
+    expect(isValidLocalDate('2028-02-29')).toBe(true);
+  });
+
+  // `new Date('2026-02-31')` rolls into March and `new Date('26-09-24')` reads
+  // the year as 1926 — which is why this is digits, not a Date round trip.
+  it.each(['', '2026-02-31', '2026-09-31', '2027-02-29', '26-09-24', '2026-9-24', '0000-01-01'])(
+    'refuses %s',
+    (value) => {
+      expect(isValidLocalDate(value)).toBe(false);
+    },
+  );
+});
+
 // The form a member gets when they come straight to the recurring half
 // without picking a slot — the entry point that keeps the availability screen
 // from being a toll booth.
 describe('defaultRecurrenceFor', () => {
+  function at(date: string, hours: number, minutes = 0) {
+    return { date, minutesOfDay: hours * 60 + minutes };
+  }
+
   it('starts on the first upcoming day the resource is actually open', () => {
     // 2026-09-19 is a Saturday; the fixture opens Monday-Friday.
-    const value = defaultRecurrenceFor({ ...NO_LIMITS, minDurationMinutes: 30 }, '2026-09-19');
+    const value = defaultRecurrenceFor({ ...NO_LIMITS, minDurationMinutes: 30 }, at('2026-09-19', 8));
 
-    expect(value.startDate).toBe('2026-09-21');
-    expect(value.localStartTime).toBe('09:00');
-    expect(value.localEndTime).toBe('09:30');
+    expect(value).toMatchObject({
+      startDate: '2026-09-21',
+      localStartTime: '09:00',
+      localEndTime: '09:30',
+    });
   });
 
-  it('starts today when today is already open', () => {
-    expect(defaultRecurrenceFor(NO_LIMITS, '2026-09-24').startDate).toBe('2026-09-24');
+  it('starts today when today is open and has not opened yet', () => {
+    expect(defaultRecurrenceFor(NO_LIMITS, at('2026-09-24', 7))?.startDate).toBe('2026-09-24');
   });
 
   it('falls back to an hour when the resource sets no minimum', () => {
-    expect(defaultRecurrenceFor(NO_LIMITS, '2026-09-24').localEndTime).toBe('10:00');
+    expect(defaultRecurrenceFor(NO_LIMITS, at('2026-09-24', 7))?.localEndTime).toBe('10:00');
   });
 
-  it('never runs past the day\'s own closing time', () => {
+  // The bug: the resource's local *date* was all this took, so at 15:30 in the
+  // resource's own zone it proposed this morning's 09:00-10:00 — a first
+  // occurrence already in the past, refused with BookingInThePast after a
+  // round trip.
+  it('starts from the current time, not the opening time, once the day is under way', () => {
+    const value = defaultRecurrenceFor(NO_LIMITS, at('2026-09-24', 15, 30));
+
+    expect(value).toMatchObject({
+      startDate: '2026-09-24',
+      localStartTime: '15:30',
+      localEndTime: '16:30',
+    });
+  });
+
+  it('rounds the start up to the next quarter hour rather than to the minute the page loaded', () => {
+    expect(defaultRecurrenceFor(NO_LIMITS, at('2026-09-24', 15, 37))?.localStartTime).toBe('15:45');
+  });
+
+  // Today's window has closed; the fixture opens Mon-Fri, so tomorrow does.
+  it('moves to the next open day when today\'s hours have passed', () => {
+    const value = defaultRecurrenceFor(NO_LIMITS, at('2026-09-24', 18));
+
+    expect(value?.startDate).toBe('2026-09-25');
+    expect(value?.localStartTime).toBe('09:00');
+  });
+
+  // Eight days searched, not seven: a weekday only comes round again on the
+  // eighth, and this resource has exactly one open weekday.
+  it('reaches the same weekday next week when that is the only open day', () => {
     const value = defaultRecurrenceFor(
       {
-        minDurationMinutes: 600,
-        maxDurationMinutes: null,
-        availabilityWindows: [{ weekday: 'Thursday', opensAt: '09:00:00', closesAt: '13:00:00' }],
+        ...NO_LIMITS,
+        availabilityWindows: [{ weekday: 'Thursday', opensAt: '09:00:00', closesAt: '12:00:00' }],
       },
-      '2026-09-24',
+      at('2026-09-24', 13),
     );
 
-    expect(value.localEndTime).toBe('13:00');
+    expect(value?.startDate).toBe('2026-10-01');
   });
 
-  // Nothing to search for, and the form's own guards say the rest.
-  it('falls back to the given day when the resource has no windows', () => {
-    const value = defaultRecurrenceFor({ ...NO_LIMITS, availabilityWindows: [] }, '2026-09-19');
-    expect(value.startDate).toBe('2026-09-19');
+  // The fallback hour does not fit in the quarter of an hour that is left, so
+  // it shrinks to the quarter rather than proposing a series that runs past
+  // closing on every occurrence.
+  it('shortens to what is left of the window rather than running past closing', () => {
+    const value = defaultRecurrenceFor(NO_LIMITS, at('2026-09-24', 16, 45));
+
+    expect(value).toMatchObject({ localStartTime: '16:45', localEndTime: '17:00' });
   });
 
-  it('opens on a valid form', () => {
-    const schedule = { ...NO_LIMITS, minDurationMinutes: 30 };
-    expect(validateRecurrenceForm(defaultRecurrenceFor(schedule, '2026-09-19'), schedule)).toEqual({});
+  // The 60-minute fallback is a preference, not a rule the resource agreed to.
+  it('honours a maximum shorter than the fallback hour', () => {
+    const value = defaultRecurrenceFor({ ...NO_LIMITS, maxDurationMinutes: 30 }, at('2026-09-24', 7));
+
+    expect(value?.localEndTime).toBe('09:30');
+  });
+
+  it('honours a minimum longer than the fallback hour', () => {
+    const value = defaultRecurrenceFor({ ...NO_LIMITS, minDurationMinutes: 120 }, at('2026-09-24', 7));
+
+    expect(value?.localEndTime).toBe('11:00');
+  });
+
+  // Nothing valid to propose. The caller shows `recurrenceUnavailableReason`'s
+  // own explanation rather than a form seeded with something that fails its
+  // own guards.
+  it('produces nothing when the resource has no windows', () => {
+    expect(defaultRecurrenceFor({ ...NO_LIMITS, availabilityWindows: [] }, at('2026-09-19', 8))).toBeNull();
+  });
+
+  it('produces nothing when no window is long enough for the minimum', () => {
+    expect(defaultRecurrenceFor({ ...NO_LIMITS, minDurationMinutes: 600 }, at('2026-09-21', 8))).toBeNull();
+  });
+
+  it('produces nothing when the minimum is longer than the maximum', () => {
+    expect(
+      defaultRecurrenceFor(
+        { ...NO_LIMITS, minDurationMinutes: 120, maxDurationMinutes: 60 },
+        at('2026-09-21', 8),
+      ),
+    ).toBeNull();
+  });
+
+  // The property that matters more than any single case above: whatever it
+  // proposes has to pass the guards the form is about to apply to it.
+  it('never opens on a form that fails its own validation', () => {
+    const schedules: ResourceSchedule[] = [
+      NO_LIMITS,
+      { ...NO_LIMITS, minDurationMinutes: 30 },
+      { ...NO_LIMITS, minDurationMinutes: 45, maxDurationMinutes: 90 },
+      { ...NO_LIMITS, maxDurationMinutes: 20 },
+      { ...NO_LIMITS, availabilityWindows: [{ weekday: 'Thursday', opensAt: '09:00:00', closesAt: '10:00:00' }] },
+    ];
+
+    for (const schedule of schedules) {
+      for (const minutesOfDay of [0, 8 * 60, 9 * 60 + 40, 16 * 60 + 50, 23 * 60 + 59]) {
+        const value = defaultRecurrenceFor(schedule, { date: '2026-09-24', minutesOfDay });
+        if (value !== null) {
+          expect(validateRecurrenceForm(value, schedule)).toEqual({});
+        }
+      }
+    }
+  });
+
+  // The two answers have to agree: a default of null must always come with a
+  // reason the screen can show, and a reason of null must always come with a
+  // default.
+  it('produces a default exactly when no unavailable reason applies', () => {
+    const schedules: ResourceSchedule[] = [
+      NO_LIMITS,
+      { ...NO_LIMITS, availabilityWindows: [] },
+      { ...NO_LIMITS, minDurationMinutes: 600 },
+      { ...NO_LIMITS, minDurationMinutes: 120, maxDurationMinutes: 60 },
+      { ...NO_LIMITS, availabilityWindows: [{ weekday: 'Thursday', opensAt: '09:00:00', closesAt: '12:00:00' }] },
+    ];
+
+    for (const schedule of schedules) {
+      for (const minutesOfDay of [0, 13 * 60, 23 * 60]) {
+        const hasDefault = defaultRecurrenceFor(schedule, { date: '2026-09-24', minutesOfDay }) !== null;
+        expect(hasDefault).toBe(recurrenceUnavailableReason(schedule) === null);
+      }
+    }
+  });
+});
+
+// Finding 6: an active resource with no published hours produced a form that
+// looked submittable and whose every occurrence was guaranteed to be refused
+// with OutsideAvailability — because `outsideOpeningHours` deliberately says
+// nothing when there are no windows to judge against.
+describe('recurrenceUnavailableReason', () => {
+  it('says nothing for a resource that can be booked', () => {
+    expect(recurrenceUnavailableReason(NO_LIMITS)).toBeNull();
+    expect(recurrenceUnavailableReason({ ...NO_LIMITS, minDurationMinutes: 480 })).toBeNull();
+  });
+
+  it('names an unpublished schedule', () => {
+    expect(recurrenceUnavailableReason({ ...NO_LIMITS, availabilityWindows: [] })).toBe('noOpeningHours');
+  });
+
+  it('names duration limits that contradict each other', () => {
+    expect(
+      recurrenceUnavailableReason({ ...NO_LIMITS, minDurationMinutes: 120, maxDurationMinutes: 60 }),
+    ).toBe('durationLimitsConflict');
+  });
+
+  it('names hours too short for the shortest booking allowed', () => {
+    expect(recurrenceUnavailableReason({ ...NO_LIMITS, minDurationMinutes: 481 })).toBe('noBookableWindow');
+  });
+
+  // The distinction the copy must not blur: "no hours configured" is a
+  // configuration fact, "nothing free" is an answer only the server has.
+  // Nothing here consults bookings or blackouts, and nothing should.
+  it('invents no minimum when the resource configures none', () => {
+    expect(
+      recurrenceUnavailableReason({
+        ...NO_LIMITS,
+        availabilityWindows: [{ weekday: 'Monday', opensAt: '09:00:00', closesAt: '09:05:00' }],
+      }),
+    ).toBeNull();
   });
 });
 

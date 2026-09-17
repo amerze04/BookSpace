@@ -665,6 +665,31 @@ the suite (a `<select [value]>` binding showing the wrong time; a hand-edited
 `docs/roadmap/wp7.md`: for anything the user sees, assert against the
 rendered DOM and prove the regression test fails against the old code.
 
+**Recurring-booking hardening pass, 2026-09-17** — not a new phase; seven
+findings reviewed against the code, six fixed, one answered with a decision.
+Full narrative in [`docs/roadmap/wp7.md`](docs/roadmap/wp7.md). What is true
+now, in case it matters before touching this feature area:
+
+- `validateRecurrenceForm` validates structural primitives **before** any
+  derived date arithmetic, and uses `Number.isSafeInteger`. Both are
+  load-bearing: `local-date.ts` is `Date` arithmetic underneath and throws
+  `RangeError` on a cleared date box or an out-of-range count, from inside a
+  `computed` the template reads.
+- `POST /recurrence-rules` failures go through `recurrence-rejection.ts`, not
+  the one-off map — `booking-rejection.ts` now holds the shared machinery and
+  a `RejectionDialect` per endpoint. A recurrence failure never suggests
+  going back to availability: a series has no picked slot.
+- Every control feeding a submit is disabled while it is in flight, and the
+  series outcome panel renders from a snapshot of what was submitted.
+- A recurring "safe retry" is offered only while the form still builds
+  byte-identical bytes to the pending attempt. The idempotency key is
+  **deliberately not persisted** — same-page only, said so on screen.
+- Series wording follows `requiresApproval`: "Series submitted" / "Pending
+  approval" where every occurrence is created `Pending` (FR-7.1).
+- `recurrenceUnavailableReason` is an explicit state for a resource with no
+  bookable hours configured. It is **not** "fully booked" — that stays the
+  server's answer, reported per occurrence (FR-5.4).
+
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across
 booking concurrency, recurrence idempotency, the frontend auth stack, CI and

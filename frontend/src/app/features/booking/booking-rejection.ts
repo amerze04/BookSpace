@@ -22,7 +22,20 @@ import { isProblemDetails } from '../../core/http/problem-details';
 
 // Which control a message belongs against. Anything with no control to blame
 // is a top-of-form message instead.
-export type BookingFieldName = 'title' | 'quantity' | 'duration';
+//
+// The last five belong to the recurring half of the same screen (see
+// `recurrence-rejection.ts`): one union rather than two, because `title` and
+// `quantity` are shared controls and `BookingRejection` is one type either
+// endpoint's refusal arrives as.
+export type BookingFieldName =
+  | 'title'
+  | 'quantity'
+  | 'duration'
+  | 'startDate'
+  | 'interval'
+  | 'times'
+  | 'occurrenceCount'
+  | 'endDate';
 
 export interface BookingRejection {
   // Shown above the submit button. Null only when every message this rejection
@@ -50,10 +63,38 @@ export interface BookingRejection {
   resourceNotFound: boolean;
 }
 
-interface RejectionCopy {
+export interface RejectionCopy {
   message: string;
   field?: BookingFieldName;
   recheckAvailability?: boolean;
+}
+
+// Everything that differs between the two endpoints this screen writes to.
+// The *machinery* — the status-0/5xx unknown-outcome rules, ResourceNotFound,
+// the validation-error walk — is identical for both and lives once, below; the
+// vocabulary is not, and pretending otherwise is what finding 2 of this pass
+// was about: a series refused for `OccurrenceCount` was being told to "go back
+// to availability and pick a slot again", which is neither where the problem
+// is nor a screen that could fix it.
+export interface RejectionDialect {
+  // Reason code -> message and placement.
+  copy: Record<string, RejectionCopy>;
+
+  // FluentValidation's C# property name -> the form control that holds it.
+  backendFields: Record<string, BookingFieldName>;
+
+  // What to say when a validation failure names a field this form has no
+  // control for, and whether re-checking availability is the way out of it.
+  unmappedField: { message: string; recheckAvailability: boolean };
+
+  // A refusal this client has no copy for. Still a refusal; saying so plainly
+  // beats inventing an explanation for a rule it does not know about.
+  genericMessage: string;
+
+  // A request that reached no server, or one whose outcome the server could
+  // not report. Both share the same honest answer: we do not know whether it
+  // exists.
+  unknownOutcomeMessage: string;
 }
 
 // Reason code -> message and placement. Wording follows the code's own
@@ -122,15 +163,26 @@ const INVALID_SELECTION_MESSAGE =
 
 const GENERIC_MESSAGE = 'This booking could not be created.';
 
-// A request that reached no server, or one whose outcome the server could not
-// report. Both share the same honest answer: we do not know whether the
-// booking exists.
 const UNKNOWN_OUTCOME_MESSAGE =
   'Your booking may have been created — we could not confirm it. Check My Bookings before trying again, so you do not book the same time twice.';
 
+const ONE_OFF_DIALECT: RejectionDialect = {
+  copy: REJECTION_COPY,
+  backendFields: BACKEND_FIELD_NAMES,
+  unmappedField: { message: INVALID_SELECTION_MESSAGE, recheckAvailability: true },
+  genericMessage: GENERIC_MESSAGE,
+  unknownOutcomeMessage: UNKNOWN_OUTCOME_MESSAGE,
+};
+
 export function describeBookingRejection(error: unknown): BookingRejection {
+  return describeRejection(error, ONE_OFF_DIALECT);
+}
+
+// The shared machinery. Exported for `recurrence-rejection.ts`, which supplies
+// its own dialect and nothing else.
+export function describeRejection(error: unknown, dialect: RejectionDialect): BookingRejection {
   if (!(error instanceof HttpErrorResponse)) {
-    return formOnly(GENERIC_MESSAGE);
+    return formOnly(dialect.genericMessage);
   }
 
   // **Checked before any reason-code branch**, exactly as `handleLoginError`
@@ -140,18 +192,18 @@ export function describeBookingRejection(error: unknown): BookingRejection {
   // would find nothing and fall through to a message that claims more than is
   // known.
   if (error.status === 0) {
-    return { ...formOnly(UNKNOWN_OUTCOME_MESSAGE), mayHaveBeenCreated: true };
+    return { ...formOnly(dialect.unknownOutcomeMessage), mayHaveBeenCreated: true };
   }
 
   // A 5xx *did* reach the server, so the booking may well have been committed
   // before whatever failed — same unknown outcome, same advice. This is why
   // there is no "try again" button anywhere on this path.
   if (error.status >= 500) {
-    return { ...formOnly(UNKNOWN_OUTCOME_MESSAGE), mayHaveBeenCreated: true };
+    return { ...formOnly(dialect.unknownOutcomeMessage), mayHaveBeenCreated: true };
   }
 
   if (!isProblemDetails(error.error)) {
-    return formOnly(GENERIC_MESSAGE);
+    return formOnly(dialect.genericMessage);
   }
 
   const problem = error.error;
@@ -161,14 +213,14 @@ export function describeBookingRejection(error: unknown): BookingRejection {
   }
 
   if (problem.errors) {
-    return fromValidationErrors(problem.errors);
+    return fromValidationErrors(problem.errors, dialect);
   }
 
-  const copy = REJECTION_COPY[problem.reasonCode];
+  const copy = dialect.copy[problem.reasonCode];
   if (!copy) {
     // An unrecognized code is still a refusal, and saying so plainly beats
     // inventing an explanation for a rule this client does not know about.
-    return formOnly(GENERIC_MESSAGE);
+    return formOnly(dialect.genericMessage);
   }
 
   if (copy.field) {
@@ -178,12 +230,15 @@ export function describeBookingRejection(error: unknown): BookingRejection {
   return { ...formOnly(copy.message), recheckAvailability: copy.recheckAvailability ?? false };
 }
 
-function fromValidationErrors(errors: Record<string, string[]>): BookingRejection {
+function fromValidationErrors(
+  errors: Record<string, string[]>,
+  dialect: RejectionDialect,
+): BookingRejection {
   const fieldMessages: Partial<Record<BookingFieldName, string>> = {};
   let hasUnmappedField = false;
 
   for (const [backendField, messages] of Object.entries(errors)) {
-    const field = BACKEND_FIELD_NAMES[backendField];
+    const field = dialect.backendFields[backendField];
     if (field && messages.length > 0) {
       fieldMessages[field] = messages[0];
     } else {
@@ -194,11 +249,12 @@ function fromValidationErrors(errors: Record<string, string[]>): BookingRejectio
   return {
     ...empty(),
     fieldMessages,
-    // A failure on a field this form doesn't render (the instants, the
-    // resource id) can only have come from the URL, so the way out is to pick
-    // a slot again rather than to edit anything here.
-    formMessage: hasUnmappedField ? INVALID_SELECTION_MESSAGE : null,
-    recheckAvailability: hasUnmappedField,
+    // A failure on a field this form doesn't render (the one-off path's
+    // instants, either path's resource id) is not something to point at a
+    // control — what the way out is differs per endpoint, which is why the
+    // dialect owns both halves of it.
+    formMessage: hasUnmappedField ? dialect.unmappedField.message : null,
+    recheckAvailability: hasUnmappedField && dialect.unmappedField.recheckAvailability,
   };
 }
 

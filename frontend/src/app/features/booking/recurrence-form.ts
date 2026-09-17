@@ -43,11 +43,69 @@ export interface RecurrenceFormValue {
 }
 
 export interface RecurrenceFormErrors {
+  startDate?: string;
   interval?: string;
   times?: string;
   duration?: string;
   endDate?: string;
   occurrenceCount?: string;
+}
+
+// ---- Primitive guards, and why they come before anything derived ----
+//
+// **Every date helper in `local-date.ts` is a calendar calculator over a
+// `Date`, and a `Date` that went invalid throws only at the very end** — when
+// `toISOString()` is finally called. `addDays('', 7)` and
+// `addDays('2026-09-24', 7e18)` both raise `RangeError: Invalid time value`
+// rather than returning nonsense, which means a *derived* calculation over an
+// unvalidated primitive is not a wrong answer, it is a crash in a `computed`
+// the template reads. Two ordinary things a member can do reach it: clearing
+// the Start date box (an `<input type="date">` hands back `''`), and typing a
+// long number into Repeat every or After N occurrences (the product
+// `intervalValue * (occurrenceCount - 1)` is what gets multiplied out).
+//
+// So the order below is load-bearing, not stylistic: structural primitives
+// first, derived date arithmetic only over primitives that already passed.
+// The two helpers here are what "already passed" means.
+
+// A calendar date, judged as digits rather than by handing it to `Date` —
+// which accepts "2026-02-31" and rolls it into March, and reads a two-digit
+// year as 19xx. The form only ever holds an `<input type="date">` value, so
+// anything else is a cleared box or a hand-edited one.
+const LOCAL_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+// `CreateRecurrenceSeriesCommandRequestValidator.MaxStartDate`
+// (`DateOnly.MaxValue.AddYears(-10)`), restated: past this the server's own
+// span checks would be the thing that overflows, so it refuses the start date
+// outright rather than letting them.
+export const MAX_START_DATE: LocalDateString = '9989-12-31';
+
+export function isValidLocalDate(value: string): boolean {
+  if (!LOCAL_DATE_PATTERN.test(value)) {
+    return false;
+  }
+
+  const [year, month, day] = value.split('-').map(Number);
+  if (year < 1 || month < 1 || month > 12 || day < 1) {
+    return false;
+  }
+
+  return day <= daysInMonth(year, month);
+}
+
+function daysInMonth(year: number, month: number): number {
+  const isLeap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  return [31, isLeap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+}
+
+// `Number.isSafeInteger`, not `Number.isInteger`: 1e21 *is* an integer by the
+// latter, and multiplying two of them past 2^53 gives a silently wrong product
+// that then reaches `Date` arithmetic. An empty number box reads as NaN
+// (`numberFrom` in the component), which fails this too — so a cleared box
+// says "must be a whole number of 1 or more" rather than being treated as a
+// zero the server would refuse.
+export function isPositiveWholeNumber(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 1;
 }
 
 // What the form needs to know about the resource to judge a series: its
@@ -75,52 +133,135 @@ const BASE_DEFAULTS: Omit<RecurrenceFormValue, 'startDate' | 'localStartTime' | 
 };
 
 const FALLBACK_DURATION_MINUTES = 60;
-const DAYS_SEARCHED_FOR_AN_OPEN_DAY = 7;
+
+// Eight, not seven: a weekday only recurs on the eighth day. Searching seven
+// would miss the resource that is open on exactly one weekday whose window has
+// *already closed today* — the one day that could seed a default is then the
+// day the search stops one short of.
+const DAYS_SEARCHED_FOR_AN_OPEN_SPAN = 8;
+
+// The step the availability grid already offers, reused here so a default
+// start time reads like a time somebody would pick ("15:45") rather than like
+// the instant the page happened to load ("15:37").
+const DEFAULT_START_STEP_MINUTES = 15;
+
+// The resource's own wall clock at the moment the form opens — **both halves
+// of it**. The date alone was what this used to take, and it is what made a
+// resource open 09:00-17:00 seed a 09:00-10:00 default at 15:30 in its own
+// zone: a series whose first occurrence is already in the past, refused
+// per-occurrence with `BookingInThePast` after a round trip.
+export interface ResourceLocalNow {
+  date: LocalDateString;
+  minutesOfDay: number;
+}
+
+// Why a recurring series cannot be set up against this resource *at all* —
+// a fact about its configuration, not about the values in the form.
+//
+// The distinction that matters (and the one this must not blur): none of these
+// mean "fully booked" or "blacked out". Those are answers only the server can
+// give, they change by the hour, and a series is expected to collect some of
+// them per occurrence (FR-5.4). These three are structural — no request built
+// from this form could ever produce a single bookable occurrence — which is
+// why they disable the submit instead of being reported against a control.
+export type RecurrenceUnavailableReason =
+  | 'noOpeningHours'
+  | 'durationLimitsConflict'
+  | 'noBookableWindow';
+
+export function recurrenceUnavailableReason(
+  schedule: ResourceSchedule,
+): RecurrenceUnavailableReason | null {
+  if (schedule.availabilityWindows.length === 0) {
+    return 'noOpeningHours';
+  }
+
+  const shortest = shortestLegalDuration(schedule);
+  const longest = schedule.maxDurationMinutes;
+  if (longest !== null && shortest > longest) {
+    return 'durationLimitsConflict';
+  }
+
+  const fits = WEEKDAYS.some((weekday) =>
+    openSpansForWeekday(weekday, schedule.availabilityWindows).some(
+      (span) => span.endMinutes - span.startMinutes >= shortest,
+    ),
+  );
+
+  return fits ? null : 'noBookableWindow';
+}
+
+// `null` means "no minimum configured", never a default — the same false-
+// minimum trap the 2026-09-16 pass fixed in `effectiveMinDuration`. One minute
+// is the shortest interval the database itself admits (`CK_Bookings_Interval`
+// wants a positive one), so it stands for "any positive length will do"
+// without inventing a rule the resource never stated.
+function shortestLegalDuration(schedule: ResourceSchedule): number {
+  return schedule.minDurationMinutes ?? 1;
+}
 
 // The form a member gets when they arrive to book a series **without** picking
 // a slot first — the entry point that keeps the availability screen from being
 // a toll booth on the way to a recurring booking.
 //
-// Seeded from the resource's own schedule rather than from nothing: the first
-// upcoming date whose weekday the resource is actually open on, starting at
-// that day's opening time, for the shortest length the resource allows. So the
-// form opens on something plausible and valid instead of on a blank that is
-// guaranteed to fail its own guards.
+// Seeded from the resource's own schedule *and its own clock*: the first
+// opening span from now on that can actually hold a booking of a length this
+// resource allows. `null` when no such span exists inside the next week, which
+// is exactly the set of cases `recurrenceUnavailableReason` names — the caller
+// shows that reason rather than a form seeded with something that fails its
+// own guards.
 export function defaultRecurrenceFor(
   schedule: ResourceSchedule,
-  todayLocal: LocalDateString,
-): RecurrenceFormValue {
-  const startDate = firstOpenDateFrom(todayLocal, schedule.availabilityWindows);
-  const openSpans = openSpansForWeekday(weekdayOf(startDate), schedule.availabilityWindows);
-  const opensAt = openSpans[0]?.startMinutes ?? 9 * 60;
-  const closesAt = openSpans[0]?.endMinutes ?? 17 * 60;
+  nowLocal: ResourceLocalNow,
+): RecurrenceFormValue | null {
+  const shortest = shortestLegalDuration(schedule);
+  const longest = schedule.maxDurationMinutes;
+  if (longest !== null && shortest > longest) {
+    return null;
+  }
 
-  const duration = schedule.minDurationMinutes ?? FALLBACK_DURATION_MINUTES;
-  const endMinutes = Math.min(opensAt + duration, closesAt);
+  // What to ask for when nothing forces a length: an hour, unless the resource
+  // allows less than that (honoured, rather than proposing a duration its own
+  // maximum refuses) or requires more.
+  let preferred = schedule.minDurationMinutes ?? FALLBACK_DURATION_MINUTES;
+  if (longest !== null && preferred > longest) {
+    preferred = longest;
+  }
 
-  return {
-    ...BASE_DEFAULTS,
-    startDate,
-    localStartTime: formatMinutesOfDay(opensAt),
-    localEndTime: formatMinutesOfDay(endMinutes),
-    endDate: addDays(startDate, 28),
-  };
-}
+  for (let offset = 0; offset < DAYS_SEARCHED_FOR_AN_OPEN_SPAN; offset++) {
+    const date = addDays(nowLocal.date, offset);
 
-// Falls back to today when the resource has no windows at all — there is no
-// open day to find, and the form's own guards then say so rather than this
-// silently searching forever.
-function firstOpenDateFrom(
-  todayLocal: LocalDateString,
-  windows: readonly OpeningWindow[],
-): LocalDateString {
-  for (let offset = 0; offset < DAYS_SEARCHED_FOR_AN_OPEN_DAY; offset++) {
-    const candidate = addDays(todayLocal, offset);
-    if (openSpansForWeekday(weekdayOf(candidate), windows).length > 0) {
-      return candidate;
+    // Only today is bounded below by the clock; every later day starts at its
+    // own opening time.
+    const earliest = offset === 0 ? roundUpToStep(nowLocal.minutesOfDay) : 0;
+
+    for (const span of openSpansForWeekday(weekdayOf(date), schedule.availabilityWindows)) {
+      const startMinutes = Math.max(span.startMinutes, earliest);
+      const remaining = span.endMinutes - startMinutes;
+      if (remaining < shortest) {
+        continue;
+      }
+
+      // Shortened to what is actually left of the span rather than allowed to
+      // run past closing — and never below the minimum, which the check above
+      // already guaranteed there is room for.
+      const duration = Math.min(preferred, remaining);
+
+      return {
+        ...BASE_DEFAULTS,
+        startDate: date,
+        localStartTime: formatMinutesOfDay(startMinutes),
+        localEndTime: formatMinutesOfDay(startMinutes + duration),
+        endDate: addDays(date, 28),
+      };
     }
   }
-  return todayLocal;
+
+  return null;
+}
+
+function roundUpToStep(minutes: number): number {
+  return Math.ceil(minutes / DEFAULT_START_STEP_MINUTES) * DEFAULT_START_STEP_MINUTES;
 }
 
 // The same defaults, seeded from a slot the member *did* pick on the
@@ -148,9 +289,30 @@ export function validateRecurrenceForm(
   const limits = schedule;
   const errors: RecurrenceFormErrors = {};
 
+  // ---- Structural primitives first ----
+  //
+  // Nothing below this block may feed a date helper a value these two checks
+  // have not already accepted: see the header on `isValidLocalDate` for what
+  // happens when one does.
+
+  const startDateIsUsable = isValidLocalDate(value.startDate);
+  if (!startDateIsUsable) {
+    errors.startDate = value.startDate
+      ? 'Enter a valid start date (YYYY-MM-DD).'
+      : 'Choose the date the series starts on.';
+  } else if (value.startDate > MAX_START_DATE) {
+    // `CreateRecurrenceSeriesCommandRequestValidator`'s own MaxStartDate,
+    // restated — past it the server's span checks are what overflow.
+    errors.startDate = `The start date must be on or before ${MAX_START_DATE}.`;
+  }
+
   // CK_RecurrenceRules_Interval, restated: the validator refuses anything but
-  // a positive value, and the domain constructor guards it again.
-  if (!Number.isInteger(value.intervalValue) || value.intervalValue < 1) {
+  // a positive value, and the domain constructor guards it again. Bounded
+  // above only by what the two-year span check below can safely compute with,
+  // exactly as the server bounds it — item 12 of the 2026-09-15 pass removed
+  // the per-field proxy there and this must not reintroduce one.
+  const intervalIsUsable = isPositiveWholeNumber(value.intervalValue);
+  if (!intervalIsUsable) {
     errors.interval = 'Repeat every must be a whole number of 1 or more.';
   }
 
@@ -169,7 +331,11 @@ export function validateRecurrenceForm(
       errors.duration = `This resource allows bookings of at most ${limits.maxDurationMinutes} minutes.`;
     }
 
-    const closed = outsideOpeningHours(value, schedule.availabilityWindows);
+    // Only asked once the start date is a real date: the weekly arm reads its
+    // weekday off it.
+    const closed = startDateIsUsable
+      ? outsideOpeningHours(value, schedule.availabilityWindows)
+      : null;
     if (closed) {
       errors.times = closed;
     }
@@ -178,15 +344,24 @@ export function validateRecurrenceForm(
   if (value.endCondition === 'endDate') {
     if (!value.endDate) {
       errors.endDate = 'Choose the date the series ends on.';
-    } else if (value.endDate < value.startDate) {
-      errors.endDate = 'The end date must not be before the start date.';
-    } else if (!isWithinMaxSpan(value.startDate, value.endDate)) {
-      errors.endDate = `A series can run for at most ${MAX_RECURRENCE_SPAN_YEARS} years.`;
+    } else if (!isValidLocalDate(value.endDate)) {
+      errors.endDate = 'Enter a valid end date (YYYY-MM-DD).';
+    } else if (startDateIsUsable) {
+      // Compared against the start date only once that is itself a date —
+      // otherwise `'2026-10-01' < ''` is false and a cleared start date would
+      // pass this arm with no error at all, leaving a request the server can
+      // only answer with a 400.
+      if (value.endDate < value.startDate) {
+        errors.endDate = 'The end date must not be before the start date.';
+      } else if (!isWithinMaxSpan(value.startDate, value.endDate)) {
+        errors.endDate = `A series can run for at most ${MAX_RECURRENCE_SPAN_YEARS} years.`;
+      }
     }
-  } else if (!Number.isInteger(value.occurrenceCount) || value.occurrenceCount < 1) {
+  } else if (!isPositiveWholeNumber(value.occurrenceCount)) {
     errors.occurrenceCount = 'Number of occurrences must be a whole number of 1 or more.';
   } else if (
-    value.intervalValue >= 1 &&
+    intervalIsUsable &&
+    startDateIsUsable &&
     !isOccurrenceCountWithinMaxSpan(value.frequency, value.intervalValue, value.startDate, value.occurrenceCount)
   ) {
     // The bug item 12 of the 2026-09-15 hardening pass fixed server-side was
@@ -262,10 +437,23 @@ function fitsInsideAnySpan(span: MinuteSpan, openSpans: readonly MinuteSpan[]): 
   );
 }
 
-// `IsWithinMaxSpan`, restated.
+// `IsWithinMaxSpan`, restated — including its own refusal to compute a date it
+// cannot represent. The server answers "no" for a start date within two years
+// of `DateOnly.MaxValue` rather than letting `AddYears` throw; this answers
+// "no" for any start date it was not given, for the same reason.
 export function isWithinMaxSpan(startDate: LocalDateString, endDate: LocalDateString): boolean {
+  if (!isValidLocalDate(startDate) || !isValidLocalDate(endDate) || startDate > MAX_START_DATE) {
+    return false;
+  }
   return endDate <= addYears(startDate, MAX_RECURRENCE_SPAN_YEARS);
 }
+
+// The day count past which the implied span is refused without computing it —
+// `IsOccurrenceCountWithinMaxSpan`'s own 10,000-day guard, and for the same
+// reason: it is what keeps a large interval/count pair from ever reaching
+// date arithmetic. Deliberately far wider than two years, so it never decides
+// a case the exact comparison below could have decided.
+const MAX_IMPLIED_DAYS = 10_000;
 
 // `IsOccurrenceCountWithinMaxSpan`, restated — the last occurrence is
 // `intervalValue * (occurrenceCount - 1)` steps after the start, and a step is
@@ -277,11 +465,51 @@ export function isOccurrenceCountWithinMaxSpan(
   startDate: LocalDateString,
   occurrenceCount: number,
 ): boolean {
+  if (!canComputeImpliedEndDate(frequency, intervalValue, startDate, occurrenceCount)) {
+    // Not computable *is* "past the cap" as far as this question goes: a pair
+    // the day guard refuses is orders of magnitude past two years, and one
+    // that is not a pair of numbers at all has its own error already.
+    return false;
+  }
+
   return impliedEndDate(frequency, intervalValue, startDate, occurrenceCount) <= addYears(startDate, MAX_RECURRENCE_SPAN_YEARS);
+}
+
+// Whether `impliedEndDate` can safely be asked at all — the guard that stands
+// between a number box and `Date` arithmetic, and the client's counterpart to
+// the server doing its own multiplication in `long` space before touching
+// `DateOnly`.
+//
+// `isSafeInteger` on the *product*, not just the operands: 1e15 and 1e15 are
+// each safe integers whose product is not, and an unsafe product is silently
+// wrong here rather than throwing the way C#'s `checked` would.
+export function canComputeImpliedEndDate(
+  frequency: RecurrenceFrequency,
+  intervalValue: number,
+  startDate: LocalDateString,
+  occurrenceCount: number,
+): boolean {
+  if (!isValidLocalDate(startDate) || startDate > MAX_START_DATE) {
+    return false;
+  }
+
+  if (!isPositiveWholeNumber(intervalValue) || !isPositiveWholeNumber(occurrenceCount)) {
+    return false;
+  }
+
+  const steps = intervalValue * (occurrenceCount - 1);
+  const impliedDays = frequency === 'Weekly' ? steps * 7 : steps;
+  return Number.isSafeInteger(impliedDays) && impliedDays >= 0 && impliedDays <= MAX_IMPLIED_DAYS;
 }
 
 // `RecurrenceRule.ComputeImpliedEndDate`, restated. Also what the summary line
 // shows a member, so the date they read is the date the rule actually implies.
+//
+// **Takes validated inputs only** — a real start date, a safe-integer interval
+// and count. It is plain `Date` arithmetic underneath, which throws on
+// anything else rather than returning a wrong answer, so every caller checks
+// first: `isOccurrenceCountWithinMaxSpan` above, and the component's own
+// summary label.
 export function impliedEndDate(
   frequency: RecurrenceFrequency,
   intervalValue: number,

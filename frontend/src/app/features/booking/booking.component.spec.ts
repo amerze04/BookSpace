@@ -72,10 +72,34 @@ type TestableBookingComponent = BookingComponent & {
   seriesOutcome: () => { recurrenceRuleId: string | null; occurrences: unknown[] } | null;
   seriesSummary: () => { created: number; skipped: number; refused: number; total: number } | null;
   seriesSummaryLine: () => string;
+  seriesOutcomeHeading: () => string;
   seriesCreatedNothing: () => boolean;
   canRetrySeries: () => boolean;
   editSeriesAgain(): void;
+  recurrenceUnavailable: () => string | null;
+  recurrenceUnavailableMessage: () => string | null;
+  recurrenceStartDateError: () => string | null;
+  recurrenceIntervalError: () => string | null;
+  recurrenceTimesError: () => string | null;
+  recurrenceDurationError: () => string | null;
+  recurrenceOccurrenceCountError: () => string | null;
+  recurrenceEndDateError: () => string | null;
+  submittedPatternLabel: () => string;
+  submittedTimesLabel: () => string;
 };
+
+// Open 09:00-17:00 Monday to Friday, like the seeded resources. Not an empty
+// list any more: since the 2026-09-17 pass a resource with *no* published
+// hours is an explicit "recurring bookings aren't available" state (a series
+// against it could only ever produce OutsideAvailability occurrences), so an
+// empty schedule is now a case to opt into rather than the default every
+// recurring test would silently inherit.
+const WEEKDAY_WINDOWS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'].map((weekday, index) => ({
+  id: `w${index + 1}`,
+  weekday: weekday as ResourceDetail['availabilityWindows'][number]['weekday'],
+  opensAt: '09:00:00',
+  closesAt: '17:00:00',
+}));
 
 function fakeDetail(overrides: Partial<ResourceDetail> = {}): ResourceDetail {
   return {
@@ -91,7 +115,7 @@ function fakeDetail(overrides: Partial<ResourceDetail> = {}): ResourceDetail {
     isArchived: false,
     createdAtUtc: '2026-08-21T00:00:00Z',
     updatedAtUtc: '2026-08-21T00:00:00Z',
-    availabilityWindows: [],
+    availabilityWindows: WEEKDAY_WINDOWS,
     approvers: [],
     ...overrides,
   };
@@ -983,7 +1007,9 @@ describe('BookingComponent', () => {
     });
 
     it('keeps the per-occurrence report from a 201', () => {
-      const { component } = readyToSubmit();
+      // Instant confirmation, so the summary reads "booked" — the approval
+      // wording has its own tests below.
+      const { component } = readyToSubmit({ requiresApproval: false });
       component.confirmBooking();
 
       httpMock.expectOne(`${API}/recurrence-rules`).flush(
@@ -1032,7 +1058,7 @@ describe('BookingComponent', () => {
     });
 
     it('renders both framings of the same payload in the DOM', () => {
-      const { fixture, component } = readyToSubmit();
+      const { fixture, component } = readyToSubmit({ requiresApproval: false });
       component.confirmBooking();
       httpMock.expectOne(`${API}/recurrence-rules`).flush(
         {
@@ -1059,18 +1085,54 @@ describe('BookingComponent', () => {
       expect(root.querySelector('fieldset.recurrence')).toBeNull();
     });
 
-    it('says every date needs approval on an approval-gated resource', () => {
-      const { fixture, component } = readyToSubmit({ requiresApproval: true });
-      component.confirmBooking();
-      httpMock
-        .expectOne(`${API}/recurrence-rules`)
-        .flush(
-          { recurrenceRuleId: 'rr1', occurrences: [occurrence('2026-09-24', 'Created')] },
+    // FR-7.1, one screen over from where the one-off panel already says it.
+    // Every occurrence of a series on an approval-gated resource is created
+    // `Pending` — `CreateRecurrenceSeriesCommandRequestHandler` picks the
+    // status from `resource.RequiresApproval` — so "Series booked" and
+    // "Booked" against each date claimed times that are not held for anyone.
+    describe('wording for an approval-gated resource', () => {
+      function submitOne(requiresApproval: boolean) {
+        const { fixture, component } = readyToSubmit({ requiresApproval });
+        component.confirmBooking();
+        httpMock.expectOne(`${API}/recurrence-rules`).flush(
+          {
+            recurrenceRuleId: 'rr1',
+            occurrences: [occurrence('2026-09-24', 'Created'), occurrence('2026-10-01', 'Created')],
+          },
           { status: 201, statusText: 'Created' },
         );
-      fixture.detectChanges();
+        fixture.detectChanges();
+        return { component, root: fixture.nativeElement as HTMLElement };
+      }
 
-      expect((fixture.nativeElement as HTMLElement).textContent).toContain('needs approval');
+      it('calls a series on an instant-confirmation resource booked', () => {
+        const { component, root } = submitOne(false);
+
+        expect(component.seriesOutcomeHeading()).toBe('Series booked');
+        expect(root.querySelector('h2:not(.summary-text h2)')?.textContent).toContain('Series booked');
+        expect(component.seriesSummaryLine()).toBe('2 booked');
+        expect(Array.from(root.querySelectorAll('.occurrence-reason')).map((n) => n.textContent?.trim())).toEqual([
+          'Booked',
+          'Booked',
+        ]);
+        expect(root.textContent).not.toContain('not held for you yet');
+      });
+
+      it('calls the same series submitted, and each date pending, when approval is required', () => {
+        const { component, root } = submitOne(true);
+
+        expect(component.seriesOutcomeHeading()).toBe('Series submitted');
+        expect(root.textContent).toContain('Series submitted');
+        expect(root.textContent).not.toContain('Series booked');
+        expect(component.seriesSummaryLine()).toBe('2 requested');
+        expect(Array.from(root.querySelectorAll('.occurrence-reason')).map((n) => n.textContent?.trim())).toEqual([
+          'Pending approval',
+          'Pending approval',
+        ]);
+        // The same sentence the one-off panel uses for a Pending booking.
+        expect(root.textContent).toContain('not held for you yet');
+        expect(root.textContent).toContain('needs approval');
+      });
     });
 
     // The all-refused panel tells the member to adjust the series, so it has
@@ -1187,6 +1249,76 @@ describe('BookingComponent', () => {
         second.flush({ recurrenceRuleId: 'rr1', occurrences: [] }, { status: 201, statusText: 'Created' });
       });
 
+      // The key's promise is per *body*: `createSeries` reuses a key only for
+      // a byte-identical request. So an edit after an unobservable outcome
+      // means the next submit mints a fresh key and could create a second
+      // series — while the screen was still saying "trying again is safe".
+      it('withdraws the safe retry once the form no longer matches the pending attempt', () => {
+        const { fixture, component } = readyToSubmit();
+
+        component.confirmBooking();
+        httpMock
+          .expectOne(`${API}/recurrence-rules`)
+          .error(new ProgressEvent('error'), { status: 0, statusText: 'Unknown Error' });
+        fixture.detectChanges();
+
+        expect(component.canRetrySeries()).toBe(true);
+        let root = fixture.nativeElement as HTMLElement;
+        expect(root.querySelector('.submit-error button')?.textContent).toContain('Try again');
+
+        component.setOccurrenceCount(inputEvent('9'));
+        fixture.detectChanges();
+
+        expect(component.canRetrySeries()).toBe(false);
+        root = fixture.nativeElement as HTMLElement;
+        expect(root.querySelector('.submit-error button')).toBeNull();
+        expect(root.querySelector('.submit-error')?.textContent).not.toContain('Trying again is safe');
+        // The honest answer instead: go and look.
+        expect(
+          Array.from(root.querySelectorAll('.submit-error a')).map((a) => a.getAttribute('href')),
+        ).toContain('/my-bookings');
+      });
+
+      // ...and putting it back the way it was restores the guarantee, since
+      // the body is once again the one the key was minted for.
+      it('restores the safe retry when the form is returned to the submitted values', () => {
+        const { component } = readyToSubmit();
+
+        component.confirmBooking();
+        const first = httpMock.expectOne(`${API}/recurrence-rules`);
+        const firstKey = keyOf(first.request);
+        first.error(new ProgressEvent('error'), { status: 0, statusText: 'Unknown Error' });
+
+        component.setOccurrenceCount(inputEvent('9'));
+        expect(component.canRetrySeries()).toBe(false);
+
+        component.setOccurrenceCount(inputEvent('4'));
+        expect(component.canRetrySeries()).toBe(true);
+
+        component.confirmBooking();
+        const retry = httpMock.expectOne(`${API}/recurrence-rules`);
+        expect(keyOf(retry.request)).toBe(firstKey);
+        retry.flush({ recurrenceRuleId: 'rr1', occurrences: [] }, { status: 201, statusText: 'Created' });
+      });
+
+      // The limitation this pass chose to state rather than engineer away:
+      // the key lives in this component, so a reload or a return visit starts
+      // a genuinely new attempt. The copy says so rather than implying a
+      // replay that would not happen.
+      it('says the guarantee is limited to this page', () => {
+        const { fixture, component } = readyToSubmit();
+
+        component.confirmBooking();
+        httpMock
+          .expectOne(`${API}/recurrence-rules`)
+          .error(new ProgressEvent('error'), { status: 0, statusText: 'Unknown Error' });
+        fixture.detectChanges();
+
+        const text = (fixture.nativeElement as HTMLElement).querySelector('.submit-error')?.textContent ?? '';
+        expect(text).toContain('while this page stays open');
+        expect(text).toContain('check My Bookings');
+      });
+
       it('offers a retry only for the recurring half', () => {
         const fixture = createFixture('r1');
         const component = fixture.componentInstance as TestableBookingComponent;
@@ -1201,6 +1333,355 @@ describe('BookingComponent', () => {
         // No key on POST /bookings, so no safe retry to offer (§7).
         expect(component.canRetrySeries()).toBe(false);
       });
+    });
+  });
+
+  // Finding 2 of the 2026-09-17 pass: a series' validation failures were
+  // being read through the one-off form's field map, which knows title,
+  // quantity and duration and calls everything else "go back to availability".
+  describe('a series refused by the server', () => {
+    function submitAndFail(status: number, body: object, detailOverrides: Partial<ResourceDetail> = {}) {
+      const fixture = createFixture('r1');
+      const component = fixture.componentInstance as TestableBookingComponent;
+      httpMock.expectOne(`${API}/resources/r1`).flush(fakeDetail({ timeZoneId: 'UTC', ...detailOverrides }));
+      component.setMode('recurring');
+
+      component.confirmBooking();
+      httpMock.expectOne(`${API}/recurrence-rules`).flush(body, { status, statusText: 'Error' });
+      fixture.detectChanges();
+
+      return { fixture, component, root: fixture.nativeElement as HTMLElement };
+    }
+
+    function validationBody(errors: Record<string, string[]>) {
+      return { title: 'Rejected', status: 400, reasonCode: 'ValidationFailed', correlationId: 'c1', errors };
+    }
+
+    it('puts an occurrence-count failure against that control, not at the top of the form', () => {
+      const { component, root } = submitAndFail(
+        400,
+        validationBody({ OccurrenceCount: ['OccurrenceCount must be greater than zero.'] }),
+      );
+
+      expect(component.recurrenceOccurrenceCountError()).toBe('OccurrenceCount must be greater than zero.');
+      expect(component.topOfFormMessage()).toBeNull();
+      expect(root.querySelector('fieldset.recurrence')?.textContent).toContain(
+        'OccurrenceCount must be greater than zero.',
+      );
+    });
+
+    it('puts a start-date failure against the start date', () => {
+      const { component, root } = submitAndFail(400, validationBody({ StartDate: ['StartDate is out of range.'] }));
+
+      expect(component.recurrenceStartDateError()).toBe('StartDate is out of range.');
+      expect(root.querySelector('fieldset.recurrence')?.textContent).toContain('StartDate is out of range.');
+    });
+
+    it('puts a local-time failure against the From/To pair', () => {
+      const { component } = submitAndFail(
+        400,
+        validationBody({ LocalEndTime: ['LocalEndTime must be after LocalStartTime.'] }),
+      );
+
+      expect(component.recurrenceTimesError()).toBe('LocalEndTime must be after LocalStartTime.');
+    });
+
+    // The duration refusal a series really can get — and which had nowhere on
+    // this half of the form to appear: `durationError` renders inside the
+    // one-off panel, which recurring mode hides entirely.
+    it('shows a server duration refusal on the recurring half, where the member can see it', () => {
+      const { component, root } = submitAndFail(422, {
+        title: 'Rejected',
+        status: 422,
+        reasonCode: 'BookingDurationOutOfRange',
+        correlationId: 'c1',
+      });
+
+      expect(component.recurrenceDurationError()).toContain('outside what the resource allows');
+      expect(root.querySelector('fieldset.recurrence')?.textContent).toContain('outside what the resource allows');
+    });
+
+    it('never tells the member to re-pick a slot the series does not have', () => {
+      const { component, root } = submitAndFail(400, validationBody({ IntervalValue: ['Must be positive.'] }));
+
+      expect(component.topOfFormRecheck()).toBe(false);
+      expect(
+        Array.from(root.querySelectorAll('.submit-error a')).map((a) => a.getAttribute('href')),
+      ).not.toContain('/resources/r1/availability');
+    });
+
+    // Precedence, and the deadlock avoided by clearing it: a server message
+    // wins over the client's own for the same control (as `titleError`
+    // already does), it blocks the submit, and editing that control hands the
+    // form back rather than leaving it permanently unsubmittable — a
+    // rejection is otherwise only cleared *by* the submit it is blocking.
+    it('lets the server message win, then clears it when the control is edited', () => {
+      const { component } = submitAndFail(400, validationBody({ IntervalValue: ['Server refused this interval.'] }));
+
+      expect(component.recurrenceIntervalError()).toBe('Server refused this interval.');
+      expect(component.recurrenceIsValid()).toBe(false);
+      expect(component.canSubmit()).toBe(false);
+
+      component.setIntervalValue(inputEvent('0'));
+      expect(component.recurrenceIntervalError()).toContain('whole number of 1 or more');
+
+      component.setIntervalValue(inputEvent('2'));
+      expect(component.recurrenceIntervalError()).toBeNull();
+      expect(component.canSubmit()).toBe(true);
+
+      component.confirmBooking();
+      httpMock
+        .expectOne(`${API}/recurrence-rules`)
+        .flush({ recurrenceRuleId: 'rr1', occurrences: [] }, { status: 201, statusText: 'Created' });
+    });
+
+    // An edit to the recurring group says nothing about whether the previous
+    // request committed, so the unknown-outcome warning is not swept away
+    // with the field messages.
+    it('keeps the unknown-outcome warning when a field is edited', () => {
+      const fixture = createFixture('r1');
+      const component = fixture.componentInstance as TestableBookingComponent;
+      httpMock.expectOne(`${API}/resources/r1`).flush(fakeDetail({ timeZoneId: 'UTC' }));
+      component.setMode('recurring');
+
+      component.confirmBooking();
+      httpMock
+        .expectOne(`${API}/recurrence-rules`)
+        .error(new ProgressEvent('error'), { status: 0, statusText: 'Unknown Error' });
+
+      component.setOccurrenceCount(inputEvent('5'));
+
+      expect(component.rejection()?.mayHaveBeenCreated).toBe(true);
+      expect(component.topOfFormMessage()).toContain('series may have been created');
+    });
+  });
+
+  // Finding 3: the Confirm button was disabled while a request was in flight,
+  // but every field feeding it stayed editable — so the request that went out
+  // and the form on screen could describe two different series.
+  describe('while a series submit is in flight', () => {
+    function submitting() {
+      const fixture = createFixture('r1');
+      const component = fixture.componentInstance as TestableBookingComponent;
+      httpMock.expectOne(`${API}/resources/r1`).flush(fakeDetail({ timeZoneId: 'UTC', requiresApproval: false }));
+      component.setMode('recurring');
+      component.confirmBooking();
+      const request = httpMock.expectOne(`${API}/recurrence-rules`);
+      fixture.detectChanges();
+
+      return { fixture, component, request, root: fixture.nativeElement as HTMLElement };
+    }
+
+    it('disables every control that feeds the request', () => {
+      const { component, request, root } = submitting();
+
+      expect(component.submitting()).toBe(true);
+      // One `disabled` on the fieldset covers the whole recurring group.
+      expect(root.querySelector<HTMLFieldSetElement>('fieldset.recurrence')?.disabled).toBe(true);
+      expect(root.querySelector<HTMLInputElement>('#booking-title')?.disabled).toBe(true);
+      expect(
+        Array.from(root.querySelectorAll<HTMLButtonElement>('.mode-toggle button')).map((b) => b.disabled),
+      ).toEqual([true, true]);
+      expect(root.querySelector<HTMLButtonElement>('button.confirm-button')?.disabled).toBe(true);
+
+      request.flush({ recurrenceRuleId: 'rr1', occurrences: [] }, { status: 201, statusText: 'Created' });
+    });
+
+    it('disables the quantity stepper too', () => {
+      const fixture = createFixture('r1');
+      const component = fixture.componentInstance as TestableBookingComponent;
+      httpMock.expectOne(`${API}/resources/r1`).flush(fakeDetail({ timeZoneId: 'UTC', capacity: 4 }));
+      component.setMode('recurring');
+      component.confirmBooking();
+      const request = httpMock.expectOne(`${API}/recurrence-rules`);
+      fixture.detectChanges();
+
+      expect(
+        Array.from(
+          (fixture.nativeElement as HTMLElement).querySelectorAll<HTMLButtonElement>('.stepper button'),
+        ).map((b) => b.disabled),
+      ).toEqual([true, true]);
+
+      request.flush({ recurrenceRuleId: 'rr1', occurrences: [] }, { status: 201, statusText: 'Created' });
+    });
+
+    // Belt and braces behind the disabled fields: the panel is built from the
+    // values the request was built from, so even a write that reached the
+    // form behind the submit cannot make the confirmation describe a series
+    // nobody booked.
+    it('describes the series that was submitted, not the form as it stands', () => {
+      const { fixture, component, request, root } = submitting();
+
+      component.setFrequency(selectEvent('Monthly'));
+      component.setLocalStartTime(inputEvent('08:00'));
+      component.setLocalEndTime(inputEvent('09:00'));
+
+      request.flush(
+        { recurrenceRuleId: 'rr1', occurrences: [{ occurrenceDate: '2026-09-24', status: 'Created', bookingId: 'b1', reasonCode: null }] },
+        { status: 201, statusText: 'Created' },
+      );
+      fixture.detectChanges();
+
+      expect(component.submittedPatternLabel()).toBe('Every week');
+      expect(component.submittedTimesLabel()).toBe('13:15–15:30');
+      const lead = root.querySelector('.outcome-lead')?.textContent ?? '';
+      expect(lead).toContain('Every week');
+      expect(lead).toContain('13:15–15:30');
+      expect(lead).not.toContain('Every month');
+      expect(lead).not.toContain('08:00');
+    });
+  });
+
+  // Finding 6: an active resource with no published hours still offered a
+  // recurring form. `outsideOpeningHours` deliberately says nothing when there
+  // are no windows to judge against, so every field validated — and every
+  // occurrence of the resulting series was guaranteed OutsideAvailability.
+  describe('a resource with no bookable hours', () => {
+    function loadedRecurring(detailOverrides: Partial<ResourceDetail>) {
+      const fixture = createFixture('r1', { mode: 'recurring' });
+      const component = fixture.componentInstance as TestableBookingComponent;
+      httpMock.expectOne(`${API}/resources/r1`).flush(fakeDetail({ timeZoneId: 'UTC', ...detailOverrides }));
+      fixture.detectChanges();
+
+      return { fixture, component, root: fixture.nativeElement as HTMLElement };
+    }
+
+    it('refuses to offer a series, and says why, when no hours are published', () => {
+      const { component, root } = loadedRecurring({ availabilityWindows: [] });
+
+      expect(component.recurrenceUnavailable()).toBe('noOpeningHours');
+      expect(component.canSubmit()).toBe(false);
+      expect(root.querySelector('fieldset.recurrence')).toBeNull();
+      expect(root.querySelector('.recurrence-unavailable')?.textContent).toContain(
+        'no bookable hours configured',
+      );
+      expect(root.querySelector<HTMLButtonElement>('button.confirm-button')?.disabled).toBe(true);
+      // And the advice is not "fix the highlighted fields" — there are none.
+      expect(root.textContent).not.toContain('Fix the highlighted fields');
+
+      component.confirmBooking();
+      httpMock.expectNone(`${API}/recurrence-rules`);
+    });
+
+    it('says so too when no window is long enough for the shortest booking allowed', () => {
+      const { component, root } = loadedRecurring({
+        minDurationMinutes: 600,
+        maxDurationMinutes: null,
+        availabilityWindows: [{ id: 'w1', weekday: 'Monday', opensAt: '09:00:00', closesAt: '17:00:00' }],
+      });
+
+      expect(component.recurrenceUnavailable()).toBe('noBookableWindow');
+      expect(root.querySelector('.recurrence-unavailable')?.textContent).toContain('long enough');
+      expect(component.canSubmit()).toBe(false);
+    });
+
+    it('says so when the duration limits contradict each other', () => {
+      const { component } = loadedRecurring({ minDurationMinutes: 120, maxDurationMinutes: 60 });
+
+      expect(component.recurrenceUnavailable()).toBe('durationLimitsConflict');
+      expect(component.recurrenceUnavailableMessage()).toContain('longer than its longest');
+    });
+
+    // Not conflated with "nothing is free": a resource with hours that happen
+    // to be fully booked still gets a form, submits, and receives FR-5.4's
+    // per-occurrence answer.
+    it('offers the form for a resource that has hours at all', () => {
+      const { component, root } = loadedRecurring({});
+
+      expect(component.recurrenceUnavailable()).toBeNull();
+      expect(root.querySelector('fieldset.recurrence')).not.toBeNull();
+      expect(root.querySelector('.recurrence-unavailable')).toBeNull();
+    });
+
+    // The one-off half is unaffected: a slot picked on the availability screen
+    // is the server's own answer about what is bookable.
+    it('leaves the one-off half alone', () => {
+      const fixture = createFixture('r1', selectionParams);
+      const component = fixture.componentInstance as TestableBookingComponent;
+      httpMock
+        .expectOne(`${API}/resources/r1`)
+        .flush(fakeDetail({ timeZoneId: 'UTC', availabilityWindows: [] }));
+
+      expect(component.mode()).toBe('oneOff');
+      expect(component.canSubmit()).toBe(true);
+    });
+  });
+
+  // Finding 1, as the screen sees it: these values reached `Date` arithmetic
+  // inside a `computed` the template reads, so the failure was a RangeError
+  // thrown during change detection rather than a validation message.
+  describe('extreme or cleared values in the recurring form', () => {
+    function recurringForm() {
+      const fixture = createFixture('r1');
+      const component = fixture.componentInstance as TestableBookingComponent;
+      httpMock.expectOne(`${API}/resources/r1`).flush(fakeDetail({ timeZoneId: 'UTC' }));
+      component.setMode('recurring');
+      fixture.detectChanges();
+      return { fixture, component };
+    }
+
+    it('renders a cleared start date as a message rather than throwing', () => {
+      const { fixture, component } = recurringForm();
+
+      expect(() => {
+        component.setStartDate(inputEvent(''));
+        fixture.detectChanges();
+      }).not.toThrow();
+
+      expect(component.recurrenceStartDateError()).toContain('Choose the date');
+      expect(component.canSubmit()).toBe(false);
+      expect((fixture.nativeElement as HTMLElement).textContent).toContain('Choose the date');
+    });
+
+    it.each(['1e21', '999999999999999999999', 'Infinity'])(
+      'renders the interval %s as a message rather than throwing',
+      (value) => {
+        const { fixture, component } = recurringForm();
+
+        expect(() => {
+          component.setIntervalValue(inputEvent(value));
+          fixture.detectChanges();
+        }).not.toThrow();
+
+        expect(component.recurrenceIntervalError()).toBeDefined();
+        expect(component.canSubmit()).toBe(false);
+      },
+    );
+
+    it('renders an enormous occurrence count as a message rather than throwing', () => {
+      const { fixture, component } = recurringForm();
+
+      expect(() => {
+        component.setOccurrenceCount(inputEvent(String(Number.MAX_SAFE_INTEGER)));
+        fixture.detectChanges();
+      }).not.toThrow();
+
+      expect(component.recurrenceOccurrenceCountError()).toBeDefined();
+      // The "last on ..." summary has nothing it can honestly compute.
+      expect(component.recurrenceEndsLabel()).toBe('—');
+    });
+
+    it('survives a cleared end date on the end-date arm', () => {
+      const { fixture, component } = recurringForm();
+
+      expect(() => {
+        component.setEndCondition('endDate');
+        component.setEndDate(inputEvent(''));
+        component.setStartDate(inputEvent(''));
+        fixture.detectChanges();
+      }).not.toThrow();
+
+      expect(component.canSubmit()).toBe(false);
+      expect(component.recurrenceEndsLabel()).toBe('—');
+    });
+
+    it('sends nothing while any of it is invalid', () => {
+      const { component } = recurringForm();
+
+      component.setStartDate(inputEvent(''));
+      component.confirmBooking();
+
+      httpMock.expectNone(`${API}/recurrence-rules`);
     });
   });
 
