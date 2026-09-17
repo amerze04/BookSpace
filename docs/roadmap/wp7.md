@@ -249,3 +249,69 @@ Notes:
   per-file ones, docs stay listed-only) — a process change, not a WP-7
   feature, but worth knowing since every report from here on follows it.
 
+**Phase 3 (booking form) is done, 2026-09-17**, in eight steps — full
+step-by-step detail in `docs/wp7-plan.md`. `features/booking/`: the two
+services (`bookings.service.ts`, `recurrence-rules.service.ts`), the booking
+screen itself, and four pure modules kept out of the component the way
+`availability-grid.ts` is — `booking-arrival.ts` (the selected-slot and mode
+URL contract), `booking-rejection.ts` (reason code → message *and* placement),
+`recurrence-form.ts` (the recurring form's guards and its request builder) and
+`recurrence-outcome.ts` (one shape for a 201 and an all-refused 422). Split
+into two branches at the owner's own seam: the one-off half (steps 1–5) and the
+recurring half (steps 6–8). 462 vitest tests pass, 0 failed.
+
+**Three owner decisions reshaped the phase while it was being built**, each
+recorded in full in `wp7-plan.md`:
+1. **Query parameters, not router state** (step 2). The selected slot lives in
+   the URL, so it is shareable, bookmarkable and visible. Router state survives
+   a reload but nothing else.
+2. **Editable recurring times, not read-only** (step 6). The owner proposed
+   locking them, on the grounds that editing invalidates whatever the
+   availability screen checked. The counter that won: a recurring series was
+   never checked — the query answered one question about one slot, and FR-5.4's
+   per-occurrence report exists precisely because partial refusal is the
+   designed outcome. Locking would verify occurrence 1 of N and still not
+   prevent the failure worth preventing, so `outsideOpeningHours` checks the
+   entered time against the resource's own windows instead.
+3. **The availability screen is no longer a toll booth** (step 6, second
+   round). Requiring a picked slot made a recurring booker perform a ritual
+   they had no use for. `?mode=recurring` became part of the URL contract, the
+   resource list *and* detail screens link straight to it, and the form seeds
+   itself from the resource's own schedule when no slot was picked.
+
+**Two bugs the owner found by clicking, neither caught by the suite** — the
+lesson recorded at the time: for anything the user *sees*, assert against the
+rendered DOM, and prove the regression test fails against the old code.
+1. The availability screen's Start/End dropdowns displayed the wrong time
+   (`<select [value]>` with `@for` options; the browser resets a single select
+   to its first option whenever the list is rebuilt, and Angular does not
+   re-apply an unchanged binding). Fixed with `[selected]` per option plus
+   `withSelectedOption`; three DOM regression tests, each verified to fail
+   against the old template.
+2. A hand-edited `?quantity=16` on a one-unit resource **booked one unit and
+   reported success**, because the form clamped silently. Clamping was the
+   wrong instinct — decision `0015` rejects an oversized `pageSize` rather than
+   clamping it — so the value is now kept and refused, with the message placed
+   where the member can act on it (against the stepper, or at the top of the
+   form when an exclusive resource renders none).
+
+**A documentation error that probing turned up** (step 5): CLAUDE.md §6
+claimed an exclusive resource can only ever answer `SlotUnavailable`. The live
+API answers `CapacityExceeded` for `quantity: 3` on a capacity-1 resource,
+because `Quantity` is deliberately unbounded at the validator. Corrected in
+§6 and in five other copies of the same sentence; the one inside the applied
+migration was left alone per CLAUDE.md §5 and flagged instead.
+
+**Verification**: `npx ng test --watch=false` — 26 files, 462 passed, 0
+failed; `npx ng build` clean. All four of step 8's scenarios were exercised
+against the running API with the exact request shapes the client builds —
+`201 Pending` with its approval detail, `409 SlotUnavailable`, a mixed series
+(`Created / Refused / Created`) forced by a blocking booking, and a `422
+NoOccurrencesCreated` whose `occurrences` are structurally identical to the
+201's. The idempotency key was proven live in step 7: re-posting an identical
+body with the same key returned the same `recurrenceRuleId` and the same
+booking ids. Everything created was cancelled afterwards. **The browser
+walkthrough itself remains outstanding** — no automation is available here, so
+what is verified is every request/response pair the screens depend on plus the
+rendering assertions in vitest, not the rendered flow end to end.
+

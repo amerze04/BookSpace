@@ -8,6 +8,7 @@ import { ResourcesService } from '../resources.service';
 import { AvailabilityWindowDetail, DayOfWeekName, ResourceDetail, ResourceType } from '../resources.models';
 import { ResourceTypeIconComponent } from '../../../shared/resource-type/resource-type-icon.component';
 import { resourceCapacityLabel, resourceTypeLabel } from '../../../shared/resource-type/resource-type';
+import { recurringEntryQueryParams } from '../../booking/booking-arrival';
 
 // Monday-first, matching the design — not the DayOfWeek enum's own
 // Sunday-first declaration order, which nothing on the wire promises anyway
@@ -141,6 +142,12 @@ export class ResourceDetailComponent {
     // breadcrumb after navigating away.
     this.destroyRef.onDestroy(() => this.breadcrumbService.setOverride(null));
   }
+
+  // The recurring entry point's own query params, from the booking feature's
+  // contract module rather than spelled out here — the same reason the
+  // availability screen imports its writer instead of repeating the parameter
+  // names (see booking-arrival.ts).
+  protected readonly recurringEntryQueryParams = recurringEntryQueryParams();
 
   protected retry(): void {
     this.retry$.next();

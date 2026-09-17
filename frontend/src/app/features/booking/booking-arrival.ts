@@ -31,9 +31,27 @@ export interface BookingSelection {
   quantity: number;
 }
 
+// Which half of the form the screen opens on. In the URL because it is the
+// *entry point* for a recurring booking: "Book a recurring series" on the
+// resource page links straight here, so a member who already knows their
+// pattern never has to pick a slot they don't care about first. A one-off
+// booking still arrives with a selection and no mode, so the default stays
+// what it always was.
+export type BookingMode = 'oneOff' | 'recurring';
+
 const START_PARAM = 'startUtc';
 const END_PARAM = 'endUtc';
 const QUANTITY_PARAM = 'quantity';
+const MODE_PARAM = 'mode';
+
+export function parseBookingMode(params: QueryParamSource): BookingMode {
+  return params.get(MODE_PARAM) === 'recurring' ? 'recurring' : 'oneOff';
+}
+
+// The query params for the recurring entry point: no slot, just the mode.
+export function recurringEntryQueryParams(): Record<string, string> {
+  return { [MODE_PARAM]: 'recurring' };
+}
 
 // Structurally satisfied by Angular's own ParamMap, without this module having
 // to depend on @angular/router — same "keep the pure logic Angular-free"

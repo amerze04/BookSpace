@@ -85,6 +85,69 @@
         </p>
         <a class="secondary-button" routerLink="/resources">Browse resources</a>
       </section>
+    } @else if (seriesOutcome(); as outcome) {
+      <!-- FR-5.4: no conflicting occurrence is dropped silently, so the
+           per-date breakdown *is* the result of a recurring submit — not a
+           detail behind a disclosure. The 201 and the all-refused 422 carry
+           the identical payload, so this renders both; only the framing
+           changes. -->
+      <section class="panel panel--outcome" [class.panel--pending]="seriesCreatedNothing()">
+        <span class="outcome-icon" [class.outcome-icon--pending]="seriesCreatedNothing()" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+            @if (seriesCreatedNothing()) {
+              <path d="M12 7.5v5M12 16h.01" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            } @else {
+              <path
+                d="m8.5 12.3 2.4 2.4 4.6-4.9"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            }
+          </svg>
+        </span>
+
+        <h2>{{ seriesCreatedNothing() ? 'Nothing could be booked' : 'Series booked' }}</h2>
+
+        <p class="outcome-lead">
+          @if (seriesCreatedNothing()) {
+            Every date in this series was skipped or refused, so no booking was made. The reasons are below — adjust
+            the series and try again.
+          } @else {
+            {{ recurrencePatternLabel() }} on {{ resource.name }}, {{ recurrence().localStartTime }}–{{
+              recurrence().localEndTime
+            }}. {{ seriesSummaryLine() }}.
+            @if (resource.requiresApproval) {
+              Each booked date needs approval before it's confirmed.
+            }
+          }
+        </p>
+
+        <ul class="occurrence-list">
+          @for (occurrence of outcome.occurrences; track occurrence.occurrenceDate) {
+            <li class="occurrence" [class.occurrence--created]="occurrence.status === 'Created'">
+              <span class="occurrence-date">{{ occurrenceDateLabel(occurrence) }}</span>
+              <span class="occurrence-reason">{{ occurrenceLabel(occurrence) }}</span>
+            </li>
+          }
+        </ul>
+
+        <div class="outcome-actions">
+          @if (seriesCreatedNothing()) {
+            <!-- The lead copy says to adjust the series, so there has to be a
+                 way back to it — with every field as it was. -->
+            <button type="button" class="primary-button" (click)="editSeriesAgain()">Adjust the series</button>
+            <a class="secondary-button" [routerLink]="['/resources', resource.id, 'availability']">
+              Check availability
+            </a>
+          } @else {
+            <a class="primary-button" routerLink="/my-bookings">View my bookings</a>
+          }
+        </div>
+      </section>
     } @else if (created(); as created) {
       <!-- FR-7.1: the two outcomes are stated distinctly, not as one generic
            success. A Pending booking holds nothing yet, and saying so here is
@@ -193,16 +256,63 @@
           <a class="secondary-button" [routerLink]="['/resources', resource.id, 'availability']">Book another time</a>
         </div>
       </section>
-    } @else if (selection(); as selection) {
+    } @else {
+      <!-- The form renders for a recurring booking whether or not a slot was
+           picked: a series names its own schedule and uses none of the slot's
+           instants, so requiring one made the availability screen a toll booth
+           (owner's call, 2026-09-17). The one-off half still needs one, and
+           says so inline rather than replacing the whole screen — otherwise
+           the toggle out of that state wouldn't be reachable. -->
       <div class="booking-layout">
         <section class="panel">
           <h2>Booking details</h2>
+
+          <!-- One screen, two form groups (not two routes): the resource, the
+               slot, the quantity and the title are shared, and only the *when*
+               differs between them. -->
+          <div class="mode-toggle" role="group" aria-label="Booking type">
+            <button
+              type="button"
+              [class.active]="mode() === 'oneOff'"
+              [attr.aria-pressed]="mode() === 'oneOff'"
+              (click)="setMode('oneOff')"
+            >
+              One-time
+            </button>
+            <button
+              type="button"
+              [class.active]="mode() === 'recurring'"
+              [attr.aria-pressed]="mode() === 'recurring'"
+              (click)="setMode('recurring')"
+            >
+              Recurring
+            </button>
+          </div>
 
           <!-- Read-only: the slot was chosen on the availability screen and is
                changed by going back there (the bar below), never re-typed
                here — a hand-entered local time would need a local->UTC
                inversion this client deliberately does not own (CLAUDE.md
                §4.3). -->
+          <!-- Hidden in recurring mode rather than left on screen: the series
+               names its own start date and times below, and showing the single
+               slot's here as well would be the same information twice, free to
+               disagree the moment either is edited. -->
+          @if (mode() === 'oneOff' && selection() === null) {
+            <!-- The one-off half is pre-fill only (wp7-plan.md Phase 3), so
+                 without a picked slot there is nothing to book — but the
+                 toggle above still is, which is why this replaces the fields
+                 rather than the screen. -->
+            <div class="pick-first" role="note">
+              <p>Pick a time on the availability calendar to book a one-time slot.</p>
+              <a class="secondary-button" [routerLink]="['/resources', resource.id, 'availability']">
+                Go to availability
+              </a>
+              <p class="field-hint">Or switch to Recurring to set up a repeating booking from here.</p>
+            </div>
+          }
+
+          @if (mode() === 'oneOff' && selection() !== null) {
           <div class="field-row">
             <div class="readonly-field">
               <span class="field-label">Date</span>
@@ -249,6 +359,7 @@
           @if (durationError(); as durationMessage) {
             <p class="field-error" role="alert">{{ durationMessage }}</p>
           }
+          }
 
           @if (showQuantityStepper()) {
             <div class="quantity-field">
@@ -271,8 +382,8 @@
                 <p class="field-error" role="alert">{{ quantityMessage }}</p>
               } @else if (quantityRaisedAboveChecked()) {
                 <p class="field-hint">
-                  Availability was checked for {{ selection.quantity }}
-                  {{ selection.quantity === 1 ? 'unit' : 'units' }}, so a larger quantity may not be free.
+                  Availability was checked for {{ selection()?.quantity }}
+                  {{ selection()?.quantity === 1 ? 'unit' : 'units' }}, so a larger quantity may not be free.
                 </p>
               }
             </div>
@@ -295,6 +406,150 @@
               <p class="field-error" role="alert">{{ titleMessage }}</p>
             }
           </div>
+
+          @if (mode() === 'recurring') {
+            <!-- The recurring group, under the title (the owner's own
+                 placement). Every field here is resource-local wall clock, not
+                 an instant: POST /recurrence-rules takes the schedule and
+                 resolves each occurrence's instant itself, per decision `0003`
+                 — which is why these are freely editable where the one-off
+                 half's are read-only. -->
+            <fieldset class="recurrence">
+              <legend>Repeat</legend>
+
+              <div class="field-row">
+                <label class="field-label" for="recurrence-frequency">
+                  Frequency
+                  <select id="recurrence-frequency" (change)="setFrequency($event)">
+                    @for (frequency of frequencies; track frequency) {
+                      <option [value]="frequency" [selected]="recurrence().frequency === frequency">
+                        {{ frequency }}
+                      </option>
+                    }
+                  </select>
+                </label>
+
+                <label class="field-label" for="recurrence-interval">
+                  Repeat every
+                  <input
+                    id="recurrence-interval"
+                    type="number"
+                    min="1"
+                    step="1"
+                    [value]="recurrence().intervalValue"
+                    (input)="setIntervalValue($event)"
+                  />
+                </label>
+
+                <label class="field-label" for="recurrence-start-date">
+                  Starting on
+                  <input
+                    id="recurrence-start-date"
+                    type="date"
+                    [value]="recurrence().startDate"
+                    (change)="setStartDate($event)"
+                  />
+                </label>
+              </div>
+
+              @if (recurrenceErrors().interval; as intervalMessage) {
+                <p class="field-error" role="alert">{{ intervalMessage }}</p>
+              }
+
+              <!-- A real misreading this heads off: Weekly has no weekday
+                   picker because the weekday *is* the start date's own
+                   (RecurrenceExpansion steps from StartDate), so without this
+                   line a member would look for a control that does not exist. -->
+              @if (recurrence().frequency === 'Weekly') {
+                <p class="field-hint">Repeats on the same weekday as the start date.</p>
+              } @else if (recurrence().frequency === 'Monthly') {
+                <p class="field-hint">Repeats on the same day of the month as the start date.</p>
+              }
+
+              <div class="field-row">
+                <label class="field-label" for="recurrence-start-time">
+                  From
+                  <input
+                    id="recurrence-start-time"
+                    type="time"
+                    [value]="recurrence().localStartTime"
+                    (change)="setLocalStartTime($event)"
+                  />
+                </label>
+
+                <label class="field-label" for="recurrence-end-time">
+                  To
+                  <input
+                    id="recurrence-end-time"
+                    type="time"
+                    [value]="recurrence().localEndTime"
+                    (change)="setLocalEndTime($event)"
+                  />
+                </label>
+              </div>
+
+              <p class="field-hint">Times are in the resource's timezone ({{ resource.timeZoneId }}).</p>
+
+              @if (recurrenceErrors().times; as timesMessage) {
+                <p class="field-error" role="alert">{{ timesMessage }}</p>
+              }
+              @if (recurrenceErrors().duration; as durationMessage) {
+                <p class="field-error" role="alert">{{ durationMessage }}</p>
+              }
+
+              <!-- Exactly one of the two, never both and never neither
+                   (CK_RecurrenceRules_EndCondition) — a radio rather than two
+                   independently fillable boxes, so the invalid combinations
+                   cannot be expressed rather than merely being rejected. -->
+              <div class="end-condition" role="radiogroup" aria-label="Ends">
+                <span class="field-label">Ends</span>
+
+                <label class="radio-row">
+                  <input
+                    type="radio"
+                    name="end-condition"
+                    [checked]="recurrence().endCondition === 'occurrenceCount'"
+                    (change)="setEndCondition('occurrenceCount')"
+                  />
+                  After
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    aria-label="Number of occurrences"
+                    [value]="recurrence().occurrenceCount"
+                    [disabled]="recurrence().endCondition !== 'occurrenceCount'"
+                    (input)="setOccurrenceCount($event)"
+                  />
+                  occurrences
+                </label>
+
+                <label class="radio-row">
+                  <input
+                    type="radio"
+                    name="end-condition"
+                    [checked]="recurrence().endCondition === 'endDate'"
+                    (change)="setEndCondition('endDate')"
+                  />
+                  On
+                  <input
+                    type="date"
+                    aria-label="End date"
+                    [value]="recurrence().endDate"
+                    [disabled]="recurrence().endCondition !== 'endDate'"
+                    (change)="setEndDate($event)"
+                  />
+                </label>
+              </div>
+
+              @if (recurrenceErrors().occurrenceCount; as occurrenceMessage) {
+                <p class="field-error" role="alert">{{ occurrenceMessage }}</p>
+              }
+              @if (recurrenceErrors().endDate; as endDateMessage) {
+                <p class="field-error" role="alert">{{ endDateMessage }}</p>
+              }
+            </fieldset>
+          }
         </section>
 
         <aside class="panel summary-panel">
@@ -315,18 +570,37 @@
           </div>
 
           <dl class="summary-rows">
-            <div class="summary-row">
-              <dt>Date</dt>
-              <dd>{{ resourceZoneSpan()?.date }}</dd>
-            </div>
-            <div class="summary-row">
-              <dt>Time</dt>
-              <dd>{{ resourceZoneSpan()?.timeRange }}</dd>
-            </div>
-            <div class="summary-row">
-              <dt>Duration</dt>
-              <dd>{{ durationLabel() }}</dd>
-            </div>
+            @if (mode() === 'recurring') {
+              <div class="summary-row">
+                <dt>Repeats</dt>
+                <dd>{{ recurrencePatternLabel() }}</dd>
+              </div>
+              <div class="summary-row">
+                <dt>From</dt>
+                <dd>{{ recurrence().localStartTime }} – {{ recurrence().localEndTime }}</dd>
+              </div>
+              <div class="summary-row">
+                <dt>Starting</dt>
+                <dd>{{ recurrence().startDate }}</dd>
+              </div>
+              <div class="summary-row">
+                <dt>Ends</dt>
+                <dd>{{ recurrenceEndsLabel() }}</dd>
+              </div>
+            } @else {
+              <div class="summary-row">
+                <dt>Date</dt>
+                <dd>{{ resourceZoneSpan()?.date }}</dd>
+              </div>
+              <div class="summary-row">
+                <dt>Time</dt>
+                <dd>{{ resourceZoneSpan()?.timeRange }}</dd>
+              </div>
+              <div class="summary-row">
+                <dt>Duration</dt>
+                <dd>{{ durationLabel() }}</dd>
+              </div>
+            }
             @if (showQuantityStepper()) {
               <div class="summary-row">
                 <dt>Quantity</dt>
@@ -380,33 +654,46 @@
               }
 
               @if (rejection()?.mayHaveBeenCreated) {
-                <!-- Never a retry button: POST /bookings has no idempotency
-                     key (wp7-plan.md §7), so repeating a request whose
-                     outcome is unknown can create a second booking. -->
-                <a class="secondary-button" routerLink="/my-bookings">Check My Bookings</a>
+                @if (canRetrySeries()) {
+                  <!-- The recurring endpoint *does* carry an idempotency key,
+                       so finishing an attempt whose outcome was never observed
+                       resolves to the same series rather than creating a
+                       second one. Saying why, not just offering the button. -->
+                  <p class="field-hint">
+                    Trying again is safe — this request carries a key that resolves to the same series.
+                  </p>
+                  <button type="button" class="secondary-button" (click)="confirmBooking()">Try again</button>
+                } @else {
+                  <!-- Never a retry button here: POST /bookings has no
+                       idempotency key (wp7-plan.md §7), so repeating a request
+                       whose outcome is unknown can create a second booking. -->
+                  <a class="secondary-button" routerLink="/my-bookings">Check My Bookings</a>
+                }
               }
             </div>
           }
 
           <button type="button" class="primary-button confirm-button" [disabled]="!canSubmit()" (click)="confirmBooking()">
-            {{ submitting() ? 'Booking…' : 'Confirm booking' }}
+            @if (submitting()) {
+              Booking…
+            } @else if (mode() === 'recurring') {
+              Confirm series
+            } @else {
+              Confirm booking
+            }
           </button>
+
+          @if (mode() === 'recurring' && !recurrenceIsValid()) {
+            <p class="field-hint">Fix the highlighted fields above to complete the series.</p>
+          }
         </aside>
       </div>
-    } @else {
-      <section class="panel panel--empty">
-        <h2>Pick a time first</h2>
-        <p>
-          Choose an available slot on {{ resource.name }}'s availability calendar, then continue to booking — times
-          are shown in the resource's own timezone ({{ resource.timeZoneId }}).
-        </p>
-        <a class="primary-button" [routerLink]="['/resources', resource.id, 'availability']">Go to availability</a>
-      </section>
     }
 
     <!-- Only while there is still something to change: once the booking
-         exists, "go back and pick a different time" is the wrong advice. -->
-    @if (!isArchived() && selection() && !created()) {
+         exists, "go back and pick a different time" is the wrong advice, and
+         in recurring mode the series names its own times anyway. -->
+    @if (!isArchived() && selection() && !created() && mode() === 'oneOff') {
       <section class="change-bar">
         <svg class="change-icon" viewBox="0 0 24 24" aria-hidden="true">
           <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" />

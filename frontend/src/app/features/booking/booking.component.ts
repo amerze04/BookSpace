@@ -12,9 +12,35 @@ import {
   formatDurationWords,
   formatLocalDateWithWeekdayAndYear,
   formatMinutesOfDay,
+  resourceLocalToday,
   utcToResourceLocal,
 } from '../availability/local-date';
-import { BookingSelection, parseBookingSelection } from './booking-arrival';
+import {
+  RECURRENCE_FREQUENCIES,
+  RecurrenceFrequency,
+  RecurrenceOccurrenceReport,
+} from './recurrence.models';
+import {
+  RecurrenceEndConditionKind,
+  RecurrenceFormValue,
+  ResourceSchedule,
+  buildRecurrenceRequest,
+  defaultRecurrenceFor,
+  hasRecurrenceErrors,
+  impliedEndDate,
+  recurrenceFromSelection,
+  validateRecurrenceForm,
+} from './recurrence-form';
+import {
+  SeriesOutcome,
+  occurrenceReasonLabel,
+  parseSeriesRefusal,
+  seriesOutcomeFromResponse,
+  summarizeOccurrences,
+  summaryLine,
+} from './recurrence-outcome';
+import { RecurrenceRulesService } from './recurrence-rules.service';
+import { BookingMode, BookingSelection, parseBookingMode, parseBookingSelection } from './booking-arrival';
 import { BookingFieldName, BookingRejection, describeBookingRejection } from './booking-rejection';
 import { BookingsService } from './bookings.service';
 import { CreateBookingResponse, MAX_BOOKING_TITLE_LENGTH } from './booking.models';
@@ -59,6 +85,38 @@ function durationMinutesBetween(startUtc: string, endUtc: string): number {
   return Math.round((Date.parse(endUtc) - Date.parse(startUtc)) / 60_000);
 }
 
+function stringFrom(event: Event): string {
+  return (event.target as HTMLInputElement | HTMLSelectElement).value;
+}
+
+// An empty or non-numeric input reads as NaN rather than 0, so the validator
+// reports "must be a whole number of 1 or more" instead of silently treating a
+// cleared box as a zero the server would then refuse.
+function numberFrom(event: Event): number {
+  const raw = stringFrom(event);
+  return raw === '' ? NaN : Number(raw);
+}
+
+const FREQUENCY_UNITS: Record<RecurrenceFrequency, string> = {
+  Daily: 'day',
+  Weekly: 'week',
+  Monthly: 'month',
+};
+
+// Only ever seen before the resource has loaded — every real seeding goes
+// through recurrence-form.ts's own defaults, which need the resource's
+// schedule to pick a sensible day and time.
+const EMPTY_RECURRENCE: RecurrenceFormValue = {
+  frequency: 'Weekly',
+  intervalValue: 1,
+  localStartTime: '09:00',
+  localEndTime: '10:00',
+  startDate: '',
+  endCondition: 'occurrenceCount',
+  endDate: '',
+  occurrenceCount: 4,
+};
+
 // WP-7 Phase 3 step 2: the booking route's shell — the resource it is about,
 // the slot it arrived with, and every failure mode around those. The form
 // itself (one-off fields, the recurring half, submit and the outcome panels)
@@ -79,6 +137,7 @@ export class BookingComponent {
   private readonly route = inject(ActivatedRoute);
   private readonly resourcesService = inject(ResourcesService);
   private readonly bookingsService = inject(BookingsService);
+  private readonly recurrenceRulesService = inject(RecurrenceRulesService);
   private readonly breadcrumbService = inject(BreadcrumbService);
   private readonly destroyRef = inject(DestroyRef);
 
@@ -111,6 +170,11 @@ export class BookingComponent {
   protected readonly selection = toSignal<BookingSelection | null>(
     this.route.queryParamMap.pipe(map((params) => parseBookingSelection(params))),
     { initialValue: null },
+  );
+
+  private readonly modeFromUrl = toSignal(
+    this.route.queryParamMap.pipe(map((params) => parseBookingMode(params))),
+    { initialValue: 'oneOff' as BookingMode },
   );
 
   // An archived resource cannot be booked at all (ResourceArchived), so it
@@ -147,12 +211,108 @@ export class BookingComponent {
   // AvailabilityComponent's own stepper makes.
   protected readonly showQuantityStepper = computed(() => (this.resource()?.capacity ?? 1) > 1);
 
+  // ---- Step 6: the recurring half ----
+  //
+  // One component, two form groups — not two routes (wp7-plan.md step 6). The
+  // resource, the selected slot, the quantity and the title are shared by both
+  // modes; only the *when* differs, which is exactly what the toggle switches.
+  //
+  // Seeded from `?mode=recurring`, the entry point that lets a member who
+  // already knows their pattern come straight here: requiring a picked slot
+  // first made the availability screen a toll booth for recurring bookings,
+  // since a series names its own schedule and doesn't use the slot's instants
+  // at all. Writable afterwards — the toggle is ordinary UI state — and
+  // re-seeded if the URL itself changes.
+  protected readonly mode = linkedSignal(() => this.modeFromUrl());
+
+  // Pre-filled from the same selection the one-off half uses, read into the
+  // resource's own local time (decision `0003`) — so switching to Recurring
+  // keeps the time already picked instead of blanking the form. linkedSignal,
+  // so arriving with a different slot re-seeds it rather than stranding the
+  // previous one; every field stays editable afterwards, which is the whole
+  // difference between the two halves (`POST /recurrence-rules` takes local
+  // wall clock, so a hand-entered time needs no local->UTC inversion here —
+  // the handler does it per occurrence, CLAUDE.md §4.3).
+  protected readonly recurrence = linkedSignal<RecurrenceFormValue>(() => {
+    const resource = this.resource();
+    if (!resource) {
+      return EMPTY_RECURRENCE;
+    }
+
+    const selection = this.selection();
+    if (!selection) {
+      // Arrived without a slot: seed from the resource's own schedule, so the
+      // form opens on the first upcoming day it is actually open, at that
+      // day's opening time.
+      return defaultRecurrenceFor(this.schedule(), resourceLocalToday(resource.timeZoneId));
+    }
+
+    const start = utcToResourceLocal(selection.startUtc, resource.timeZoneId);
+    const end = utcToResourceLocal(selection.endUtc, resource.timeZoneId);
+    return recurrenceFromSelection(start.date, start.minutesOfDay, end.minutesOfDay);
+  });
+
+  // The resource facts both recurrence guards need, in the shape
+  // recurrence-form.ts asks for. All of it comes off the detail read this
+  // screen already performed — the window check costs no request.
+  private readonly schedule = computed<ResourceSchedule>(() => ({
+    minDurationMinutes: this.resource()?.minDurationMinutes ?? null,
+    maxDurationMinutes: this.resource()?.maxDurationMinutes ?? null,
+    availabilityWindows: this.resource()?.availabilityWindows ?? [],
+  }));
+
+  protected readonly recurrenceErrors = computed(() =>
+    validateRecurrenceForm(this.recurrence(), this.schedule()),
+  );
+
+  // What the series actually implies, shown rather than left for the member to
+  // work out — the same arithmetic the span guard uses, so the date on screen
+  // is the date the rule really ends on.
+  protected readonly recurrenceEndsLabel = computed(() => {
+    const value = this.recurrence();
+    if (value.endCondition === 'endDate') {
+      return value.endDate ? `On ${formatLocalDateWithWeekdayAndYear(value.endDate)}` : '—';
+    }
+    if (!Number.isInteger(value.occurrenceCount) || value.occurrenceCount < 1 || value.intervalValue < 1) {
+      return '—';
+    }
+    const last = impliedEndDate(value.frequency, value.intervalValue, value.startDate, value.occurrenceCount);
+    return `After ${value.occurrenceCount} ${value.occurrenceCount === 1 ? 'occurrence' : 'occurrences'} (last on ${formatLocalDateWithWeekdayAndYear(last)})`;
+  });
+
+  // "Every week", "Every 2 weeks" — the interval reads naturally rather than
+  // as a raw number beside a frequency name.
+  protected readonly recurrencePatternLabel = computed(() => {
+    const { frequency, intervalValue } = this.recurrence();
+    const unit = FREQUENCY_UNITS[frequency];
+    return intervalValue === 1 ? `Every ${unit}` : `Every ${intervalValue} ${unit}s`;
+  });
+
   protected readonly submitting = signal(false);
 
-  // Step 4 turns this into the real confirmation panel (Confirmed vs Pending,
-  // who decides, when the request expires). Step 3 only needs somewhere for
-  // the created booking to land.
   protected readonly created = signal<CreateBookingResponse | null>(null);
+
+  // Step 7: what came of a recurring submit. Set from a 201 *and* from the
+  // all-refused 422, which carry the identical per-occurrence breakdown — see
+  // recurrence-outcome.ts.
+  protected readonly seriesOutcome = signal<SeriesOutcome | null>(null);
+
+  protected readonly seriesSummary = computed(() => {
+    const outcome = this.seriesOutcome();
+    return outcome ? summarizeOccurrences(outcome.occurrences) : null;
+  });
+
+  protected readonly seriesSummaryLine = computed(() => {
+    const summary = this.seriesSummary();
+    return summary ? summaryLine(summary) : '';
+  });
+
+  // Nothing created is the 422's own shape (the handler compensates its
+  // RecurrenceRule away), so this is what flips the panel from "series booked"
+  // to "nothing could be booked" — one renderer, two framings.
+  protected readonly seriesCreatedNothing = computed(
+    () => this.seriesOutcome() !== null && this.seriesSummary()?.created === 0,
+  );
 
   // Step 5: what the last submit was refused for, already resolved into
   // message *and* placement by `booking-rejection.ts` — this component never
@@ -357,15 +517,33 @@ export class BookingComponent {
     return expiresAtUtc ? instantLabel(expiresAtUtc, this.viewerTimeZoneId) : null;
   });
 
-  protected readonly canSubmit = computed(
+  // Shared by both modes: a resource that can be booked at all, a title and a
+  // quantity the API would accept, and nothing already in flight or done.
+  // **Not** a selection — only the one-off half needs one.
+  private readonly canSubmitCommon = computed(
     () =>
-      this.selection() !== null &&
       !this.isArchived() &&
       !this.submitting() &&
       this.created() === null &&
-      this.durationError() === null &&
       this.titleError() === null &&
       this.quantityError() === null,
+  );
+
+  protected readonly canSubmit = computed(() => {
+    if (!this.canSubmitCommon()) {
+      return false;
+    }
+
+    return this.mode() === 'oneOff'
+      ? // The one-off half is pre-fill only: without a picked slot there are no
+        // instants to send, and this client deliberately owns no local->UTC
+        // inversion to invent them (CLAUDE.md §4.3).
+        this.selection() !== null && this.durationError() === null
+      : this.recurrenceIsValid() && this.seriesOutcome() === null;
+  });
+
+  protected readonly recurrenceIsValid = computed(
+    () => this.canSubmitCommon() && !hasRecurrenceErrors(this.recurrenceErrors()),
   );
 
   private resourceId: string;
@@ -425,8 +603,80 @@ export class BookingComponent {
     return formatDurationWords(this.durationMinutes());
   }
 
+  protected occurrenceLabel(occurrence: RecurrenceOccurrenceReport): string {
+    return occurrenceReasonLabel(occurrence);
+  }
+
+  // Back to the form after an all-refused series, with every field still as it
+  // was — the panel tells the member to adjust the series, so there has to be
+  // something to adjust it with. Only offered when nothing was created: a
+  // series that exists is not something to edit here (that is Phase 4's
+  // cancel, on My Bookings).
+  protected editSeriesAgain(): void {
+    this.seriesOutcome.set(null);
+  }
+
+  protected occurrenceDateLabel(occurrence: RecurrenceOccurrenceReport): string {
+    return formatLocalDateWithWeekdayAndYear(occurrence.occurrenceDate);
+  }
+
+  // Safe *because* of the idempotency key: the same attempt's key resolves to
+  // the same RecurrenceRule, so finishing an attempt whose outcome was never
+  // observed cannot create a second series. This is exactly what the one-off
+  // path cannot offer (wp7-plan.md §7), and the difference is worth saying out
+  // loud on screen rather than only here.
+  protected readonly canRetrySeries = computed(
+    () => this.mode() === 'recurring' && (this.rejection()?.mayHaveBeenCreated ?? false),
+  );
+
   protected onTitleInput(event: Event): void {
     this.title.set((event.target as HTMLInputElement).value);
+  }
+
+  protected readonly frequencies = RECURRENCE_FREQUENCIES;
+
+  protected setMode(mode: BookingMode): void {
+    this.mode.set(mode);
+    // A rejection belongs to the request that earned it; switching modes makes
+    // it about a different request entirely.
+    this.rejection.set(null);
+  }
+
+  protected setFrequency(event: Event): void {
+    const frequency = (event.target as HTMLSelectElement).value as RecurrenceFrequency;
+    this.updateRecurrence({ frequency });
+  }
+
+  protected setIntervalValue(event: Event): void {
+    this.updateRecurrence({ intervalValue: numberFrom(event) });
+  }
+
+  protected setLocalStartTime(event: Event): void {
+    this.updateRecurrence({ localStartTime: stringFrom(event) });
+  }
+
+  protected setLocalEndTime(event: Event): void {
+    this.updateRecurrence({ localEndTime: stringFrom(event) });
+  }
+
+  protected setStartDate(event: Event): void {
+    this.updateRecurrence({ startDate: stringFrom(event) });
+  }
+
+  protected setEndCondition(endCondition: RecurrenceEndConditionKind): void {
+    this.updateRecurrence({ endCondition });
+  }
+
+  protected setEndDate(event: Event): void {
+    this.updateRecurrence({ endDate: stringFrom(event) });
+  }
+
+  protected setOccurrenceCount(event: Event): void {
+    this.updateRecurrence({ occurrenceCount: numberFrom(event) });
+  }
+
+  private updateRecurrence(patch: Partial<RecurrenceFormValue>): void {
+    this.recurrence.update((current) => ({ ...current, ...patch }));
   }
 
   protected incrementQuantity(): void {
@@ -454,9 +704,18 @@ export class BookingComponent {
   // CreateBookingCommandRequestValidator requires of both (a zone designator,
   // no fractional seconds).
   protected confirmBooking(): void {
+    if (!this.canSubmit()) {
+      return;
+    }
+
+    if (this.mode() === 'recurring') {
+      this.createSeries();
+      return;
+    }
+
     const resource = this.resource();
     const selection = this.selection();
-    if (!resource || !selection || !this.canSubmit()) {
+    if (!resource || !selection) {
       return;
     }
 
@@ -497,6 +756,88 @@ export class BookingComponent {
         },
       });
   }
+
+  // FR-5.1 / FR-5.4. The recurring counterpart of confirmBooking, and the one
+  // write in this app that is genuinely safe to retry.
+  //
+  // **The idempotency key's lifecycle, spelled out because getting it backwards
+  // fails in both directions** (wp7-plan.md step 7): one key per submission
+  // *attempt*, reused only when retrying that same attempt after an outcome
+  // nobody could observe, and regenerated as soon as the form changes. Reuse it
+  // too eagerly and a deliberate second series silently resolves to the first;
+  // regenerate it on a retry and a crash-resumed request creates a duplicate
+  // series — which is precisely what `RecurrenceCreationOperation` exists to
+  // prevent (the 2026-09-15 hardening pass, item 11).
+  //
+  // "The same attempt" is decided by the request body itself rather than by a
+  // dirty flag: if every field is byte-identical to what the failed attempt
+  // sent, it *is* that attempt. Edit anything and the body differs, so the next
+  // submit mints a fresh key without anything having to remember to.
+  private createSeries(): void {
+    const resource = this.resource();
+    if (!resource) {
+      return;
+    }
+
+    const title = this.title().trim();
+    const request = buildRecurrenceRequest(
+      this.recurrence(),
+      resource.id,
+      this.quantity(),
+      title.length > 0 ? title : null,
+    );
+
+    const body = JSON.stringify(request);
+    const idempotencyKey =
+      this.pendingAttempt?.body === body ? this.pendingAttempt.key : crypto.randomUUID();
+    this.pendingAttempt = { key: idempotencyKey, body };
+
+    this.submitting.set(true);
+    this.rejection.set(null);
+
+    this.recurrenceRulesService.create(request, idempotencyKey).subscribe({
+      next: (response) => {
+        this.seriesOutcome.set(seriesOutcomeFromResponse(response));
+        this.submitting.set(false);
+        // A definitive answer: a later submit is a new attempt, not a retry.
+        this.pendingAttempt = null;
+      },
+      error: (error: unknown) => {
+        this.submitting.set(false);
+
+        // Nothing could be booked. Not a failure to report as one: the 422
+        // carries the same per-occurrence breakdown a 201 does, and that
+        // breakdown *is* the answer (FR-5.4).
+        const refusal = parseSeriesRefusal(error);
+        if (refusal) {
+          this.seriesOutcome.set(refusal);
+          this.pendingAttempt = null;
+          return;
+        }
+
+        const rejection = describeBookingRejection(error);
+        if (rejection.resourceNotFound) {
+          this.resource.set(null);
+          this.notFound.set(true);
+          this.pendingAttempt = null;
+          return;
+        }
+
+        // Only an unobservable outcome keeps the key alive — that is the one
+        // case where trying again means "finish that attempt" rather than
+        // "start another". Any other refusal created nothing, so the next
+        // submit should be a fresh attempt.
+        if (!rejection.mayHaveBeenCreated) {
+          this.pendingAttempt = null;
+        }
+
+        this.rejection.set(rejection);
+      },
+    });
+  }
+
+  // Survives across submits on purpose — see createSeries.
+  private pendingAttempt: { key: string; body: string } | null = null;
 
   private fetchResource$(id: string): Observable<ResourceLoadResult> {
     this.loading.set(true);

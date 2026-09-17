@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { ActivatedRoute, Router, convertToParamMap } from '@angular/router';
+import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 import { BehaviorSubject } from 'rxjs';
 import { ResourceDetailComponent } from './resource-detail.component';
 import { BreadcrumbService } from '../../../layout/breadcrumb.service';
@@ -68,10 +68,12 @@ describe('ResourceDetailComponent', () => {
       providers: [
         provideHttpClient(),
         provideHttpClientTesting(),
-        // RouterLink ("Check availability" / "Back to Resources") injects
-        // both, whether or not a test ever calls detectChanges() — see
-        // ResourceListComponent's own spec for why this can't be skipped.
-        { provide: Router, useValue: { navigate: () => Promise.resolve(true) } },
+        // A real Router rather than a `{ navigate }` stub: RouterLink builds
+        // its href through createUrlTree/serializeUrl, so the recurring entry
+        // point's own query params can only be asserted against a real one.
+        // The ActivatedRoute stub below still wins for the route params, being
+        // provided last.
+        provideRouter([]),
         {
           provide: ActivatedRoute,
           useValue: {
@@ -274,5 +276,27 @@ describe('ResourceDetailComponent', () => {
     const el = fixture.nativeElement as HTMLElement;
     expect(el.querySelector('.primary-button')?.textContent).toContain('Check availability');
     expect(el.querySelector('.archived-notice')).toBeNull();
+  });
+
+  // The recurring entry point (owner's call, 2026-09-17): a series names its
+  // own schedule, so requiring a slot to be picked first made the availability
+  // screen a toll booth rather than a step. Picking one still works and still
+  // pre-fills the form — it is simply no longer the only way in.
+  it('offers a direct route to a recurring booking, carrying the mode', () => {
+    const fixture = createFixture();
+    httpMock.expectOne(`${API}/resources/r1`).flush(fakeDetail({ isArchived: false }));
+    fixture.detectChanges();
+
+    const link = (fixture.nativeElement as HTMLElement).querySelector('.secondary-button');
+    expect(link?.textContent).toContain('Book a recurring series');
+    expect(link?.getAttribute('href')).toBe('/resources/r1/book?mode=recurring');
+  });
+
+  it('offers no recurring route for an archived resource either', () => {
+    const fixture = createFixture();
+    httpMock.expectOne(`${API}/resources/r1`).flush(fakeDetail({ isArchived: true }));
+    fixture.detectChanges();
+
+    expect((fixture.nativeElement as HTMLElement).querySelector('.secondary-button')).toBeNull();
   });
 });

@@ -141,6 +141,32 @@
                 />
               </svg>
             </a>
+
+            <!-- Straight to the recurring form. "Book resource" above goes to
+                 availability, which is the right first stop for a one-off slot
+                 and a detour for a series: a series names its own schedule and
+                 uses none of a picked slot's instants, so routing through that
+                 screen was a step nobody could skip (owner's call,
+                 2026-09-17). stopPropagation for the same reason as its
+                 neighbour — the card itself navigates to the detail page. -->
+            <a
+              class="book-link book-link--secondary"
+              [routerLink]="['/resources', resource.id, 'book']"
+              [queryParams]="recurringEntryQueryParams"
+              (click)="$event.stopPropagation()"
+            >
+              Recurring
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M4 9a6 6 0 0 1 10-3l2 2M20 15a6 6 0 0 1-10 3l-2-2M16 4v4h-4M8 20v-4h4"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </a>
           }
         </div>
       }

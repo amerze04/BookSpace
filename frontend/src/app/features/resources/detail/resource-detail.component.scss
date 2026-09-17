@@ -111,6 +111,31 @@
 
 .header-actions {
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.5rem;
+}
+
+// The recurring entry point, beside "Check availability" rather than instead
+// of it: picking a slot first is still the better on-ramp when you want to see
+// the week, it is simply no longer the only way in.
+.secondary-button {
+  display: inline-block;
+  padding: 0.65rem 1.25rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-weight: 600;
+  font-size: 0.9rem;
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+
+  &:hover {
+    background: var(--color-bg);
+  }
 }
 
 // No active booking action for an archived resource (item 9) — text in the

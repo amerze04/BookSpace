@@ -31,6 +31,32 @@ export function addDays(dateStr: LocalDateString, days: number): LocalDateString
   return date.toISOString().slice(0, 10);
 }
 
+// **Clamping, like .NET's DateOnly.AddMonths — not JS's own overflow.**
+// `new Date(2026, 0, 31).setUTCMonth(1)` rolls forward to March 3; DateOnly
+// answers February 28. The recurrence span guard has to agree with
+// `CreateRecurrenceSeriesCommandRequestValidator` exactly or the form and the
+// API would disagree about which series fit inside decision `0007`'s two-year
+// cap, so this clamps to the last day of the target month the way the server
+// does.
+export function addMonths(dateStr: LocalDateString, months: number): LocalDateString {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const zeroBased = month - 1 + months;
+  const targetYear = year + Math.floor(zeroBased / 12);
+  const targetMonth = ((zeroBased % 12) + 12) % 12;
+  const lastDay = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
+  return toIsoDate(targetYear, targetMonth + 1, Math.min(day, lastDay));
+}
+
+// Same clamping rule, for whole years: 2028-02-29 plus one year is 2029-02-28,
+// as DateOnly.AddYears gives.
+export function addYears(dateStr: LocalDateString, years: number): LocalDateString {
+  return addMonths(dateStr, years * 12);
+}
+
+function toIsoDate(year: number, month: number, day: number): LocalDateString {
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
 // Inclusive of both ends, mirroring AvailabilityQueryRules.RangeLengthInDays
 // on the backend exactly — a single date is a range of one day, not zero.
 export function rangeLengthDays(fromDateStr: LocalDateString, toDateStr: LocalDateString): number {
