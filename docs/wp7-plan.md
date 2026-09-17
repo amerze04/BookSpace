@@ -9,47 +9,84 @@ is a gap to flag rather than something to add on judgment (CLAUDE.md §11).
 
 ## Status
 
-**In progress.** Plan approved by the repo owner 2026-09-15, before any code
-was written, the same process WP-3 through WP-6 each went through. The owner
-has allocated more than a week to this package and wants every phase built
-seriously rather than rushed; each phase is split into its own smaller steps
-(as WP-3 through WP-5 did on the backend, and as WP-6 did on the frontend)
-once that phase is about to start, not all up front in this document.
+**In progress — three of seven phases done.** Plan approved by the repo owner
+2026-09-15, before any code was written, the same process WP-3 through WP-6
+each went through. The owner has allocated more than a week to this package
+and wants every phase built seriously rather than rushed; each phase is split
+into its own smaller steps once it is about to start, not all up front.
 
-**Phase 1 (resource list & detail) is done, 2026-09-15** — all five steps,
-including the mid-phase pivot on step 3 (client-side search/approval filters
-reversed to real backend query params, CLAUDE.md's "Resource list filters
-extended for WP-7" entry) and its subsequent redo. 89 vitest tests pass, 0
-failed. See §5 below for what each step delivered.
+| Phase | State | Tests at close |
+|---|---|---|
+| 1 — Resource list & detail | **Done** 2026-09-15 (5 steps) | 89 |
+| 2 — Availability view | **Done** 2026-09-16 (7 steps) | 199 |
+| 3 — Booking form (one-off + recurring) | **Done** 2026-09-17 (8 steps) | 462 |
+| — Recurring-booking hardening pass | **Done** 2026-09-17 (7 findings) | 556 |
+| 4 — My Bookings (view, cancel, series cancel) | **Next** — 7 steps planned, approved 2026-09-17 | — |
+| 5 — Calendar (the hard problem) | Not started | — |
+| 6 — Approval queue | Not started | — |
+| 7 — End-to-end wiring + AC sweep | Not started | — |
 
-**Phase 3 (booking form) is in progress — steps 1 and 2 done 2026-09-17.**
-Eight steps in §5 below, written before any code as every prior phase was.
-Three calls were settled with the owner first: idempotency is the recurring
-path only (the one-off gap is flagged in §7 with a named owner), manual
-one-off date/time entry is dropped in favour of pre-fill-only, and the phase
-did not wait for a design. **Steps 1–5 are done — the whole one-off half of
-this phase**: models + both services, the route's shell, the one-off form and
-its submit, the Confirmed-vs-Pending outcome panel, and the full rejection
-catalogue. The design arrived mid-phase
-(`design/booking_view_design.png`, 2026-09-17) and everything from step 2 on
-was built against it. Steps 6–7 (the recurring half) are next, and the owner
-is branching/PR-ing at that seam. **A fourth call, taken on review of step
-2**: the selected slot travels from availability to booking as **query
-parameters**, not router state — see step 2 for the reasoning and what was
-weighed against it. 376 vitest tests pass, 0 failed.
+Per-phase detail is in §5; the delivery narrative is in
+[`docs/roadmap/wp7.md`](roadmap/wp7.md). Phase 1's own mid-phase pivot
+(client-side filters reversed to real backend query params) is recorded in
+CLAUDE.md's "Resource list filters extended for WP-7" entry. Phase 2 was
+click-tested live by the owner; Phase 3 was taken as two branches at the
+owner's own seam, the one-off half (steps 1–5) and the recurring half
+(steps 6–8).
 
-**The one-off half of this phase is steps 3–5** (form + submit, the
-Confirmed-vs-Pending outcome, and the full rejection catalogue); steps 6–7 are
-the recurring half. The owner is branching/PR-ing at that seam, so nothing
-recurring — including the one-time/recurring toggle itself — is built before
-step 5 is done.
+**Five calls settled with the owner along the way**, each written up where it
+applies: idempotency is the recurring path only (§7's flagged gap covers the
+one-off endpoint); manual one-off date/time entry is dropped in favour of
+pre-fill-only; the phase did not wait for a design (one arrived mid-phase,
+`design/booking_view_design.png`); the selected slot travels as **query
+parameters** rather than router state (Phase 3 step 2); and a recurring
+booking is reachable directly from a resource via **`?mode=recurring`**
+rather than requiring a slot to be picked first (Phase 3 step 6), from both
+the resource list card and the detail page.
 
-**Phase 2 (availability view) is done, 2026-09-16** — seven steps, including
-four rounds of owner-driven refinement on step 6's selection interaction
-(min/max duration enforcement, a burgundy sub-range overlay instead of the
-whole bar filling solid, dragging the overlay as a whole, click-elsewhere-
-clears). 199 vitest tests pass, 0 failed; verified live by the owner, not
-just by unit tests. See §5 below for what each step delivered.
+**A hardening pass over the recurring half followed on 2026-09-17**, after
+Phase 3 closed and before Phase 4 started — seven findings reviewed against
+the code, six fixed, one (idempotency-key durability across a reload)
+answered with a decision and on-screen copy rather than a migration. Full
+narrative in [`docs/roadmap/wp7.md`](roadmap/wp7.md); the short version of
+what changed is in CLAUDE.md's WP-7 subsection. Baseline moved from 462 to
+**556 vitest tests**, and each new regression test was proven to fail against
+the pre-fix code before being kept.
+
+### Where things stand for the next session
+
+- **Phase 4 is next** — My Bookings. It is also what gives `/my-bookings` a
+  real destination; the booking screen's own outcome panel already links
+  there, and that link is correct-but-inert until then.
+- **Phase 4's step list is written and approved** (§5, seven steps), together
+  with the three calls settled with the owner on 2026-09-17: the design lands
+  before step 1, the list opens on Upcoming, and decision `0002`'s TenantAdmin
+  reach defers to Phase 6 so it is built once, with the screen that needs it.
+- **The My Bookings design is not in `design/` yet** — the owner confirmed on
+  2026-09-17 that it arrives before the phase starts. Unlike Phase 2 (began
+  without one) and Phase 3 (received one mid-build), this phase should not
+  have to invent a visual vocabulary and reconcile it afterwards.
+- **Phase 4 inherits three things the hardening pass established** and should
+  not re-litigate: server field messages take precedence over client ones and
+  are cleared when their control is edited; anything that feeds a submit is
+  disabled while it is in flight; and an outcome panel renders from what was
+  submitted, not from live form state.
+- **The browser walkthrough of Phase 3 is the one outstanding verification.**
+  Every request/response pair the screens depend on is checked against the
+  running API, and the vitest suite asserts rendering, but no automation
+  exists in this environment to click the flow itself. Both bugs found during
+  Phase 3 were found by the owner clicking, neither by the suite — so this
+  gap is worth closing rather than discounting.
+- **Open, deliberately**: `?mode` is read from the URL on arrival but the
+  toggle does not write it back, so sharing a URL mid-form always shares the
+  one-off view. A small change if it is wanted.
+- **Open, owned elsewhere**: `POST /bookings` still has no idempotency key
+  (§7), and the stale `SlotUnavailable`/`CapacityExceeded` comment inside the
+  applied `AddCreateBookingProcedure` migration stays as-is per CLAUDE.md §5.
+- **No new numbered decision docs were written for Phase 3's calls**, matching
+  how Phases 1–2 recorded theirs: they live in this plan beside the step they
+  govern. Promote any of them to `docs/decisions/` if they start being cited
+  from outside WP-7.
 
 ---
 
@@ -184,8 +221,8 @@ with no design to build against.
 
 | Phase | Screen / component | Status |
 |---|---|---|
-| 1 | **Resource list** | Provided — `design/resources_design.png`. Admin actions (New resource, per-card `⋮` menu) not built; see §3. |
-| 1 | **Resource detail** | Provided — `design/resource_details_design.png`. "Edit resource" not built; "Check availability" routes to Phase 2. |
+| 1 | **Resource list** | Provided — `design/resources_design.png`. Admin actions (New resource, per-card `⋮` menu) not built; see §3. Each card gained a second action in Phase 3, "Recurring" (`?mode=recurring`) beside "Book resource" — not in the design, added because routing a series through the availability screen was a step nobody could skip. |
+| 1 | **Resource detail** | Provided — `design/resource_details_design.png`. "Edit resource" not built; "Check availability" routes to Phase 2. Gained a second action in Phase 3, "Book a recurring series" (`?mode=recurring`) — not in the design, added because a series needs no picked slot. |
 | 2 | **Availability view** | Needed before Phase 2 starts. |
 | 3 | **Booking form** (one-off + recurring, validation states) | Provided mid-phase, 2026-09-17 — `design/booking_view_design.png`. Covers the one-time half only; the owner's instruction is that choosing "Recurring" expands the recurrence fields in place, under Title, in the same component. Deviations recorded in Phase 3's step 2 below. |
 | 4 | **My Bookings** (list, detail, cancel confirmation, series-vs-occurrence cancel choice) | Needed before Phase 4 starts. |
@@ -628,11 +665,15 @@ and confirm "Continue to booking" carries the right UTC span forward.
 
 **API:** `GET /resources/{id}/availability`.
 
-### Phase 3 — Booking form (one-off + recurring)
+### Phase 3 — Booking form (one-off + recurring) — **Done** (2026-09-17)
 
 **Plan written 2026-09-16**, before any code, same as every prior phase. The
 step breakdown below is added now because this phase is next, per §7's rule
 that a phase is broken down immediately before it starts and not sooner.
+
+All eight steps are done. 462 vitest tests, 0 failed; `npx ng build` clean.
+Taken as two branches at the owner's own seam — the one-off half (steps 1–5)
+and the recurring half (steps 6–8).
 
 - `BookingsService.create()` / `RecurrenceRulesService.create()`.
 - One screen, a one-off/recurring toggle. The one-off half is pre-filled from
@@ -950,8 +991,10 @@ planned (one component, two form groups, not two routes).
    which is the false-minimum bug the 2026-09-16 hardening pass fixed one
    screen over and worth not reintroducing here. Title length mirrors
    `MaxTitleLength` (the input is also `maxlength`-bounded, so the check
-   catches a paste that slips past it). Quantity is clamped to the resource's
-   capacity. **Not guarded, on purpose**: raising the quantity above what the
+   catches a paste that slips past it). A quantity above the resource's
+   capacity is **refused** — it was briefly clamped instead, which silently
+   booked something other than what was asked for; see step 5's own correction.
+   **Not guarded, on purpose**: raising the quantity above what the
    availability query was answered for. Only `dbo.CreateBooking` can say
    whether a pool has room, so the form says so in a hint
    ("Availability was checked for 2 units…") and lets the request go — a
@@ -1121,7 +1164,8 @@ planned (one component, two form groups, not two routes).
    offers a retry, anywhere — §7's idempotency gap as the member experiences
    it.
 
-6. **The recurring toggle and its fields.** A segmented one-off/recurring
+6. **The recurring toggle and its fields — done, 2026-09-17.** A segmented
+   one-off/recurring
    control on the same screen (one component, two form groups — not two
    routes), with the recurring group carrying frequency (`Daily`/`Weekly`/
    `Monthly`), interval value, local start and end time, start date, and an
@@ -1147,7 +1191,97 @@ planned (one component, two form groups, not two routes).
    boundary for each frequency, the one-off→recurring pre-fill, and the
    local-time fields serializing as `"HH:mm:ss"`.
 
-7. **Recurring submit and the per-occurrence report.** The
+   **Delivered.** The toggle sits at the top of "Booking details" (the
+   design's own control) and the recurring group appears **under the Title**,
+   the owner's own placement. The form's logic lives in `recurrence-form.ts`
+   — value shape, guards, the span arithmetic and the request builder — kept
+   out of the component for the same reason `availability-grid.ts` is. 42 new
+   vitest tests (418 total, 0 failed), `npx ng build` clean.
+
+   **The span guard was checked against the live validator at its own
+   boundaries**, which is the only way to know the two agree rather than merely
+   look similar. Posting series that are all-refused for an unrelated reason
+   (03:00 local, outside every window) means the response says what the
+   *validator* decided while creating nothing: 105 weekly occurrences → 422
+   `NoOccurrencesCreated` (span accepted), 106 → 400 `ValidationFailed` on
+   `OccurrenceCount`; `endDate` 2028-09-24 → 422 (the cap itself is inside),
+   2028-09-25 → 400 on `EndDate`. The client draws both lines in exactly the
+   same places.
+
+   **Two arithmetic details that had to match .NET rather than JavaScript.**
+   `DateOnly.AddMonths` clamps onto a shorter month (Jan 31 + 1 month = Feb 28)
+   where JS's `Date` rolls over into March, and `AddYears` clamps a leap day
+   the same way — so `local-date.ts` gained `addMonths`/`addYears` that clamp.
+   Without them the form and `CK_RecurrenceRules_MaxSpan` would disagree about
+   which monthly series fit inside two years.
+
+   **What is deliberately not here:** the submit. Step 7 owns
+   `POST /recurrence-rules`, its `Idempotency-Key` lifecycle and the
+   per-occurrence report, so in recurring mode the Confirm button stays
+   disabled with a line saying so — submitting through the one-off path would
+   create a single booking for a member who asked for a series, and that is
+   asserted rather than assumed. The form itself is fully live meanwhile:
+   every guard runs as you type.
+
+   **Also decided here:** the one-off half's read-only Date/Time/Duration trio
+   is **hidden** in recurring mode rather than left on screen. The series names
+   its own start date and times in the group below, and showing the single
+   slot's as well would be the same fact twice, free to disagree the moment
+   either is edited.
+
+   #### The slot is no longer a toll booth (owner's call, 2026-09-17)
+
+   Step 6 first shipped with the recurring times **editable** and a picked slot
+   still **required** to reach the form at all. The owner challenged both, in
+   two rounds, and both challenges were right in different ways.
+
+   **Round 1 — should the times be read-only?** The argument for: changing them
+   invalidates whatever the availability screen checked, so server refusals
+   become an ordinary outcome. The argument that won: a recurring series was
+   never checked in the first place. The availability query answered one
+   question about one slot; a 12-week series books eleven more dates no query
+   was ever asked about, which is exactly why `POST /recurrence-rules` is
+   best-effort per occurrence and why FR-5.4 makes the per-occurrence report
+   the primary result rather than an error path. Locking the fields would
+   verify occurrence 1 of N and cost the ability to express "every Monday" or
+   "monthly on the 1st" without hunting for a matching slot. It also would not
+   have prevented the failure actually worth preventing — an *all-refused*
+   series from a time outside the resource's hours, which survives locking
+   (move the start date to a Sunday on a Mon–Fri resource and everything is
+   refused with the times still locked).
+   **What was built instead: the window guard.** `outsideOpeningHours` checks
+   the entered time against `ResourceDetail.availabilityWindows`, already
+   loaded, so nothing is fetched: for `Weekly`, against the start date's own
+   weekday, since every occurrence shares it; for `Daily`/`Monthly`, against
+   every weekday, since occurrences land on varying ones and partial refusals
+   there are legitimate information the report explains. Only a time that fits
+   *no* weekday is refused outright. "Partly open is not open" —
+   containment, not overlap, matching `OutsideAvailability`'s own rule.
+
+   **Round 2 — then what is the availability screen for, if a recurring booker
+   edits everything anyway?** This one landed: requiring a slot made the
+   screen a toll booth, and the ritual of picking a slot nobody cares about was
+   step 2's gate, not the recurring form's fault. So:
+   - **`?mode=recurring` is part of the URL contract** (`booking-arrival.ts`,
+     beside the selection params), and the resource detail page gained a
+     **"Book a recurring series"** link that goes straight there — a member who
+     knows their pattern never touches the calendar.
+   - **"Pick a time first" now applies to the one-off half only**, inline where
+     its fields would be rather than replacing the screen, so the toggle out of
+     that state stays reachable. The one-off half still requires a slot: it is
+     pre-fill only, and this client owns no local→UTC inversion to invent
+     instants with (CLAUDE.md §4.3).
+   - **Defaults come from the resource's own schedule** when no slot was
+     picked (`defaultRecurrenceFor`): the first upcoming day it is actually
+     open, at that day's opening time, for the shortest length it allows — so
+     the form opens valid rather than blank, which its own test asserts.
+
+   The availability screen keeps a real role for recurring bookings, just not a
+   compulsory one: picking a slot first fixes a weekday and a time the resource
+   is provably open at, so the whole series inherits a schedule likely to
+   succeed, and occurrence 1 is verified for free.
+
+7. **Recurring submit and the per-occurrence report — done, 2026-09-17.** The
    `Idempotency-Key` lifecycle, documented in the component rather than left
    implicit because getting it backwards fails in both directions: **one GUID
    per submission *attempt***, reused only when retrying that same attempt
@@ -1169,14 +1303,91 @@ planned (one component, two form groups, not two routes).
    producing the same breakdown, and the idempotency-key lifecycle (stable
    across a forced retry, fresh after a form edit).
 
-8. **Final verification.** Full `npx ng test --watch=false` and `npx ng build`,
-   plus a live click-through against the real running backend — which Phase 2
-   established as the bar, and which Phase 1 had to leave open. Specifically:
-   a one-off on an approval-gated resource landing `Pending`; a one-off into a
-   deliberately-taken slot producing the right 409; a recurring weekly series
-   with at least one forced rejection so the breakdown is genuinely exercised;
-   and an all-refused series proving the 422 path renders the same way the 201
-   does.
+   **Delivered.** `recurrence-outcome.ts` turns either answer into one
+   `SeriesOutcome`, and one panel renders both — the summary line, then the
+   per-date breakdown, which FR-5.4 makes the *primary* result rather than a
+   detail behind a disclosure. 44 new vitest tests (462 total, 0 failed),
+   `npx ng build` clean.
+
+   **"The same attempt" is decided by the request body, not by a dirty flag.**
+   The key is minted on submit and stored beside a `JSON.stringify` of exactly
+   what was sent; a later submit whose body is byte-identical is that same
+   attempt and reuses the key, and any edit produces a different body and so a
+   fresh one — with nothing having to remember to invalidate anything. The key
+   survives only an *unobservable* outcome (status 0, 5xx); every definitive
+   answer clears it, because a refusal created nothing and the next submit is a
+   new attempt rather than a resumption of that one.
+
+   **This is the one write in the app that can honestly offer a retry**, and the
+   UI says why: "Trying again is safe — this request carries a key that
+   resolves to the same series." The one-off half deliberately offers no such
+   button (§7's gap), and a test asserts the retry affordance appears for the
+   recurring half only.
+
+   **Verified end to end against the running API**, not only by mocks: a real
+   weekly series (3 occurrences, Wednesdays 10:00–11:00) came back `201` with a
+   genuinely mixed report — 1 `Refused` (`SlotUnavailable`) and 2 `Created` —
+   and **re-posting the identical body with the same `Idempotency-Key` returned
+   the same `recurrenceRuleId` and the same two booking ids**, which is the
+   property the retry button rests on, proven rather than assumed. The series
+   was cancelled afterwards (`POST /recurrence-rules/{id}/cancel`, both
+   occurrences freed), so the dev database carries only cancelled rows.
+
+   **A gap the tests caught, not review**: the all-refused panel told the
+   member to "adjust the series and try again" while offering no way back to
+   the form — the outcome panel had replaced it. It now has an **"Adjust the
+   series"** action that returns to the form with every field as it was; the
+   test that failed is the one that asserts a fresh key on the next attempt,
+   which could not be written without it.
+
+8. **Final verification — done, 2026-09-17.** Full `npx ng test --watch=false`
+   and `npx ng build`, plus a live click-through against the real running
+   backend — which Phase 2 established as the bar, and which Phase 1 had to
+   leave open. Specifically: a one-off on an approval-gated resource landing
+   `Pending`; a one-off into a deliberately-taken slot producing the right 409;
+   a recurring weekly series with at least one forced rejection so the
+   breakdown is genuinely exercised; and an all-refused series proving the 422
+   path renders the same way the 201 does.
+
+   **`npx ng test --watch=false`: 26 files, 462 passed, 0 failed.**
+   `npx ng build`: clean, three SCSS budget *warnings* (booking 9.75 kB,
+   availability 9.32 kB, resource list 4.69 kB against a 4 kB warning
+   threshold and the 16 kB error ceiling the 2026-09-15 pass set).
+
+   **All four scenarios were exercised against the running API**, with the
+   exact request shapes the client builds — so what was checked is the contract
+   the screen actually depends on:
+   - **Pending**: a one-off on the 3D Printer → `201`, `status: "Pending"`,
+     `approval.approvalRequestId` set and `expiresAtUtc` 24 hours out (FR-7.1,
+     FR-7.4) — the two fields the outcome panel branches on.
+   - **409**: the identical slot again → `409 SlotUnavailable`, the code the
+     top-of-form message and its "check availability" action key off.
+   - **A mixed series**: a blocking one-off placed on the second occurrence's
+     date, then a weekly series over it → `201` with
+     `Created / Refused(SlotUnavailable) / Created` — a genuinely mixed
+     breakdown, not a happy path (FR-5.4).
+   - **All refused**: the same series at 03:00 local → `422
+     NoOccurrencesCreated` carrying three `Refused(OutsideAvailability)`
+     entries, **structurally identical to the 201's own `occurrences`**, which
+     is the property that lets one panel render both.
+
+   Everything created was cancelled afterwards (two bookings and the series,
+   whose cancel freed both live occurrences), so the dev database carries only
+   cancelled rows from this pass. The five live bookings left in it are the
+   owner's own, from clicking through.
+
+   **Still outstanding, and flagged rather than claimed**: the browser
+   walkthrough itself. No automation is available in this environment, so what
+   is verified is every request/response pair the screens depend on, plus
+   rendering assertions in the vitest suite — not the rendered flow end to end.
+   The owner's own click-throughs during the phase covered much of it (the
+   quantity bug and the dropdown bug were both found that way, neither by the
+   suite), but a single pass over browse → availability → book → outcome, in
+   both modes, is the remaining check before Phase 3 is signed off.
+
+   **Also in this step**: removed `.panel--empty`, left behind when the mode
+   toggle replaced the full-page "pick a time first" panel with an inline
+   notice.
 
 **Screens needed:** booking form — none provided; built against the visual
 identity, per the third call above.
@@ -1213,7 +1424,119 @@ exercised, not just the happy path.
   snapshot decision `0019` describes) and `CancelledByUserId` differing from
   `UserId` reads as "cancelled by an administrator," per decision `0002`.
 
-**Screens needed:** My Bookings list/detail/cancel (to be designed).
+**Screens needed:** My Bookings list/detail/cancel. **The owner confirmed on
+2026-09-17 that the design lands before the phase starts**, so unlike Phase 2
+(which began without one) and Phase 3 (which received one mid-build), this
+phase does not have to establish its own visual vocabulary and then reconcile
+it later.
+
+#### The contract this phase actually consumes
+
+Read off the controller and the DTOs on 2026-09-17, not off this document's
+own §2 summary — the same check Phase 3 ran before it started, and worth
+repeating because three of these constraints are easy to get wrong from
+memory.
+
+| Endpoint | What it returns, and the parts that constrain the UI |
+|---|---|
+| `GET /bookings` | `PagedResult<ListBookingsQueryResponse>`. Filters: `from`, `to`, `status`, `resourceId`, `page`, `pageSize`, `sort`. The row carries `resourceName` and `userName` denormalized on, plus `recurrenceRuleId`, the span, `quantity`, `title`, `status` — **and none of the cancellation fields.** |
+| `GET /bookings/{id}` | `GetBookingQueryResponse`: everything on the row plus `checkedInAtUtc`, the cancellation trio, `createdAtUtc`/`updatedAtUtc`, and `approval`. **404 for anything this caller may not see, never 403** — another member's, another tenant's and a nonexistent id are byte-identical (AC-4 applied within one tenant). |
+| `POST /bookings/{id}/cancel` | Optional `{ reason }`. 200 carries the freed interval and who/when/why. 404 `BookingNotFound`, 422 `BookingNotCancellable`, 409 `ConcurrencyConflict`, 400 `ValidationFailed`. **Deliberately not idempotent** — a second call is 422, because there is an actor and a time to overwrite. |
+| `POST /recurrence-rules/{id}/cancel` | Optional `{ reason }`. 200 carries `cancelledBookingIds` — the ids, not a count, so a client knows exactly what it can stop showing as booked. 404 `RecurrenceRuleNotFound`, 422 `RecurrenceRuleNotCancellable`, 400. Cancels **only occurrences with `EndsAtUtc > now`**; past ones survive. |
+
+Three constraints to hold on to: `sort` is whitelisted server-side to
+`startsAtUtc | createdAtUtc | status`, so a sort control can only ever offer
+those; `from`/`to` must each carry a zone designator and `to > from`, or the
+request is a 400; and `Booking.CanBeCancelled` is *not terminal* **and**
+`EndsAtUtc > now`, which is the predicate the UI mirrors to decide whether a
+cancel action appears at all.
+
+#### Three calls settled before the phase starts (2026-09-17)
+
+1. **The design arrives before step 1.** Owner's confirmation, above.
+2. **Upcoming by default** — the list sends `from = now` and offers Past as a
+   toggle. A member opening My Bookings almost always wants what is ahead, and
+   the alternative fills page 1 with history on any account that has been used
+   for a while. The toggle is a URL parameter, not hidden state, so a filtered
+   view is shareable — the rule Phase 3 step 2 established for the selected
+   slot.
+3. **`scope=Own` only; decision `0002`'s TenantAdmin reach defers to Phase 6.**
+   FR-4.4 is the member's own view, and the queue in Phase 6 already has to
+   send `scope=tenant` — building the widening there means it is built once,
+   with a screen that needs it, instead of adding a role-conditional branch to
+   every step below for a path nothing yet exercises. `userName` is therefore
+   mapped but not rendered in this phase.
+
+#### Steps
+
+1. **Wire types and services.** `booking.models.ts` gains the list, detail and
+   both cancel response types, mirroring the DTOs exactly; `BookingsService`
+   gains `list()`, `getById()` and `cancel()`; `RecurrenceRulesService` gains
+   `cancel()`. No screen, so this step is reviewable as a contract on its own.
+   Tests: an omitted filter is left off the URL entirely rather than sent as a
+   default this file invented (decision `0015`), `from`/`to` go out
+   zone-designated, `sort` can only carry a whitelisted value, and both cancel
+   calls use `skipErrorToast` because their refusals are rendered in place.
+
+2. **The list, read-only.** `/my-bookings` stops being WP-6's placeholder.
+   Rows show resource name, span, status, quantity, title, and a recurrence
+   badge where `recurrenceRuleId` is set. Real pagination off
+   `PagedResult.totalPages`/`hasPreviousPage`/`hasNextPage`, exactly as the
+   resource list does since the 2026-09-16 pass — not a truncation notice.
+   Loading, empty, error and 404 states all present before any action exists.
+
+3. **Filters, in the URL.** Status and Upcoming/Past as query parameters
+   (`?status=&when=`), `when` mapped onto `from`/`to`. Any filter change resets
+   to page 1, the rule the resource list already follows.
+
+4. **The detail screen.** `/my-bookings/:id`, the full detail read. The span
+   renders in the viewer's own zone with the resource's alongside when the two
+   differ — the booking screen's convention, and §3's display default (decision
+   `0003` governs the availability *question*, not how a booked instant is
+   read back). Two cancellation cases have to read correctly rather than as one
+   generic "Cancelled": `cancelledByUserId ≠ userId` is *cancelled by an
+   administrator* (decision `0002`), and `cancelledByUserId = null` with a
+   reason is *a blackout* (decision `0019`'s text snapshot, which
+   `Booking.CancelForBlackout` leaves the actor null for on purpose). A 404
+   reuses the established "doesn't exist, or you don't have access" wording.
+
+5. **Cancel one booking.** Confirm-then-act, with an optional reason.
+   `CanBeCancelled` is mirrored client-side to decide whether the action shows;
+   the server stays the authority. Refusals go through a cancel dialect on the
+   `RejectionDialect` the 2026-09-17 hardening pass introduced — `BookingNotFound`,
+   `BookingNotCancellable`, `ConcurrencyConflict` — rather than a second
+   mapper. **Because cancel is not idempotent it inherits `POST /bookings`'
+   rule exactly**: disabled while in flight, and *no retry button* on an
+   unknown outcome, since a repeat would quietly rewrite who called the meeting
+   off. Success updates from the response rather than blind-refetching.
+
+6. **The series choice.** A booking carrying a `recurrenceRuleId` offers an
+   explicit two-way choice — *this occurrence* or *the whole remaining series*
+   — never one button that is ambiguous about which it means. The copy states
+   what "remaining" means (`EndsAtUtc > now`; past occurrences survive) before
+   the member confirms, not after, and the result reports how many occurrences
+   were actually freed from `cancelledBookingIds` rather than a bare success.
+
+7. **Sweep.** DOM assertions for every state, not signal-level ones — Phase 3's
+   own lesson, and both of its bugs were things a member could see. Accessibility:
+   status conveyed by more than colour, focus handled on the confirm affordance,
+   400px width. Then the live walkthrough in the Demo line below, and the
+   roadmap/CLAUDE.md updates at close.
+
+#### Flagged before starting
+
+- **The list row cannot show "cancelled by an administrator".**
+  `cancelledByUserId` is on the detail response only, which is correct — a page
+  of twenty rows should not carry columns null on all of them — but it means
+  the list shows *Cancelled* and the reason lives one click deeper. Accepted
+  rather than discovered at review.
+- **This app has no modal primitive.** The cancel confirmation is planned as an
+  inline expanding panel rather than a dialog: a focus-trapped modal is a real
+  component with real accessibility obligations, and nothing else in Phase 4
+  needs one. Revisit if the design asks for a true dialog.
+- **No new numbered decision docs are expected**, matching Phases 1–3: the
+  calls above live here, beside the step they govern, unless one starts being
+  cited from outside WP-7.
 
 **Demo:** cancel a one-off booking and confirm the slot frees in Phase 2's
 availability view; cancel one occurrence of a series and confirm the rest
@@ -1353,6 +1676,20 @@ inventing a different shape on the frontend.
   is added to this document **one phase at a time, immediately before that
   phase starts** — not drafted for all seven phases up front, per the owner's
   instruction for this package.
+- **Carried out of Phase 3, for whoever picks up Phase 4:**
+  - `/my-bookings` is still WP-6's placeholder, and two shipped screens
+    already link to it (the booking outcome panel, and the unknown-outcome
+    message that tells a member their one-off booking *may* have been
+    created). Phase 4 is what makes those links useful; neither is dead.
+  - The booking screen's own `BookingsService` has `create()` only. Phase 4
+    adds `list()`, `getById()` and `cancel()` there, plus
+    `RecurrenceRulesService.cancel()` — see this document's Phase 4 section
+    and its own correction note about where those methods belong.
+  - `booking-rejection.ts` deliberately maps only the codes
+    `POST /bookings` can return. Phase 4's cancel path brings
+    `BookingNotFound` and `BookingNotCancellable`, which belong in that same
+    catalogue with the same "message *and* placement" treatment rather than in
+    a second one.
 - Nothing here touches the backend. If a phase turns up a genuine contract
   gap (a field the UI needs that no response carries, an endpoint shape that
   doesn't fit the screen), that's a stop-and-ask per CLAUDE.md §11, not a

@@ -72,7 +72,7 @@ export interface DayRow {
 
 // A plain minute range on one local day — the shape the set arithmetic below
 // works in, shared by opening windows, bookable segments and blackouts alike.
-interface MinuteSpan {
+export interface MinuteSpan {
   startMinutes: number;
   endMinutes: number;
 }
@@ -294,7 +294,16 @@ function mergeAdjacentByKind(spans: readonly DayUnbookableSpan[]): DayUnbookable
 // member — which is exactly what the seeded 3D Printer's own 09:00-12:00 +
 // 12:00-17:00 pair did to one 11:00-13:00 blackout.
 function openSpansFor(date: LocalDateString, windows: readonly OpeningWindow[]): MinuteSpan[] {
-  const weekday = weekdayOf(date);
+  return openSpansForWeekday(weekdayOf(date), windows);
+}
+
+// The same thing for a weekday name rather than a date — what the recurring
+// booking form needs, since a series' occurrences are a weekday and a time
+// rather than a list of dates (`recurrence-form.ts`).
+export function openSpansForWeekday(
+  weekday: string,
+  windows: readonly OpeningWindow[],
+): MinuteSpan[] {
   const spans = windows
     .filter((window) => window.weekday === weekday)
     .map((window) => ({

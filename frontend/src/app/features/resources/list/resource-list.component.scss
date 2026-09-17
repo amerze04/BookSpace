@@ -278,6 +278,9 @@
   }
 }
 
+// The card's own footer rule sits on whichever of these is *first*, so two
+// booking links stack side by side under one line rather than each drawing
+// their own — see .book-link + .book-link below.
 .book-link,
 .archived-notice {
   display: inline-flex;
@@ -292,6 +295,24 @@
   svg {
     width: 1rem;
     height: 1rem;
+  }
+}
+
+// The second action ("Recurring") shares the footer with the first: no rule of
+// its own, no top margin claiming the remaining space, and a quieter weight so
+// "Book resource" stays the primary path.
+.book-link + .book-link {
+  margin-top: 0;
+  margin-left: 1rem;
+  padding-top: 0.75rem;
+  border-top: none;
+}
+
+.book-link--secondary {
+  color: var(--color-text-secondary);
+
+  &:hover {
+    color: var(--color-text);
   }
 }
 

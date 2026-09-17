@@ -6,6 +6,7 @@ import { ResourcesService } from '../resources.service';
 import { ResourceSummary, ResourceType } from '../resources.models';
 import { ResourceTypeIconComponent } from '../../../shared/resource-type/resource-type-icon.component';
 import { resourceCapacityLabel, resourceTypeLabel } from '../../../shared/resource-type/resource-type';
+import { recurringEntryQueryParams } from '../../booking/booking-arrival';
 
 // A generous page size — a tenant with over 100 resources is still the
 // exception CLAUDE.md's own filter-gap note flagged, so this stays large
@@ -55,6 +56,10 @@ export class ResourceListComponent {
   private readonly router = inject(Router);
 
   protected readonly typeFilters = TYPE_FILTERS;
+
+  // The recurring entry point's query params, from the booking feature's own
+  // contract module rather than spelled out here (see booking-arrival.ts).
+  protected readonly recurringEntryQueryParams = recurringEntryQueryParams();
   protected readonly selectedType = signal<ResourceType | null>(null);
 
   // includeArchived, search and approvalFilter are all real server

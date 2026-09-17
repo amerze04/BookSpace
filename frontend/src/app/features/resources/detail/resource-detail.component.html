@@ -46,6 +46,20 @@
           <span class="archived-notice">Archived — not bookable</span>
         } @else {
           <a class="primary-button" [routerLink]="['/resources', resource.id, 'availability']"> Check availability </a>
+          <!-- A series names its own schedule and uses none of a picked slot's
+               instants, so sending someone through the availability screen
+               first was a toll booth rather than a step (owner's call,
+               2026-09-17). The booking screen reads `?mode=recurring` and
+               opens on the recurring half, seeded from this resource's own
+               opening hours. Picking a slot first still works and still
+               pre-fills — it is simply no longer required. -->
+          <a
+            class="secondary-button"
+            [routerLink]="['/resources', resource.id, 'book']"
+            [queryParams]="recurringEntryQueryParams"
+          >
+            Book a recurring series
+          </a>
         }
       </div>
     </div>

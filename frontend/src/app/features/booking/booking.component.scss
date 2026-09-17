@@ -164,22 +164,143 @@
     line-height: 1.5;
   }
 
-  &--empty,
+  // The archived notice. `--empty` lived here too, for the full-page "pick a
+  // time first" panel that the mode toggle replaced with an inline notice
+  // (`.pick-first`) — removed rather than left behind.
   &--notice {
     text-align: center;
     padding: 2.5rem 1.5rem;
-  }
-
-  &--notice {
     border-color: var(--color-warning);
   }
 }
 
-.panel-note {
-  color: var(--color-text-secondary);
+// ---- Step 3: the one-off form ----
+
+// The one-time/recurring segmented control from the design.
+.mode-toggle {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 1.5rem;
+  padding: 0.25rem;
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+
+  button {
+    flex: 1;
+    padding: 0.6rem 1rem;
+    border: none;
+    border-radius: calc(var(--radius-md) - 2px);
+    background: transparent;
+    color: var(--color-text-secondary);
+    font: inherit;
+    font-weight: 600;
+    font-size: 0.9rem;
+    cursor: pointer;
+
+    &:hover:not(.active) {
+      color: var(--color-text);
+    }
+
+    &.active {
+      background: var(--color-primary);
+      color: #fff;
+    }
+  }
 }
 
-// ---- Step 3: the one-off form ----
+// Shown in place of the one-off fields when no slot was picked — the toggle
+// above stays reachable, which is the whole point of not replacing the screen.
+// `.recurrence-unavailable` shares it: a resource with no bookable hours
+// configured replaces the recurring fields the same way this replaces the
+// one-off ones, and for the same reason — the toggle above stays reachable.
+.pick-first,
+.recurrence-unavailable {
+  padding: 1.25rem;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+  text-align: center;
+
+  p {
+    margin: 0;
+  }
+
+  .secondary-button {
+    margin: 0.75rem 0 0.5rem;
+  }
+}
+
+.recurrence-unavailable {
+  margin-top: 1.5rem;
+
+  .notice-title {
+    margin-bottom: 0.4rem;
+    font-weight: 600;
+  }
+}
+
+// ---- Step 6: the recurring group ----
+
+.recurrence {
+  margin: 1.5rem 0 0;
+  padding: 1.25rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+
+  legend {
+    padding: 0 0.4rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+
+  .field-row {
+    margin-bottom: 0.75rem;
+  }
+
+  .field-label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-bottom: 0;
+  }
+
+  input,
+  select {
+    padding: 0.55rem 0.7rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    color: var(--color-text);
+    font: inherit;
+    font-size: 0.9rem;
+
+    &:disabled {
+      background: var(--color-bg);
+      color: var(--color-text-secondary);
+    }
+  }
+}
+
+.end-condition {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.radio-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+
+  input[type='number'] {
+    width: 5rem;
+  }
+
+  input[type='radio'] {
+    accent-color: var(--color-primary);
+  }
+}
 
 .field-row {
   display: grid;
@@ -416,6 +537,42 @@
 // colour carries the same distinction the heading and the copy do, rather
 // than being the only thing that does (a member who can't tell the two
 // greens apart still reads "not held for you yet").
+// FR-5.4's per-occurrence breakdown: the primary result of a recurring
+// submit, so it reads as a list of dates rather than as a disclosure.
+.occurrence-list {
+  margin: 0 0 1.5rem;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+  max-height: 18rem;
+  overflow-y: auto;
+  border-top: 1px solid var(--color-border);
+}
+
+.occurrence {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0.25rem;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 0.85rem;
+}
+
+.occurrence-date {
+  font-weight: 600;
+}
+
+.occurrence-reason {
+  color: var(--color-text-secondary);
+  text-align: right;
+}
+
+.occurrence--created .occurrence-reason {
+  color: var(--color-success);
+  font-weight: 600;
+}
+
 .panel--outcome {
   max-width: 34rem;
   margin: 0 auto;

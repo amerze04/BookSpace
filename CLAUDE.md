@@ -623,16 +623,20 @@ split into its own reviewable steps. Full narrative:
 - [x] Resource list and detail views. Done 2026-09-15 (Phase 1).
 - [x] Availability view for a resource and date range. Done 2026-09-16
       (Phase 2).
-- [ ] Booking form for one-off and recurring bookings, with clear
-      validation feedback.
+- [x] Booking form for one-off and recurring bookings, with clear
+      validation feedback. **Done 2026-09-17** (Phase 3).
 - [ ] Calendar view rendering bookings, including recurring series, without
       choking on volume. **Hard problem, not yet reached.**
 - [ ] Approval queue UI for approvers.
 - [ ] Cancellation and blackout handling in the UI.
 - [ ] Wire the full flow end-to-end against the real API.
 
-Acceptance criteria (none yet met — all four still open):
+Acceptance criteria (all four still open):
 - [ ] A member completes browse → book → confirm entirely through the UI.
+      Every screen on that path exists as of Phase 3 and every request it
+      makes is verified against the running API — what is missing is the
+      click-through itself, which no tool here can perform. Phase 7's sweep
+      is where it gets ticked.
 - [ ] Recurring bookings render correctly in the calendar.
 - [ ] The calendar stays responsive under realistic data volume.
 - [ ] An approver can action pending requests from the UI.
@@ -642,13 +646,49 @@ the provided designs show — flagged rather than silently dropped. No
 browser-automation tool was available to click through Phase 1's own
 walkthrough — flagged as a verification gap; Phase 2's flow, by contrast,
 was clicked through live by the owner directly and confirmed working.
-`resources/:id/book` (Phase 3's own route) already exists as a placeholder —
-Phase 2's "Continue to booking" navigates there carrying the selected UTC
-span and quantity, the contract Phase 3 needs to honor. That hand-over was
-router state until 2026-09-17, when the owner had it moved to **query
-parameters** (`?startUtc=…&endUtc=…&quantity=…`) so a chosen slot is
+`resources/:id/book` is the real booking screen since Phase 3. Phase 2's
+"Continue to booking" navigates there carrying the selected UTC span and
+quantity — router state until 2026-09-17, when the owner had it moved to
+**query parameters** (`?startUtc=…&endUtc=…&quantity=…`) so a chosen slot is
 shareable, bookmarkable and visible; `features/booking/booking-arrival.ts`
-owns both halves of it.
+owns both halves of that contract, and `?mode=recurring` besides.
+
+Phase 3 (2026-09-17) delivered both halves of the booking form in eight
+steps, across two branches at the owner's own seam: one-off (steps 1–5) and
+recurring (steps 6–8). Three owner decisions reshaped it mid-build — query
+params over router state, editable recurring times guarded by a client-side
+availability-window check rather than locked, and `?mode=recurring` as a
+direct entry point so the availability screen is no longer a toll booth on
+the way to a series. Two bugs were found by the owner clicking, neither by
+the suite (a `<select [value]>` binding showing the wrong time; a hand-edited
+`?quantity=16` silently booking one unit) — the lesson, recorded in
+`docs/roadmap/wp7.md`: for anything the user sees, assert against the
+rendered DOM and prove the regression test fails against the old code.
+
+**Recurring-booking hardening pass, 2026-09-17** — not a new phase; seven
+findings reviewed against the code, six fixed, one answered with a decision.
+Full narrative in [`docs/roadmap/wp7.md`](docs/roadmap/wp7.md). What is true
+now, in case it matters before touching this feature area:
+
+- `validateRecurrenceForm` validates structural primitives **before** any
+  derived date arithmetic, and uses `Number.isSafeInteger`. Both are
+  load-bearing: `local-date.ts` is `Date` arithmetic underneath and throws
+  `RangeError` on a cleared date box or an out-of-range count, from inside a
+  `computed` the template reads.
+- `POST /recurrence-rules` failures go through `recurrence-rejection.ts`, not
+  the one-off map — `booking-rejection.ts` now holds the shared machinery and
+  a `RejectionDialect` per endpoint. A recurrence failure never suggests
+  going back to availability: a series has no picked slot.
+- Every control feeding a submit is disabled while it is in flight, and the
+  series outcome panel renders from a snapshot of what was submitted.
+- A recurring "safe retry" is offered only while the form still builds
+  byte-identical bytes to the pending attempt. The idempotency key is
+  **deliberately not persisted** — same-page only, said so on screen.
+- Series wording follows `requiresApproval`: "Series submitted" / "Pending
+  approval" where every occurrence is created `Pending` (FR-7.1).
+- `recurrenceUnavailableReason` is an explicit state for a resource with no
+  bookable hours configured. It is **not** "fully booked" — that stays the
+  server's answer, reported per occurrence (FR-5.4).
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across
