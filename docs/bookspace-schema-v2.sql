@@ -504,8 +504,12 @@ CREATE INDEX IX_Notifications_Due
 --                           -- question did not arise
 --
 -- SlotUnavailable vs CapacityExceeded is split on what is left, not on the
--- resource: nothing free at all vs. some free but fewer than asked. An exclusive
--- resource can only ever produce the first (owner's call, 2026-09-07).
+-- resource: nothing free at all vs. some free but fewer than asked (owner's
+-- call, 2026-09-07). Corrected 2026-09-17: this used to add that an exclusive
+-- resource can only ever produce the first. It can also produce the second,
+-- because Quantity is deliberately unbounded at the validator — a request for
+-- 3 units of a one-unit resource leaves 1 remaining, which is "some free but
+-- fewer than asked".
 --
 -- dbo.ApproveBooking (FR-7.5, AC-5) is WP-5 and takes the same locks in the same
 -- order over the same index.

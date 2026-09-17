@@ -133,16 +133,14 @@ export class BookingComponent {
   // backing field that a recomputed dependency invalidates — except here the
   // framework does the invalidating.
   //
-  // Clamped to the resource's own capacity, because the quantity arrives in
-  // the URL and nothing stops a hand-edited `?quantity=9` on a resource that
-  // has one unit. Unclamped, that submits a request the server can only
-  // refuse (verified: a capacity-1 resource answers 409 CapacityExceeded for
-  // quantity 3) — and on an exclusive resource the stepper is hidden, so
-  // there would be no control to correct it with. Capacity 1 admits no
-  // quantity but 1 (decision `0005`), which is exactly what this then sends.
-  protected readonly quantity = linkedSignal(() =>
-    Math.min(this.selection()?.quantity ?? 1, this.resource()?.capacity ?? 1),
-  );
+  // **Not clamped to capacity**, deliberately, and this was got wrong once:
+  // clamping a hand-edited `?quantity=16` down to 1 made the booking succeed
+  // for a quantity nobody asked for, and said nothing about it. This codebase
+  // refuses rather than silently adjusts — decision `0015` rejects an
+  // oversized `pageSize` instead of clamping it, for the same reason. What the
+  // URL asked for is kept, and `capacityError` below refuses it with a message
+  // and a way out.
+  protected readonly quantity = linkedSignal(() => this.selection()?.quantity ?? 1);
 
   // Capacity 1 admits no quantity but 1 (decision `0005`'s amendment), so the
   // stepper is absent entirely rather than shown disabled — the same call
@@ -219,7 +217,52 @@ export class BookingComponent {
     return this.serverFieldMessage('title');
   });
 
-  protected readonly quantityError = computed<string | null>(() => this.serverFieldMessage('quantity'));
+  // A quantity the resource could never satisfy — which is reachable only
+  // from the URL, since the stepper's own + button stops at capacity.
+  // Checked here for the same reason the duration is: so the member is told
+  // before spending a round trip, and so the request this form builds is one
+  // the API could actually accept.
+  //
+  // Worth stating plainly because CLAUDE.md §6 currently reads otherwise: an
+  // exclusive resource *can* answer `CapacityExceeded` — verified live, a
+  // capacity-1 resource returns it for `quantity: 3` — because
+  // `CreateBookingCommandRequestValidator` deliberately puts no upper bound on
+  // quantity. So this is a real request the server refuses, not an impossible
+  // one.
+  protected readonly capacityError = computed<string | null>(() => {
+    const resource = this.resource();
+    const requested = this.quantity();
+    if (!resource || requested <= resource.capacity) {
+      return null;
+    }
+
+    return resource.capacity === 1
+      ? `This resource is a single unit, but ${requested} were asked for. Only one can be booked at a time.`
+      : `This resource has ${resource.capacity} units, but ${requested} were asked for.`;
+  });
+
+  protected readonly quantityError = computed<string | null>(
+    () => this.serverFieldMessage('quantity') ?? this.capacityError(),
+  );
+
+  // Where a quantity problem is actually visible. With a stepper on screen it
+  // belongs against that control; on an exclusive resource the stepper is
+  // absent entirely (decision `0005`), so a field-level message would have
+  // nothing to attach to and the member would see no explanation at all.
+  protected readonly topOfFormMessage = computed<string | null>(() => {
+    const fromRejection = this.rejection()?.formMessage;
+    if (fromRejection) {
+      return fromRejection;
+    }
+    return this.showQuantityStepper() ? null : this.quantityError();
+  });
+
+  // Going back to availability is the way out of a bad quantity: it re-picks a
+  // slot and builds a fresh URL, which is the only control an exclusive
+  // resource offers for it.
+  protected readonly topOfFormRecheck = computed(
+    () => this.rejection()?.recheckAvailability || (!this.showQuantityStepper() && this.quantityError() !== null),
+  );
 
   // The span in the resource's own timezone — what "Thu, Sep 24, 09:15" means
   // for the room itself (decision `0003`), which is the reading the
@@ -321,7 +364,8 @@ export class BookingComponent {
       !this.submitting() &&
       this.created() === null &&
       this.durationError() === null &&
-      this.titleError() === null,
+      this.titleError() === null &&
+      this.quantityError() === null,
   );
 
   private resourceId: string;

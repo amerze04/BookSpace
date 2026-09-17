@@ -1088,10 +1088,19 @@ planned (one component, two form groups, not two routes).
    quantity *can* be asked for and is refused by the procedure. The rule's
    premise holds for what can succeed, not for what can be sent. Owner's call
    whether to reword §6.
-   Handled on the client either way: the booking form now clamps the
-   URL-supplied quantity to the resource's capacity, since on an exclusive
-   resource the stepper is hidden and an unclamped `?quantity=9` would be a
-   dead end — every submit refused with no control to correct it.
+   Handled on the client, and **the first attempt at handling it was wrong**:
+   the form clamped a URL-supplied quantity down to the resource's capacity,
+   so the owner's own `?quantity=16` on the single-unit 3D Printer booked
+   *one* unit and reported success, having silently changed what was asked
+   for. Corrected the same day: the requested quantity is kept, and
+   `capacityError` refuses it before any request goes out — the same instinct
+   decision `0015` applies server-side when it rejects an oversized `pageSize`
+   rather than clamping it, and the same pre-flight the duration check already
+   gets. Placement follows where the member can actually act: against the
+   stepper when there is one (stepping back within capacity clears it), and at
+   the top of the form with a link back to availability when there isn't —
+   an exclusive resource renders no stepper at all (decision `0005`), so a
+   field-level message would have nothing to attach to.
 
    **Placement, as built:** `SlotUnavailable`, `CapacityExceeded` and
    `ConcurrencyConflict` are top-of-form **with** a link back to availability;

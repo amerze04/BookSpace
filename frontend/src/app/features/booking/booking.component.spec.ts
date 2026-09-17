@@ -42,6 +42,9 @@ type TestableBookingComponent = BookingComponent & {
   submitting: () => boolean;
   rejection: () => BookingRejection | null;
   quantityError: () => string | null;
+  capacityError: () => string | null;
+  topOfFormMessage: () => string | null;
+  topOfFormRecheck: () => boolean;
   created: () => CreateBookingResponse | null;
   confirmBooking(): void;
   isPending: () => boolean;
@@ -477,20 +480,64 @@ describe('BookingComponent', () => {
         expect(component.quantityRaisedAboveChecked()).toBe(false);
       });
 
-      // The quantity arrives in the URL, so a hand-edited value can exceed
-      // what the resource has — and on an exclusive resource the stepper is
-      // hidden, leaving no control to correct it with. Verified against the
-      // live API: a capacity-1 resource answers 409 CapacityExceeded for a
-      // quantity of 3, so an unclamped value could only ever be refused.
-      it('clamps a URL quantity larger than the resource\'s capacity', () => {
-        const component = loaded({ capacity: 1 }, { ...selectionParams, quantity: '9' });
+      // Found by the owner, 2026-09-17: a hand-edited `?quantity=16` on the
+      // single-unit 3D Printer booked *one* unit and said nothing, because
+      // this was briefly clamped to capacity. Silently booking something
+      // other than what was asked for is worse than refusing it — decision
+      // `0015`'s own "reject, don't clamp" instinct — so the value is kept
+      // and refused instead.
+      it('refuses a URL quantity larger than the capacity instead of quietly booking fewer', () => {
+        const component = loaded({ capacity: 1 }, { ...selectionParams, quantity: '16' });
 
-        expect(component.quantity()).toBe(1);
+        expect(component.quantity()).toBe(16);
+        expect(component.capacityError()).toContain('single unit');
+        expect(component.capacityError()).toContain('16');
+        expect(component.canSubmit()).toBe(false);
 
         component.confirmBooking();
-        const req = httpMock.expectOne(`${API}/bookings`);
-        expect((req.request.body as { quantity: number }).quantity).toBe(1);
-        req.flush(createdResponse(), { status: 201, statusText: 'Created' });
+        httpMock.expectNone(`${API}/bookings`);
+      });
+
+      it('words it with the real capacity for a pooled resource', () => {
+        const component = loaded({ capacity: 4 }, { ...selectionParams, quantity: '9' });
+
+        expect(component.capacityError()).toBe('This resource has 4 units, but 9 were asked for.');
+        expect(component.canSubmit()).toBe(false);
+      });
+
+      // With a stepper on screen the member can fix it themselves, so the
+      // message belongs against that control rather than at the top of the
+      // form — and stepping back within capacity clears it.
+      it('places the message against the stepper when there is one', () => {
+        const component = loaded({ capacity: 4 }, { ...selectionParams, quantity: '5' });
+
+        expect(component.quantityError()).not.toBeNull();
+        expect(component.topOfFormMessage()).toBeNull();
+
+        component.decrementQuantity();
+
+        expect(component.quantityError()).toBeNull();
+        expect(component.canSubmit()).toBe(true);
+      });
+
+      // An exclusive resource renders no stepper at all (decision `0005`), so
+      // a field-level message would have nothing to attach to — it goes to the
+      // top of the form, with the one control that can actually fix it.
+      it('places it at the top of the form, with a way out, when there is no stepper', () => {
+        const fixture = createFixture('r1', { ...selectionParams, quantity: '16' });
+        const component = fixture.componentInstance as TestableBookingComponent;
+        httpMock.expectOne(`${API}/resources/r1`).flush(fakeDetail({ capacity: 1 }));
+        fixture.detectChanges();
+
+        expect(component.showQuantityStepper()).toBe(false);
+        expect(component.topOfFormMessage()).toContain('single unit');
+        expect(component.topOfFormRecheck()).toBe(true);
+
+        const root = fixture.nativeElement as HTMLElement;
+        expect(root.querySelector('.submit-error')?.textContent).toContain('single unit');
+        expect(
+          Array.from(root.querySelectorAll('.submit-error a')).map((a) => a.getAttribute('href')),
+        ).toEqual(['/resources/r1/availability']);
       });
 
       it('clamps the stepper between 1 and the resource\'s capacity', () => {

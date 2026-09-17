@@ -59,8 +59,11 @@ interface RejectionCopy {
 // Reason code -> message and placement. Wording follows the code's own
 // meaning in `ReasonCodes`, not a paraphrase of the HTTP status: in
 // particular SlotUnavailable and CapacityExceeded split by *what is left*
-// (CLAUDE.md §6), so only the second mentions quantity — and it can only ever
-// appear on a pooled resource, since Capacity 1 admits no quantity but 1.
+// (CLAUDE.md §6), so only the second mentions quantity. It is not confined to
+// pooled resources: a request for more units than a one-unit resource has is
+// well-formed (the validator leaves Quantity unbounded) and comes back
+// CapacityExceeded — which is why the form refuses such a quantity itself,
+// before the request goes out.
 const REJECTION_COPY: Record<string, RejectionCopy> = {
   // 409s: the slot genuinely moved between the availability query and the
   // submit, so looking again is worth doing.

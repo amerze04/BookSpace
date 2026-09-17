@@ -364,28 +364,28 @@
                messages render against their own controls (see durationError /
                titleError / quantityError above); what lands here is everything
                with no control to blame. -->
-          @if (rejection(); as rejection) {
-            @if (rejection.formMessage; as message) {
-              <div class="submit-error" role="alert">
-                <p>{{ message }}</p>
+          @if (topOfFormMessage(); as message) {
+            <div class="submit-error" role="alert">
+              <p>{{ message }}</p>
 
-                @if (rejection.recheckAvailability) {
-                  <!-- Only when looking again could genuinely change the
-                       answer — a rule refusal offers nothing, so it suggests
-                       nothing. -->
-                  <a class="secondary-button" [routerLink]="['/resources', resource.id, 'availability']">
-                    Check availability
-                  </a>
-                }
+              @if (topOfFormRecheck()) {
+                <!-- Only when looking again could genuinely change the
+                     answer — a rule refusal offers nothing, so it suggests
+                     nothing. For a quantity the resource can't satisfy it is
+                     the only way out, since an exclusive resource has no
+                     stepper to correct it with. -->
+                <a class="secondary-button" [routerLink]="['/resources', resource.id, 'availability']">
+                  Check availability
+                </a>
+              }
 
-                @if (rejection.mayHaveBeenCreated) {
-                  <!-- Never a retry button: POST /bookings has no idempotency
-                       key (wp7-plan.md §7), so repeating a request whose
-                       outcome is unknown can create a second booking. -->
-                  <a class="secondary-button" routerLink="/my-bookings">Check My Bookings</a>
-                }
-              </div>
-            }
+              @if (rejection()?.mayHaveBeenCreated) {
+                <!-- Never a retry button: POST /bookings has no idempotency
+                     key (wp7-plan.md §7), so repeating a request whose
+                     outcome is unknown can create a second booking. -->
+                <a class="secondary-button" routerLink="/my-bookings">Check My Bookings</a>
+              }
+            </div>
           }
 
           <button type="button" class="primary-button confirm-button" [disabled]="!canSubmit()" (click)="confirmBooking()">

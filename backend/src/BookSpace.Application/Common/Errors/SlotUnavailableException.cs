@@ -15,8 +15,13 @@ namespace BookSpace.Application.Common.Errors;
 // succeed if retried after a cancellation.
 //
 // Distinct from CapacityExceeded by what is left rather than by the resource:
-// this one means nothing at all is free. On an exclusive resource it is the only
-// capacity refusal possible, since Capacity 1 admits no quantity but 1.
+// this one means nothing at all is free.
+//
+// Corrected 2026-09-17: this used to claim it is "the only capacity refusal
+// possible" on an exclusive resource. It is the only one for a *legal* request
+// there — Capacity 1 can only ever be booked one unit at a time — but Quantity
+// is deliberately unbounded at the validator, so a request for more comes back
+// CapacityExceeded instead. See ReasonCodes.CapacityExceeded.
 public sealed class SlotUnavailableException : AppException
 {
     public SlotUnavailableException(Guid resourceId)

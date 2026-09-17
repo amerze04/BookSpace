@@ -274,10 +274,16 @@ entry that lies.
 
 **`SlotUnavailable` vs `CapacityExceeded`** are split by *what is left*, not by
 the resource: nothing free at any instant → `SlotUnavailable`; something free
-throughout but less than was asked for → `CapacityExceeded`. An exclusive
-resource (capacity 1) can therefore only ever produce the first, which reads
-correctly. Keying it off `Capacity == 1` was rejected, because that would make
-the code describe the resource rather than the failure.
+throughout but less than was asked for → `CapacityExceeded`. Keying it off
+`Capacity == 1` was rejected, because that would make the code describe the
+resource rather than the failure.
+
+**Corrected 2026-09-17**: this used to add that an exclusive resource "can
+therefore only ever produce the first". That holds for a legal request — one
+unit is all a capacity-1 resource can accept — but `Quantity` is deliberately
+unbounded at the validator (it cannot see `Capacity`), so asking for 3 units of
+a one-unit resource is well-formed and comes back `CapacityExceeded`. Verified
+against the running API, not reasoned about.
 
 Every failure is a named `sealed` subclass of `AppException` that fixes its own
 kind and code, and `GlobalExceptionHandler` maps kind → status **once**. The
