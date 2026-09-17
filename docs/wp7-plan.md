@@ -33,7 +33,14 @@ mid-phase (`design/booking_view_design.png`, 2026-09-17) and step 2 (the
 route's shell) was built against it. **A fourth call, taken on review of step
 2**: the selected slot travels from availability to booking as **query
 parameters**, not router state — see step 2 for the reasoning and what was
-weighed against it. 291 vitest tests pass, 0 failed.
+weighed against it. Step 3 (the one-off form and its submit) followed the same
+day. 316 vitest tests pass, 0 failed.
+
+**The one-off half of this phase is steps 3–5** (form + submit, the
+Confirmed-vs-Pending outcome, and the full rejection catalogue); steps 6–7 are
+the recurring half. The owner is branching/PR-ing at that seam, so nothing
+recurring — including the one-time/recurring toggle itself — is built before
+step 5 is done.
 
 **Phase 2 (availability view) is done, 2026-09-16** — seven steps, including
 four rounds of owner-driven refinement on step 6's selection interaction
@@ -505,6 +512,34 @@ implied behavior.
    same as the explicit "Clear selection" link. All four used the Pointer
    Capture API (`setPointerCapture`) for dragging — mouse/touch/pen alike,
    no document-level listener teardown to get wrong.
+   **Bug found by the owner on 2026-09-17 (while Phase 3 was in flight) and
+   fixed the same day: the Start/End dropdowns displayed the wrong time.** On
+   the seeded 3D Printer (min 60, max 180) clicking a bar selected 09:00–12:00
+   — the overlay, the summary line and the eventual booking were all correct —
+   but the End dropdown showed 10:00, its own *first* option (Start + the
+   resource's minimum). Dragging the overlay or the Start handle moved that
+   displayed number without moving the selection; only dragging the End handle
+   made it agree, and from then on it behaved.
+   Cause: `<select [value]="…">` with `@for`-rendered options. The binding
+   sets the select's `value` *property* once, but a single select falls back
+   to its first option whenever its option list is rebuilt — and
+   `endTimeOptions` is rebuilt on every Start change, since it depends on
+   `selectedStartMinutes`. Angular then doesn't re-apply the binding, because
+   `selectedEndMinutes` itself never changed. Dragging the End handle
+   "fixed" it only because that finally changed the bound value.
+   Fixed by binding `[selected]` on each option instead, which survives the
+   list being rebuilt because each option carries its own state, plus
+   `withSelectedOption`, which adds the held value to the list when it falls
+   between two steps (the option grid steps from the segment's own start,
+   which a blackout can leave on an odd offset, while a drag snaps to
+   absolute 15-minute marks — the two grids need not line up).
+   **The lesson worth keeping**: every existing assertion about this
+   interaction was at the signal level and every one of them passed while the
+   screen was visibly wrong. The three regression tests added assert against
+   the rendered DOM, and were confirmed to fail against the old template
+   before the fix was kept. The resource list's own `[value]` select is *not*
+   affected — its options are static and never rebuilt — so it was left alone.
+
    **A genuine debugging detour**, separate from the feature work: the
    owner's "only the grid scrolls, keep the chrome pinned" request took
    three attempts, because the first two relied on `height: 100%`
@@ -815,7 +850,8 @@ planned (one component, two form groups, not two routes).
      room). It arrives in step 3 as the same stepper Phase 2 uses, shown only
      for `Capacity > 1` (decision `0005`).
 
-3. **One-off form + submit.** Title (optional, 200-char bound mirrored from
+3. **One-off form + submit — done, 2026-09-17.** Title (optional, 200-char
+   bound mirrored from
    `CreateBookingCommandRequestValidator.MaxTitleLength`), the quantity stepper
    (hidden entirely for `Capacity = 1`, per decision `0005`'s amendment —
    reusing Phase 2's own stepper behaviour), and a read-back of the selected
@@ -829,6 +865,67 @@ planned (one component, two form groups, not two routes).
    **Tests:** the request body built from arrival state, quantity bounds, the
    duration guard (including `null` min/max meaning "no rule", not "15
    minutes"), and double-submit being blocked.
+
+   **Delivered.** 25 new vitest tests (316 total, 0 failed), `npx ng build`
+   clean. The screen is the design's two-card layout: "Booking details" (the
+   read-only Date / Time / Duration fields, the quantity stepper for a pooled
+   resource, the Title input with its hint) beside "Booking summary" (the
+   resource, the same four values as rows, the approval notice, and Confirm
+   booking), with the "Need to make a change?" bar below — now hidden once a
+   booking exists, since "go back and pick a different time" is the wrong
+   advice at that point.
+
+   **The one-time/recurring toggle is deliberately not here.** It belongs to
+   step 6 together with the fields it reveals; rendering a dead "Recurring" tab
+   now would ship a control that does nothing, and the owner is taking the
+   one-off half as its own PR/branch — a half-wired toggle is exactly what
+   should not be in it.
+
+   **What the form guards, and what it deliberately doesn't.** Duration is
+   checked against the resource's own `minDurationMinutes`/`maxDurationMinutes`
+   and nothing else — `null` means "no rule configured", never a default,
+   which is the false-minimum bug the 2026-09-16 hardening pass fixed one
+   screen over and worth not reintroducing here. Title length mirrors
+   `MaxTitleLength` (the input is also `maxlength`-bounded, so the check
+   catches a paste that slips past it). Quantity is clamped to the resource's
+   capacity. **Not guarded, on purpose**: raising the quantity above what the
+   availability query was answered for. Only `dbo.CreateBooking` can say
+   whether a pool has room, so the form says so in a hint
+   ("Availability was checked for 2 units…") and lets the request go — a
+   `CapacityExceeded` rejection then reads as expected rather than arbitrary.
+
+   **Double-submit is the one thing the client genuinely has to prevent**
+   (§7's flagged gap: `POST /bookings` has no idempotency key, so a repeat
+   creates a second booking). The button is disabled while a request is in
+   flight and `confirmBooking` re-checks the same guard for anything reaching
+   it programmatically; nothing retries, anywhere.
+
+   **Two readings of the same span, when they differ.** The Date/Time fields
+   are the resource's own timezone (decision `0003` — the zone the
+   availability question was asked in), with a line naming the viewer's own
+   zone and the same span in it when the two differ, so a member in Sarajevo
+   booking a New York room knows when to actually be there. An overnight span
+   carries the end's own date, since it lands on two calendar days.
+
+   `formatDurationWords` ("2 hours 15 minutes") moved from
+   `availability.component.ts` into `local-date.ts` at its **second** caller
+   rather than the usual third: it is user-visible copy rendering the *same*
+   duration on two screens in one flow, so a second copy that drifted would be
+   a visible inconsistency, not merely duplicated code.
+
+   **Verified against the running backend**, not only by unit tests: the exact
+   body this form builds was posted to the real API for both resource kinds —
+   Conference Room A answered `201 Confirmed` with `approval: null`, the
+   approval-gated 3D Printer answered `201 Pending` with a real
+   `approvalRequestId` and a 24-hour `expiresAtUtc` (FR-7.4), and re-posting
+   the same slot answered `409 SlotUnavailable`. Both test bookings were
+   cancelled afterwards, so the dev database carries only the two cancelled
+   rows. Those three responses are exactly what steps 4 and 5 render.
+
+   **Left for the steps that own them**: the created-booking panel is a
+   one-line placeholder (step 4 makes it the real Confirmed-vs-Pending
+   confirmation), and a submit failure shows one generic sentence (step 5
+   replaces it with the reason-code catalogue, message *and* placement).
 
 4. **Success, and `Pending` shown as its own outcome.** FR-7.1 — a booking on
    an approval-gated resource comes back `Pending`, and the member has to be

@@ -226,20 +226,35 @@
             </div>
           </div>
 
+          <!-- `[selected]` on each option, not `[value]` on the select.
+               Bug found 2026-09-17: a `[value]` binding sets the select's
+               value *property* once, but the browser resets a single select
+               to its first option whenever the option list is replaced — and
+               Angular doesn't re-apply a binding whose own value hasn't
+               changed, so the dropdown silently showed the first option while
+               the selection signal held something else. The End dropdown hit
+               this on every click (its list starts at Start + the resource's
+               minimum, while the default End is Start + its maximum).
+               A per-option binding survives the list being rebuilt, because
+               each new option carries its own state. -->
           <label class="time-field">
             Start time
-            <select [value]="selectedStartMinutes()" (change)="onSelectedStartChange($event)">
+            <select (change)="onSelectedStartChange($event)">
               @for (opt of startTimeOptions(); track opt.minutes) {
-                <option [value]="opt.minutes">{{ opt.label }}</option>
+                <option [value]="opt.minutes" [selected]="opt.minutes === selectedStartMinutes()">
+                  {{ opt.label }}
+                </option>
               }
             </select>
           </label>
 
           <label class="time-field">
             End time
-            <select [value]="selectedEndMinutes()" (change)="onSelectedEndChange($event)">
+            <select (change)="onSelectedEndChange($event)">
               @for (opt of endTimeOptions(); track opt.minutes) {
-                <option [value]="opt.minutes">{{ opt.label }}</option>
+                <option [value]="opt.minutes" [selected]="opt.minutes === selectedEndMinutes()">
+                  {{ opt.label }}
+                </option>
               }
             </select>
           </label>

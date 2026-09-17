@@ -155,6 +155,20 @@ first pass, each landed as its own reviewable increment:**
    "Clear selection" link, via the same `document:click` listener already
    watching for the range popover's own outside-click dismissal.
 
+**A display bug in this screen's Start/End dropdowns, found by the owner on
+2026-09-17 during WP-7 Phase 3 and fixed the same day.** `<select [value]>`
+with `@for`-rendered options: the binding sets the value property once, a
+single select resets to its first option whenever its option list is rebuilt
+(`endTimeOptions` depends on `selectedStartMinutes`, so constantly), and
+Angular doesn't re-apply a binding whose value hasn't changed — so the End
+dropdown showed Start + the resource's *minimum* while the real selection was
+Start + its *maximum*. Fixed with `[selected]` per option plus a
+`withSelectedOption` helper for a held value that falls between two steps.
+Every existing test of this interaction asserted at the signal level and
+passed throughout; the three regression tests added assert against the
+rendered DOM and were confirmed to fail against the old template. Full detail
+in `docs/wp7-plan.md`'s Phase 2 step 6.
+
 **A genuine debugging detour, worth remembering for any future "pin the
 chrome, scroll only this one region" screen** (the calendar, Phase 5, is a
 likely next case): the owner's request that only the grid's rows scroll,

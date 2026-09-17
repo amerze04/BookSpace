@@ -16,6 +16,7 @@ import { AvailabilityService } from './availability.service';
 import { AvailabilityResponse, LocalDateString } from './availability.models';
 import {
   addDays,
+  formatDurationWords,
   formatLocalDate,
   formatLocalDateWithFullWeekday,
   formatLocalDateWithWeekday,
@@ -108,21 +109,30 @@ function buildTimeOptions(fromMinutes: number, toMinutesInclusive: number): { mi
   return minutes.map((m) => ({ minutes: m, label: formatMinutesOfDay(m) }));
 }
 
-// "2 hours 15 minutes" / "2 hours" / "45 minutes" — the selected-time
-// summary panel's own duration phrasing (full words, unlike the resource
-// detail page's abbreviated "2 hours 15 min", to match the design exactly).
-function formatSelectionDuration(minutes: number): string {
-  const hours = Math.floor(minutes / 60);
-  const mins = minutes % 60;
-  const parts: string[] = [];
-  if (hours > 0) {
-    parts.push(`${hours} ${hours === 1 ? 'hour' : 'hours'}`);
+// Guarantees the dropdown can actually *display* the value its signal holds.
+// The option list steps by 15 minutes from the segment's own start (or from
+// Start + the resource's minimum, for the End list), which a blackout can
+// leave on an odd offset — while a drag snaps to *absolute* 15-minute marks
+// (onHandlePointerMove). So the two grids need not line up, and the held
+// value can fall between two options. Without this it would then leave the
+// select showing something other than what is actually selected — see the
+// `[selected]` binding in the template for the other half of that bug.
+function withSelectedOption(
+  options: { minutes: number; label: string }[],
+  selectedMinutes: number,
+): { minutes: number; label: string }[] {
+  if (options.some((option) => option.minutes === selectedMinutes)) {
+    return options;
   }
-  if (mins > 0) {
-    parts.push(`${mins} ${mins === 1 ? 'minute' : 'minutes'}`);
-  }
-  return parts.length > 0 ? parts.join(' ') : '0 minutes';
+  return [...options, { minutes: selectedMinutes, label: formatMinutesOfDay(selectedMinutes) }].sort(
+    (a, b) => a.minutes - b.minutes,
+  );
 }
+
+// The selected-time panel's duration phrasing moved to local-date.ts in
+// Phase 3 step 3, once the booking screen had to show the same duration in
+// the same words — see formatDurationWords there for why it was extracted at
+// the second caller rather than the third.
 
 // WP-7 Phase 2. Step 3 built the shell, step 4 the date-range/quantity
 // controls. This step (5) wires them to AvailabilityService and renders the
@@ -233,7 +243,10 @@ export class AvailabilityComponent {
       return [];
     }
     const latestStart = Math.max(segment.startMinutes, segment.endMinutes - effectiveMinDuration(resource));
-    return buildTimeOptions(segment.startMinutes, latestStart);
+    return withSelectedOption(
+      buildTimeOptions(segment.startMinutes, latestStart),
+      this.selectedStartMinutes(),
+    );
   });
 
   // Bounded on both sides by the resource's own duration limits relative to
@@ -249,7 +262,10 @@ export class AvailabilityComponent {
     const start = this.selectedStartMinutes();
     const earliestEnd = Math.min(start + effectiveMinDuration(resource), segment.endMinutes);
     const latestEnd = Math.min(start + effectiveMaxDuration(resource), segment.endMinutes);
-    return buildTimeOptions(earliestEnd, Math.max(earliestEnd, latestEnd));
+    return withSelectedOption(
+      buildTimeOptions(earliestEnd, Math.max(earliestEnd, latestEnd)),
+      this.selectedEndMinutes(),
+    );
   });
 
   // A defensive fallback, not the primary guard — startTimeOptions/
@@ -273,11 +289,11 @@ export class AvailabilityComponent {
     const duration = this.selectedEndMinutes() - this.selectedStartMinutes();
     const minDuration = resource.minDurationMinutes;
     if (minDuration !== null && duration < minDuration) {
-      return `This resource requires bookings of at least ${formatSelectionDuration(minDuration)}, but this slot only fits ${formatSelectionDuration(segment.endMinutes - segment.startMinutes)}.`;
+      return `This resource requires bookings of at least ${formatDurationWords(minDuration)}, but this slot only fits ${formatDurationWords(segment.endMinutes - segment.startMinutes)}.`;
     }
     const maxDuration = effectiveMaxDuration(resource);
     if (duration > maxDuration) {
-      return `This resource allows bookings of at most ${formatSelectionDuration(maxDuration)}.`;
+      return `This resource allows bookings of at most ${formatDurationWords(maxDuration)}.`;
     }
     return null;
   });
@@ -292,7 +308,7 @@ export class AvailabilityComponent {
   );
 
   protected readonly selectedDurationLabel = computed(() =>
-    formatSelectionDuration(this.selectedEndMinutes() - this.selectedStartMinutes()),
+    formatDurationWords(this.selectedEndMinutes() - this.selectedStartMinutes()),
   );
 
   private resourceId: string;

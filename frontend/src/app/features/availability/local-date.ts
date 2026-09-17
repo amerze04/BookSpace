@@ -163,6 +163,29 @@ export function addMinutesToUtc(utcIso: string, minutes: number): string {
   return new Date(new Date(utcIso).getTime() + minutes * 60_000).toISOString();
 }
 
+// "2 hours 15 minutes" / "2 hours" / "45 minutes" — full words, matching the
+// designs for both the availability screen's selected-time panel and the
+// booking screen's own Duration field.
+//
+// Extracted here at its *second* caller rather than the third
+// (`BrandMarkComponent`'s usual precedent) specifically because it is
+// user-visible copy showing the *same* duration on two screens in the same
+// flow: a second copy that drifted would be a visible inconsistency, not just
+// duplicated code. Deliberately distinct from the resource detail page's own
+// abbreviated "2 hours 15 min", which the design there asks for.
+export function formatDurationWords(minutes: number): string {
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  const parts: string[] = [];
+  if (hours > 0) {
+    parts.push(`${hours} ${hours === 1 ? 'hour' : 'hours'}`);
+  }
+  if (mins > 0) {
+    parts.push(`${mins} ${mins === 1 ? 'minute' : 'minutes'}`);
+  }
+  return parts.length > 0 ? parts.join(' ') : '0 minutes';
+}
+
 // Drops any sub-second part and renders the instant as UTC: both
 // "2026-09-24T13:15:00.000Z" and "2026-09-24T15:15:00.499+02:00" become
 // "2026-09-24T13:15:00Z". Used when an instant leaves this app — into the

@@ -85,18 +85,192 @@
         </p>
         <a class="secondary-button" routerLink="/resources">Browse resources</a>
       </section>
+    } @else if (created(); as created) {
+      <!-- Step 4 replaces this with the real confirmation panel: Confirmed vs
+           Pending stated distinctly (FR-7.1), who decides, and when the
+           approval request expires. -->
+      <section class="panel panel--created">
+        <h2>{{ created.status === 'Pending' ? 'Booking requested' : 'Booking confirmed' }}</h2>
+        <p>
+          {{ resourceZoneSpan()?.date }}, {{ resourceZoneSpan()?.timeRange }} ({{ resource.timeZoneId }}).
+        </p>
+        <a class="secondary-button" routerLink="/my-bookings">View my bookings</a>
+      </section>
     } @else if (selection(); as selection) {
       <div class="booking-layout">
         <section class="panel">
           <h2>Booking details</h2>
-          <!-- Step 3 replaces this with the real form: the one-time/recurring
-               toggle, the read-back of the selected span in the resource's
-               own timezone, quantity, and the title field. -->
-          <p class="panel-note">
-            A time is selected and carried over from the availability calendar. The booking form lands here in the
-            next step.
+
+          <!-- Read-only: the slot was chosen on the availability screen and is
+               changed by going back there (the bar below), never re-typed
+               here — a hand-entered local time would need a local->UTC
+               inversion this client deliberately does not own (CLAUDE.md
+               §4.3). -->
+          <div class="field-row">
+            <div class="readonly-field">
+              <span class="field-label">Date</span>
+              <div class="readonly-value">
+                <svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.6" />
+                  <path d="M4 10h16M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                </svg>
+                {{ resourceZoneSpan()?.date }}
+              </div>
+            </div>
+
+            <div class="readonly-field">
+              <span class="field-label">Time</span>
+              <div class="readonly-value">
+                <svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+                  <path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                </svg>
+                {{ resourceZoneSpan()?.timeRange }}
+              </div>
+            </div>
+
+            <div class="readonly-field">
+              <span class="field-label">Duration</span>
+              <div class="readonly-value">
+                <svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="13" r="7.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+                  <path d="M12 9.5V13h3M9.5 3h5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                </svg>
+                {{ durationLabel() }}
+              </div>
+            </div>
+          </div>
+
+          <p class="timezone-note">
+            Times shown in the resource's timezone ({{ resource.timeZoneId }}).
+            @if (viewerZoneSpan(); as viewerSpan) {
+              In your own timezone ({{ viewerTimeZoneId }}) that's {{ viewerSpan.date }},
+              {{ viewerSpan.timeRange }}.
+            }
           </p>
+
+          @if (durationError(); as durationMessage) {
+            <p class="field-error" role="alert">{{ durationMessage }}</p>
+          }
+
+          @if (showQuantityStepper()) {
+            <div class="quantity-field">
+              <span class="field-label" id="booking-quantity-label">Quantity</span>
+              <div class="stepper" role="group" aria-labelledby="booking-quantity-label">
+                <button type="button" (click)="decrementQuantity()" [disabled]="quantity() <= 1" aria-label="Decrease quantity">
+                  −
+                </button>
+                <span class="stepper-value">{{ quantity() }}</span>
+                <button
+                  type="button"
+                  (click)="incrementQuantity()"
+                  [disabled]="quantity() >= resource.capacity"
+                  aria-label="Increase quantity"
+                >
+                  +
+                </button>
+              </div>
+              @if (quantityRaisedAboveChecked()) {
+                <p class="field-hint">
+                  Availability was checked for {{ selection.quantity }}
+                  {{ selection.quantity === 1 ? 'unit' : 'units' }}, so a larger quantity may not be free.
+                </p>
+              }
+            </div>
+          }
+
+          <div class="title-field">
+            <label class="field-label" for="booking-title">Title</label>
+            <p class="field-hint" id="booking-title-hint">A short title to help identify this booking.</p>
+            <input
+              id="booking-title"
+              type="text"
+              [value]="title()"
+              (input)="onTitleInput($event)"
+              [attr.maxlength]="maxTitleLength"
+              [attr.aria-invalid]="titleError() !== null"
+              aria-describedby="booking-title-hint"
+              placeholder="Team planning meeting"
+            />
+            @if (titleError(); as titleMessage) {
+              <p class="field-error" role="alert">{{ titleMessage }}</p>
+            }
+          </div>
         </section>
+
+        <aside class="panel summary-panel">
+          <h2>Booking summary</h2>
+
+          <div class="summary-resource">
+            <span class="resource-icon resource-icon--small">
+              <app-resource-type-icon [type]="resource.resourceType" />
+            </span>
+            <div>
+              <p class="summary-resource-name">{{ resource.name }}</p>
+              <p class="chips">
+                <span class="chip">{{ typeLabel(resource.resourceType) }}</span>
+                <span class="chip">{{ capacityLabel(resource) }}</span>
+                <span class="chip">{{ approvalLabel(resource) }}</span>
+              </p>
+            </div>
+          </div>
+
+          <dl class="summary-rows">
+            <div class="summary-row">
+              <dt>Date</dt>
+              <dd>{{ resourceZoneSpan()?.date }}</dd>
+            </div>
+            <div class="summary-row">
+              <dt>Time</dt>
+              <dd>{{ resourceZoneSpan()?.timeRange }}</dd>
+            </div>
+            <div class="summary-row">
+              <dt>Duration</dt>
+              <dd>{{ durationLabel() }}</dd>
+            </div>
+            @if (showQuantityStepper()) {
+              <div class="summary-row">
+                <dt>Quantity</dt>
+                <dd>{{ quantity() }}</dd>
+              </div>
+            }
+            @if (title().trim().length > 0) {
+              <div class="summary-row">
+                <dt>Title</dt>
+                <dd>{{ title() }}</dd>
+              </div>
+            }
+          </dl>
+
+          @if (resource.requiresApproval) {
+            <!-- FR-7.1: a booking on an approval-gated resource is created
+                 Pending, not Confirmed. Said before the member commits, not
+                 only in the outcome panel afterwards. -->
+            <div class="approval-notice">
+              <svg class="notice-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+                <path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              </svg>
+              <div>
+                <p class="notice-title">Approval required</p>
+                <p class="notice-text">
+                  This booking will be submitted for approval. You'll see its status in My Bookings.
+                </p>
+              </div>
+            </div>
+          }
+
+          @if (submitFailed()) {
+            <!-- Step 5 replaces this with the per-reason-code catalogue. -->
+            <p class="field-error" role="alert">
+              Couldn't create this booking. Check the availability calendar and try a different slot.
+            </p>
+          }
+
+          <button type="button" class="primary-button confirm-button" [disabled]="!canSubmit()" (click)="confirmBooking()">
+            {{ submitting() ? 'Booking…' : 'Confirm booking' }}
+          </button>
+        </aside>
       </div>
     } @else {
       <section class="panel panel--empty">
@@ -109,7 +283,9 @@
       </section>
     }
 
-    @if (!isArchived() && selection()) {
+    <!-- Only while there is still something to change: once the booking
+         exists, "go back and pick a different time" is the wrong advice. -->
+    @if (!isArchived() && selection() && !created()) {
       <section class="change-bar">
         <svg class="change-icon" viewBox="0 0 24 24" aria-hidden="true">
           <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" />

@@ -179,12 +179,232 @@
   color: var(--color-text-secondary);
 }
 
+// ---- Step 3: the one-off form ----
+
+.field-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 1rem;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.readonly-value {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 0.9rem;
+}
+
+.field-icon {
+  width: 1.1rem;
+  height: 1.1rem;
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+}
+
+.timezone-note {
+  margin: 0.85rem 0 0;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+}
+
+.field-hint {
+  margin: 0 0 0.45rem;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+}
+
+.field-error {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+  color: var(--color-error);
+}
+
+.quantity-field,
+.title-field {
+  margin-top: 1.5rem;
+}
+
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+
+  button {
+    padding: 0.4rem 0.8rem;
+    border: none;
+    background: var(--color-surface);
+    color: var(--color-text);
+    font-size: 1rem;
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+      background: var(--color-bg);
+    }
+
+    &:disabled {
+      color: var(--color-text-secondary);
+      cursor: not-allowed;
+    }
+  }
+}
+
+.stepper-value {
+  min-width: 2.5rem;
+  padding: 0.4rem 0;
+  text-align: center;
+  font-weight: 600;
+  border-inline: 1px solid var(--color-border);
+}
+
+.title-field input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.9rem;
+
+  &:focus {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 1px;
+  }
+
+  &[aria-invalid='true'] {
+    border-color: var(--color-error);
+  }
+}
+
+.summary-panel {
+  position: sticky;
+  top: 1rem;
+}
+
+.summary-resource {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.resource-icon--small {
+  width: 2.5rem;
+  height: 2.5rem;
+
+  app-resource-type-icon {
+    width: 1.25rem;
+    height: 1.25rem;
+  }
+}
+
+.summary-resource-name {
+  margin: 0 0 0.25rem;
+  font-weight: 600;
+  color: var(--color-text);
+  font-size: 0.95rem;
+}
+
+.summary-rows {
+  margin: 1rem 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.summary-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+
+  dt {
+    font-size: 0.85rem;
+    color: var(--color-text-secondary);
+  }
+
+  dd {
+    margin: 0;
+    font-size: 0.9rem;
+    font-weight: 600;
+    text-align: right;
+    color: var(--color-text);
+  }
+}
+
+.approval-notice {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 1.25rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-warning) 10%, var(--color-surface));
+}
+
+.notice-icon {
+  width: 1.2rem;
+  height: 1.2rem;
+  flex-shrink: 0;
+  color: var(--color-warning);
+}
+
+.notice-title {
+  margin: 0;
+  font-weight: 600;
+  font-size: 0.88rem;
+  color: var(--color-text);
+}
+
+.notice-text {
+  margin: 0.15rem 0 0;
+  font-size: 0.82rem;
+}
+
+.confirm-button {
+  width: 100%;
+  text-align: center;
+
+  &:disabled {
+    background: var(--color-border);
+    border-color: var(--color-border);
+    color: var(--color-text-secondary);
+    cursor: not-allowed;
+  }
+}
+
+.panel--created {
+  text-align: center;
+  padding: 2.5rem 1.5rem;
+  border-color: var(--color-success);
+}
+
 .primary-button,
 .secondary-button {
   display: inline-block;
   margin-top: 1rem;
   padding: 0.6rem 1.2rem;
   border-radius: var(--radius-md);
+  // font-family too: these styles are shared by <a> links and the Confirm
+  // <button>, and a button would otherwise fall back to the UA's own font.
+  font: inherit;
   font-weight: 600;
   font-size: 0.9rem;
   text-decoration: none;

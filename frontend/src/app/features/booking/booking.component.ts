@@ -1,4 +1,4 @@
-import { Component, DestroyRef, computed, inject, signal } from '@angular/core';
+import { Component, DestroyRef, computed, inject, linkedSignal, signal } from '@angular/core';
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { HttpErrorResponse } from '@angular/common/http';
 import { ActivatedRoute, RouterLink } from '@angular/router';
@@ -8,9 +8,42 @@ import { ResourcesService } from '../resources/resources.service';
 import { ResourceDetail, ResourceType } from '../resources/resources.models';
 import { ResourceTypeIconComponent } from '../../shared/resource-type/resource-type-icon.component';
 import { resourceCapacityLabel, resourceTypeLabel } from '../../shared/resource-type/resource-type';
+import {
+  formatDurationWords,
+  formatLocalDateWithWeekdayAndYear,
+  formatMinutesOfDay,
+  utcToResourceLocal,
+} from '../availability/local-date';
 import { BookingSelection, parseBookingSelection } from './booking-arrival';
+import { BookingsService } from './bookings.service';
+import { CreateBookingResponse, MAX_BOOKING_TITLE_LENGTH } from './booking.models';
 
 type ResourceLoadResult = { kind: 'success'; resource: ResourceDetail } | { kind: 'error'; error: unknown };
+
+// The span the member is about to book, rendered in one timezone. Built twice
+// per selection when the viewer's own zone differs from the resource's — see
+// viewerZoneSpan.
+interface SpanLabels {
+  date: string;
+  timeRange: string;
+}
+
+function spanLabels(selection: BookingSelection, timeZoneId: string): SpanLabels {
+  const start = utcToResourceLocal(selection.startUtc, timeZoneId);
+  const end = utcToResourceLocal(selection.endUtc, timeZoneId);
+
+  // An overnight span lands on two calendar days, so the end carries its own
+  // date rather than being read against the start's.
+  const endLabel =
+    end.date === start.date
+      ? formatMinutesOfDay(end.minutesOfDay)
+      : `${formatMinutesOfDay(end.minutesOfDay)} (${formatLocalDateWithWeekdayAndYear(end.date)})`;
+
+  return {
+    date: formatLocalDateWithWeekdayAndYear(start.date),
+    timeRange: `${formatMinutesOfDay(start.minutesOfDay)} – ${endLabel}`,
+  };
+}
 
 // WP-7 Phase 3 step 2: the booking route's shell — the resource it is about,
 // the slot it arrived with, and every failure mode around those. The form
@@ -31,6 +64,7 @@ type ResourceLoadResult = { kind: 'success'; resource: ResourceDetail } | { kind
 export class BookingComponent {
   private readonly route = inject(ActivatedRoute);
   private readonly resourcesService = inject(ResourcesService);
+  private readonly bookingsService = inject(BookingsService);
   private readonly breadcrumbService = inject(BreadcrumbService);
   private readonly destroyRef = inject(DestroyRef);
 
@@ -71,6 +105,132 @@ export class BookingComponent {
   // give in place of their own booking CTAs, rather than a form that could
   // only ever be refused on submit.
   protected readonly isArchived = computed(() => this.resource()?.isArchived ?? false);
+
+  // ---- Step 3: the one-off form ----
+
+  protected readonly maxTitleLength = MAX_BOOKING_TITLE_LENGTH;
+
+  protected readonly title = signal('');
+
+  // A linkedSignal, not a plain signal seeded once: it is writable (the
+  // stepper) but re-derives whenever its source changes, so arriving with a
+  // different selection resets the stepper instead of carrying the previous
+  // slot's number over. The nearest .NET analogue is a property with a
+  // backing field that a recomputed dependency invalidates — except here the
+  // framework does the invalidating.
+  protected readonly quantity = linkedSignal(() => this.selection()?.quantity ?? 1);
+
+  // Capacity 1 admits no quantity but 1 (decision `0005`'s amendment), so the
+  // stepper is absent entirely rather than shown disabled — the same call
+  // AvailabilityComponent's own stepper makes.
+  protected readonly showQuantityStepper = computed(() => (this.resource()?.capacity ?? 1) > 1);
+
+  protected readonly submitting = signal(false);
+
+  // Step 4 turns this into the real confirmation panel (Confirmed vs Pending,
+  // who decides, when the request expires). Step 3 only needs somewhere for
+  // the created booking to land.
+  protected readonly created = signal<CreateBookingResponse | null>(null);
+
+  // Deliberately a single string for now: step 5 replaces it with the
+  // reason-code catalogue (message *and* placement, per code), which is a
+  // piece of work in its own right and is why this isn't being half-built
+  // here.
+  protected readonly submitFailed = signal(false);
+
+  protected readonly durationMinutes = computed(() => {
+    const selection = this.selection();
+    if (!selection) {
+      return 0;
+    }
+    return Math.round((Date.parse(selection.endUtc) - Date.parse(selection.startUtc)) / 60_000);
+  });
+
+  // Checked against the resource's *own* minDurationMinutes/maxDurationMinutes
+  // and nothing else. `null` means "no rule configured", never a default — the
+  // exact false-minimum bug the 2026-09-16 frontend hardening pass fixed in
+  // the availability screen's `effectiveMinDuration`, which is worth not
+  // reintroducing one screen later.
+  //
+  // A client-side check cannot be the authority (the handler raises
+  // BookingDurationOutOfRange either way); it exists so a member is told
+  // before spending a round trip, and so the request this form builds is one
+  // the API could actually accept.
+  protected readonly durationError = computed<string | null>(() => {
+    const resource = this.resource();
+    const selection = this.selection();
+    if (!resource || !selection) {
+      return null;
+    }
+
+    const duration = this.durationMinutes();
+    const min = resource.minDurationMinutes;
+    if (min !== null && duration < min) {
+      return `This resource requires bookings of at least ${formatDurationWords(min)}.`;
+    }
+
+    const max = resource.maxDurationMinutes;
+    if (max !== null && duration > max) {
+      return `This resource allows bookings of at most ${formatDurationWords(max)}.`;
+    }
+
+    return null;
+  });
+
+  // Bookings.Title is NVARCHAR(200) and the validator refuses more
+  // (MaxTitleLength) — the input is bounded by maxlength as well, so this
+  // catches a paste that slips past it rather than being the only guard.
+  protected readonly titleError = computed<string | null>(() =>
+    this.title().length > MAX_BOOKING_TITLE_LENGTH
+      ? `A title can be at most ${MAX_BOOKING_TITLE_LENGTH} characters.`
+      : null,
+  );
+
+  // The span in the resource's own timezone — what "Thu, Sep 24, 09:15" means
+  // for the room itself (decision `0003`), which is the reading the
+  // availability screen offered and the one the member chose against.
+  protected readonly resourceZoneSpan = computed<SpanLabels | null>(() => {
+    const resource = this.resource();
+    const selection = this.selection();
+    return resource && selection ? spanLabels(selection, resource.timeZoneId) : null;
+  });
+
+  protected readonly viewerTimeZoneId = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  // The same instants in the *viewer's* browser zone, shown only when the two
+  // differ — a member in Sarajevo booking a New York room needs to know when
+  // to actually be there, and a booking screen that named only one of the two
+  // zones would be quietly ambiguous. (`wp7-plan.md` §3's own display default:
+  // a concrete instant renders in the viewer's local time; the resource's zone
+  // is what the *availability* question was asked in.)
+  protected readonly viewerZoneSpan = computed<SpanLabels | null>(() => {
+    const resource = this.resource();
+    const selection = this.selection();
+    if (!resource || !selection || this.viewerTimeZoneId === resource.timeZoneId) {
+      return null;
+    }
+    return spanLabels(selection, this.viewerTimeZoneId);
+  });
+
+  // Availability was answered for the quantity the member picked on the
+  // previous screen; raising it here asks for something that response never
+  // promised. Not blocked — the pool may well have room, and dbo.CreateBooking
+  // is the only thing that can actually say — but said out loud, so a
+  // CapacityExceeded rejection isn't a surprise.
+  protected readonly quantityRaisedAboveChecked = computed(() => {
+    const selection = this.selection();
+    return selection !== null && this.quantity() > selection.quantity;
+  });
+
+  protected readonly canSubmit = computed(
+    () =>
+      this.selection() !== null &&
+      !this.isArchived() &&
+      !this.submitting() &&
+      this.created() === null &&
+      this.durationError() === null &&
+      this.titleError() === null,
+  );
 
   private resourceId: string;
 
@@ -123,6 +283,75 @@ export class BookingComponent {
 
   protected approvalLabel(resource: ResourceDetail): string {
     return resource.requiresApproval ? 'Approval required' : 'Instant confirmation';
+  }
+
+  protected durationLabel(): string {
+    return formatDurationWords(this.durationMinutes());
+  }
+
+  protected onTitleInput(event: Event): void {
+    this.title.set((event.target as HTMLInputElement).value);
+  }
+
+  protected incrementQuantity(): void {
+    const capacity = this.resource()?.capacity ?? 1;
+    this.quantity.update((q) => Math.min(q + 1, capacity));
+  }
+
+  protected decrementQuantity(): void {
+    this.quantity.update((q) => Math.max(q - 1, 1));
+  }
+
+  // FR-4.1. The one write this screen makes.
+  //
+  // **Never retried, automatically or by a button** — POST /bookings has no
+  // idempotency key of any kind (wp7-plan.md §7's flagged gap, owned by a
+  // future backend package), so a repeat of a request whose response was lost
+  // creates a *second* booking rather than resolving to the first. The
+  // `submitting` guard below is the same rule applied to an impatient
+  // double-click: the button is disabled while a request is in flight, and
+  // this re-checks it for anything that could still reach the method
+  // programmatically.
+  //
+  // The instants go out exactly as they arrived — already whole-second UTC,
+  // normalized by parseBookingSelection — which is what
+  // CreateBookingCommandRequestValidator requires of both (a zone designator,
+  // no fractional seconds).
+  protected confirmBooking(): void {
+    const resource = this.resource();
+    const selection = this.selection();
+    if (!resource || !selection || !this.canSubmit()) {
+      return;
+    }
+
+    this.submitting.set(true);
+    this.submitFailed.set(false);
+
+    const title = this.title().trim();
+
+    this.bookingsService
+      .create({
+        resourceId: resource.id,
+        startsAtUtc: selection.startUtc,
+        endsAtUtc: selection.endUtc,
+        quantity: this.quantity(),
+        // An untitled booking is legal (the column is nullable) — an empty box
+        // means "no title", not an empty string.
+        title: title.length > 0 ? title : null,
+      })
+      .subscribe({
+        next: (response) => {
+          this.created.set(response);
+          this.submitting.set(false);
+        },
+        error: () => {
+          // Step 5 replaces this with the per-reason-code catalogue: message
+          // *and* placement, including the transport-failure case that must
+          // say the booking may have been created rather than offer a retry.
+          this.submitFailed.set(true);
+          this.submitting.set(false);
+        },
+      });
   }
 
   private fetchResource$(id: string): Observable<ResourceLoadResult> {

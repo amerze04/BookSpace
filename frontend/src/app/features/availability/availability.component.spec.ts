@@ -51,7 +51,9 @@ type TestableAvailabilityComponent = AvailabilityComponent & {
   segmentAccessibleLabel(date: string, segment: DaySegment): string;
   selectedSegment: () => DaySegment | null;
   selectedStartMinutes: () => number;
-  selectedEndMinutes: () => number;
+  // .set is exposed on the End signal so the off-grid regression below can
+  // put it where a drag would, without simulating a whole pointer sequence.
+  selectedEndMinutes: { (): number; set(minutes: number): void };
   startTimeOptions: () => { minutes: number; label: string }[];
   endTimeOptions: () => { minutes: number; label: string }[];
   selectedDateLabel: () => string;
@@ -850,6 +852,94 @@ describe('AvailabilityComponent', () => {
         }),
       );
     }
+
+    // Bug found by the owner, 2026-09-17, on the seeded 3D Printer (min 60,
+    // max 180): clicking a bar selected 09:00-12:00, but the End dropdown
+    // displayed 10:00 — its own *first* option, Start + the minimum — and
+    // every subsequent Start change moved that displayed number without
+    // moving the selection. Cause: `[value]` on the <select> sets the value
+    // property once, while the browser resets a single select to its first
+    // option whenever the option list is rebuilt (endTimeOptions depends on
+    // selectedStartMinutes, so it is rebuilt constantly) and Angular doesn't
+    // re-apply a binding whose own value hasn't changed.
+    //
+    // These assert against the rendered DOM on purpose: every signal-level
+    // assertion in this file was already passing while the screen was wrong.
+    describe('the Start/End dropdowns show what is actually selected', () => {
+      function loadPrinterLikeResource(component: TestableAvailabilityComponent): void {
+        httpMock
+          .expectOne(`${API}/resources/r1`)
+          .flush(fakeDetail({ timeZoneId: 'UTC', minDurationMinutes: 60, maxDurationMinutes: 180 }));
+        httpMock.expectOne((r) => r.url === `${API}/resources/r1/availability`).flush(
+          fakeAvailability({
+            intervals: [{ startUtc: '2026-09-21T08:00:00Z', endUtc: '2026-09-21T17:00:00Z', remainingCapacity: 1 }],
+          }),
+        );
+        component.selectSegment(component.dayRows()[0].segments[0]);
+      }
+
+      function timeSelects(fixture: { nativeElement: unknown }): HTMLSelectElement[] {
+        return Array.from(
+          (fixture.nativeElement as HTMLElement).querySelectorAll<HTMLSelectElement>('.time-field select'),
+        );
+      }
+
+      it('renders the defaulted End (Start + the maximum), not the first option', () => {
+        const fixture = createFixture();
+        const component = fixture.componentInstance as TestableAvailabilityComponent;
+        loadPrinterLikeResource(component);
+        fixture.detectChanges();
+
+        const [startSelect, endSelect] = timeSelects(fixture);
+        expect(component.selectedEndMinutes()).toBe(11 * 60); // 08:00 + 180
+        expect(startSelect.value).toBe(String(8 * 60));
+        expect(endSelect.value).toBe(String(11 * 60)); // not 09:00, the earliest legal End
+      });
+
+      it('keeps showing the held End after a Start change rebuilds the option list', () => {
+        const fixture = createFixture();
+        const component = fixture.componentInstance as TestableAvailabilityComponent;
+        loadPrinterLikeResource(component);
+        fixture.detectChanges();
+
+        // 09:00 start, End 11:00 is still valid (2 hours, inside 1-3), so the
+        // selection must not move — and neither must what the dropdown shows.
+        component.onSelectedStartChange(inputChangeEvent(String(9 * 60)));
+        fixture.detectChanges();
+
+        const [startSelect, endSelect] = timeSelects(fixture);
+        expect(component.selectedStartMinutes()).toBe(9 * 60);
+        expect(component.selectedEndMinutes()).toBe(11 * 60);
+        expect(startSelect.value).toBe(String(9 * 60));
+        expect(endSelect.value).toBe(String(11 * 60));
+      });
+
+      // The option grid steps from the segment's own start; a drag snaps to
+      // absolute 15-minute marks. On a segment starting at an odd offset (a
+      // blackout can leave one), the two grids don't line up, so the held
+      // value has to be added to the list or the select cannot show it.
+      it('offers the held value even when it falls between two steps', () => {
+        const fixture = createFixture();
+        const component = fixture.componentInstance as TestableAvailabilityComponent;
+        httpMock
+          .expectOne(`${API}/resources/r1`)
+          .flush(fakeDetail({ timeZoneId: 'UTC', minDurationMinutes: 60, maxDurationMinutes: 180 }));
+        httpMock.expectOne((r) => r.url === `${API}/resources/r1/availability`).flush(
+          fakeAvailability({
+            intervals: [{ startUtc: '2026-09-21T08:07:00Z', endUtc: '2026-09-21T17:00:00Z', remainingCapacity: 1 }],
+          }),
+        );
+        component.selectSegment(component.dayRows()[0].segments[0]);
+
+        // Where a drag would land: an absolute 11:00, off the 09:07/09:22/…
+        // grid the End options otherwise step through.
+        component.selectedEndMinutes.set(11 * 60);
+        fixture.detectChanges();
+
+        expect(component.endTimeOptions().some((o) => o.minutes === 11 * 60)).toBe(true);
+        expect(timeSelects(fixture)[1].value).toBe(String(11 * 60));
+      });
+    });
 
     it('selecting a bar defaults Start to the segment\'s own start and End to Start + the resource\'s maxDurationMinutes (owner\'s correction)', () => {
       const fixture = createFixture();
