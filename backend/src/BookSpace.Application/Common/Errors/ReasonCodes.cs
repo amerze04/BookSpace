@@ -103,8 +103,15 @@ public static class ReasonCodes
     //
     // The split from SlotUnavailable is the owner's call of 2026-09-07: on a
     // pooled resource "you asked for 3 and 2 are left" is genuinely different
-    // information, and on an exclusive resource only SlotUnavailable can occur,
-    // since Capacity 1 admits no quantity but 1.
+    // information.
+    //
+    // Corrected 2026-09-17: this used to add "and on an exclusive resource only
+    // SlotUnavailable can occur, since Capacity 1 admits no quantity but 1",
+    // which is true of what can *succeed* but not of what a client can *send*.
+    // CreateBookingCommandRequestValidator deliberately leaves Quantity
+    // unbounded (it cannot see Capacity), so quantity 3 against a one-unit
+    // resource is well-formed, reaches dbo.CreateBooking, and is refused here —
+    // verified against the running API while building WP-7 Phase 3.
     public const string CapacityExceeded = "CapacityExceeded";
 
     // ErrorKind.RuleViolation. Not wholly inside the resource's availability

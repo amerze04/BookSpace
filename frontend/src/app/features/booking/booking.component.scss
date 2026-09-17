@@ -1,0 +1,560 @@
+// Ordinary block flow, unlike AvailabilityComponent's :host — nothing on this
+// page scrolls independently of the page itself, so there is no definite-height
+// chain to maintain here (see that file's own comment for why it needs one).
+:host {
+  display: block;
+}
+
+.state-message {
+  padding: 3rem 0;
+  text-align: center;
+  color: var(--color-text-secondary);
+
+  &--error {
+    color: var(--color-error);
+  }
+}
+
+.retry-button {
+  display: inline-block;
+  margin-top: 0.5rem;
+  padding: 0.5rem 1.1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--color-bg);
+  }
+}
+
+.booking {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.summary-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 1.1rem;
+  padding: 1.25rem 1.5rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 4%);
+}
+
+.resource-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3.5rem;
+  height: 3.5rem;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+
+  // The child component's own template elements can't be sized from here
+  // (emulated style encapsulation) — the host element is what gets a size,
+  // and ResourceTypeIconComponent's svg fills whatever box it's given.
+  app-resource-type-icon {
+    width: 1.75rem;
+    height: 1.75rem;
+  }
+}
+
+.summary-text {
+  flex: 1;
+  min-width: 0;
+
+  h2 {
+    margin: 0 0 0.45rem;
+    font-size: 1.2rem;
+    color: var(--color-text);
+  }
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 1.1rem;
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.chip-icon {
+  display: inline-flex;
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+}
+
+.summary-description {
+  margin: 0.55rem 0 0;
+  font-size: 0.9rem;
+  color: var(--color-text-secondary);
+}
+
+.view-details-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  flex-shrink: 0;
+  color: var(--color-primary);
+  font-weight: 600;
+  font-size: 0.9rem;
+  text-decoration: none;
+  white-space: nowrap;
+
+  &:hover {
+    color: var(--color-primary-hover);
+  }
+
+  svg {
+    width: 1.1rem;
+    height: 1.1rem;
+  }
+}
+
+// Two columns from the design (booking details | booking summary). Only the
+// first exists today; the summary card joins it in step 3, which is why the
+// track sizing is already declared here rather than being rewritten then.
+.booking-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+
+  @media (max-width: 60rem) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.panel {
+  padding: 1.5rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 4%);
+
+  h2 {
+    margin: 0 0 0.75rem;
+    font-size: 1.05rem;
+  }
+
+  p {
+    margin: 0;
+    color: var(--color-text-secondary);
+    font-size: 0.9rem;
+    line-height: 1.5;
+  }
+
+  &--empty,
+  &--notice {
+    text-align: center;
+    padding: 2.5rem 1.5rem;
+  }
+
+  &--notice {
+    border-color: var(--color-warning);
+  }
+}
+
+.panel-note {
+  color: var(--color-text-secondary);
+}
+
+// ---- Step 3: the one-off form ----
+
+.field-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 1rem;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.readonly-value {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 0.9rem;
+}
+
+.field-icon {
+  width: 1.1rem;
+  height: 1.1rem;
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+}
+
+.timezone-note {
+  margin: 0.85rem 0 0;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+}
+
+.field-hint {
+  margin: 0 0 0.45rem;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+}
+
+.field-error {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+  color: var(--color-error);
+}
+
+.quantity-field,
+.title-field {
+  margin-top: 1.5rem;
+}
+
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+
+  button {
+    padding: 0.4rem 0.8rem;
+    border: none;
+    background: var(--color-surface);
+    color: var(--color-text);
+    font-size: 1rem;
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+      background: var(--color-bg);
+    }
+
+    &:disabled {
+      color: var(--color-text-secondary);
+      cursor: not-allowed;
+    }
+  }
+}
+
+.stepper-value {
+  min-width: 2.5rem;
+  padding: 0.4rem 0;
+  text-align: center;
+  font-weight: 600;
+  border-inline: 1px solid var(--color-border);
+}
+
+.title-field input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.9rem;
+
+  &:focus {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 1px;
+  }
+
+  &[aria-invalid='true'] {
+    border-color: var(--color-error);
+  }
+}
+
+.summary-panel {
+  position: sticky;
+  top: 1rem;
+}
+
+.summary-resource {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.resource-icon--small {
+  width: 2.5rem;
+  height: 2.5rem;
+
+  app-resource-type-icon {
+    width: 1.25rem;
+    height: 1.25rem;
+  }
+}
+
+.summary-resource-name {
+  margin: 0 0 0.25rem;
+  font-weight: 600;
+  color: var(--color-text);
+  font-size: 0.95rem;
+}
+
+.summary-rows {
+  margin: 1rem 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.summary-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+
+  dt {
+    font-size: 0.85rem;
+    color: var(--color-text-secondary);
+  }
+
+  dd {
+    margin: 0;
+    font-size: 0.9rem;
+    font-weight: 600;
+    text-align: right;
+    color: var(--color-text);
+  }
+}
+
+.approval-notice {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 1.25rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-warning) 10%, var(--color-surface));
+}
+
+.notice-icon {
+  width: 1.2rem;
+  height: 1.2rem;
+  flex-shrink: 0;
+  color: var(--color-warning);
+}
+
+.notice-title {
+  margin: 0;
+  font-weight: 600;
+  font-size: 0.88rem;
+  color: var(--color-text);
+}
+
+.notice-text {
+  margin: 0.15rem 0 0;
+  font-size: 0.82rem;
+}
+
+// A refusal with no control to blame, above the submit button. Its actions
+// (check availability / check My Bookings) are links, never a retry — see
+// booking-rejection.ts for why a retry is unsafe on this endpoint.
+.submit-error {
+  margin-top: 1.25rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--color-error);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-error) 8%, var(--color-surface));
+
+  p {
+    margin: 0;
+    font-size: 0.85rem;
+    color: var(--color-text);
+  }
+
+  .secondary-button {
+    margin-top: 0.75rem;
+    margin-right: 0.5rem;
+  }
+}
+
+.confirm-button {
+  width: 100%;
+  text-align: center;
+
+  &:disabled {
+    background: var(--color-border);
+    border-color: var(--color-border);
+    color: var(--color-text-secondary);
+    cursor: not-allowed;
+  }
+}
+
+// The outcome panel (step 4). Green for Confirmed, amber for Pending — the
+// colour carries the same distinction the heading and the copy do, rather
+// than being the only thing that does (a member who can't tell the two
+// greens apart still reads "not held for you yet").
+.panel--outcome {
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: center;
+  border-color: var(--color-success);
+
+  h2 {
+    margin: 0 0 0.35rem;
+    font-size: 1.25rem;
+  }
+
+  &.panel--pending {
+    border-color: var(--color-warning);
+  }
+}
+
+.outcome-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3rem;
+  height: 3rem;
+  margin-bottom: 0.75rem;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-success) 14%, var(--color-surface));
+  color: var(--color-success);
+
+  svg {
+    width: 1.6rem;
+    height: 1.6rem;
+  }
+
+  &--pending {
+    background: color-mix(in srgb, var(--color-warning) 16%, var(--color-surface));
+    color: var(--color-warning);
+  }
+}
+
+.outcome-lead {
+  margin: 0 auto 1.5rem;
+  max-width: 28rem;
+}
+
+.outcome-rows {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  text-align: left;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-border);
+}
+
+.outcome-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.75rem;
+}
+
+// The approval notice is shared with the pre-submit form, where it sits in a
+// narrow column; here it reads as a block of prose, so it aligns left inside
+// an otherwise centred panel.
+.panel--outcome .approval-notice {
+  text-align: left;
+}
+
+.primary-button,
+.secondary-button {
+  display: inline-block;
+  margin-top: 1rem;
+  padding: 0.6rem 1.2rem;
+  border-radius: var(--radius-md);
+  // font-family too: these styles are shared by <a> links and the Confirm
+  // <button>, and a button would otherwise fall back to the UA's own font.
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.9rem;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.primary-button {
+  border: 1px solid var(--color-primary);
+  background: var(--color-primary);
+  color: #fff;
+
+  &:hover {
+    background: var(--color-primary-hover);
+    border-color: var(--color-primary-hover);
+  }
+}
+
+.secondary-button {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+
+  &:hover {
+    background: var(--color-bg);
+  }
+}
+
+.change-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.5rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+
+  .secondary-button {
+    margin-top: 0;
+    flex-shrink: 0;
+  }
+}
+
+.change-icon {
+  width: 1.4rem;
+  height: 1.4rem;
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+}
+
+.change-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.change-title {
+  margin: 0;
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.change-hint {
+  margin: 0.15rem 0 0;
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+}

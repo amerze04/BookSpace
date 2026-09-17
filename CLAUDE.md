@@ -234,9 +234,18 @@ Bookings (declared by FR-4.5, first thrown in WP-4): `SlotUnavailable`,
 `SlotUnavailable` and `CapacityExceeded` are both `Conflict` and are split by
 what is left, not by the resource: **nothing free at any instant inside the
 requested interval** is `SlotUnavailable`, **something free throughout but less
-than was asked for** is `CapacityExceeded`. An exclusive resource can therefore
-only ever produce the first, since `Capacity = 1` admits no quantity but 1
-(owner's call, 2026-09-07).
+than was asked for** is `CapacityExceeded` (owner's call, 2026-09-07).
+
+**Corrected 2026-09-17, while building WP-7 Phase 3.** This paragraph used to
+end "an exclusive resource can therefore only ever produce the first, since
+`Capacity = 1` admits no quantity but 1" — which holds for what can *succeed*,
+not for what a client can *send*. `CreateBookingCommandRequestValidator`
+deliberately puts no upper bound on `Quantity` ("what is too many depends on
+the resource's `Capacity`, which this cannot see"), so a request for 3 units of
+a one-unit resource is well-formed, reaches `dbo.CreateBooking`, and comes back
+`CapacityExceeded` — verified against the running API, not reasoned about. The
+split itself is unchanged: an exclusive resource asked for the only quantity it
+can accept still answers `SlotUnavailable`.
 
 `ApprovalRequired` was on this list and was **deleted in WP-4 Phase 1a**. FR-7.1
 makes a booking on an approval-gated resource enter `Pending` rather than be
@@ -635,7 +644,11 @@ walkthrough — flagged as a verification gap; Phase 2's flow, by contrast,
 was clicked through live by the owner directly and confirmed working.
 `resources/:id/book` (Phase 3's own route) already exists as a placeholder —
 Phase 2's "Continue to booking" navigates there carrying the selected UTC
-span and quantity via router state, the contract Phase 3 needs to honor.
+span and quantity, the contract Phase 3 needs to honor. That hand-over was
+router state until 2026-09-17, when the owner had it moved to **query
+parameters** (`?startUtc=…&endUtc=…&quantity=…`) so a chosen slot is
+shareable, bookmarkable and visible; `features/booking/booking-arrival.ts`
+owns both halves of it.
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across

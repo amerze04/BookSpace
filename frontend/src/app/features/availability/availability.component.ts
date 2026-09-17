@@ -1,4 +1,4 @@
-import { Component, DestroyRef, HostListener, computed, inject, signal } from '@angular/core';
+import { Component, DestroyRef, HostListener, Injector, afterNextRender, computed, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { HttpErrorResponse } from '@angular/common/http';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
@@ -8,10 +8,17 @@ import { ResourcesService } from '../resources/resources.service';
 import { ResourceDetail } from '../resources/resources.models';
 import { ResourceTypeIconComponent } from '../../shared/resource-type/resource-type-icon.component';
 import { resourceCapacityLabel, resourceTypeLabel } from '../../shared/resource-type/resource-type';
+// The booking feature owns the selected-slot URL contract (both halves live in
+// booking-arrival.ts), so this screen imports the writer rather than spelling
+// the parameter names out a second time — see that file's header.
+import { buildBookingQueryParams } from '../booking/booking-arrival';
 import { AvailabilityService } from './availability.service';
+import { BlackoutPeriodsService } from './blackout-periods.service';
+import { BlackoutPeriodSummary } from './blackout-periods.models';
 import { AvailabilityResponse, LocalDateString } from './availability.models';
 import {
   addDays,
+  formatDurationWords,
   formatLocalDate,
   formatLocalDateWithFullWeekday,
   formatLocalDateWithWeekday,
@@ -23,6 +30,8 @@ import {
 } from './local-date';
 import {
   DaySegment,
+  DayUnbookableSpan,
+  UnbookableKind,
   buildAxisTicks,
   buildDayRows,
   clamp,
@@ -54,6 +63,12 @@ const DEFAULT_WINDOW_DAYS = 7;
 // non-degenerate) and out of anywhere that asserts what the *resource*
 // requires; see durationError's own comment for where that line is drawn.
 const TIME_OPTION_STEP_MINUTES = 15;
+
+// Enough for any plausible number of blackouts overlapping a 90-day window
+// (the range cap), and the API's own maximum page size — this screen has no
+// paging UI for them and no use for one: an unlabelled gap past the ceiling
+// simply reads as "Booked", the same fallback a failed fetch produces.
+const BLACKOUT_PAGE_SIZE = 100;
 
 // A bound for the Start/End dropdowns' own option ranges, not a claim about
 // what the resource requires — used only to stop those two dropdowns from
@@ -104,21 +119,30 @@ function buildTimeOptions(fromMinutes: number, toMinutesInclusive: number): { mi
   return minutes.map((m) => ({ minutes: m, label: formatMinutesOfDay(m) }));
 }
 
-// "2 hours 15 minutes" / "2 hours" / "45 minutes" — the selected-time
-// summary panel's own duration phrasing (full words, unlike the resource
-// detail page's abbreviated "2 hours 15 min", to match the design exactly).
-function formatSelectionDuration(minutes: number): string {
-  const hours = Math.floor(minutes / 60);
-  const mins = minutes % 60;
-  const parts: string[] = [];
-  if (hours > 0) {
-    parts.push(`${hours} ${hours === 1 ? 'hour' : 'hours'}`);
+// Guarantees the dropdown can actually *display* the value its signal holds.
+// The option list steps by 15 minutes from the segment's own start (or from
+// Start + the resource's minimum, for the End list), which a blackout can
+// leave on an odd offset — while a drag snaps to *absolute* 15-minute marks
+// (onHandlePointerMove). So the two grids need not line up, and the held
+// value can fall between two options. Without this it would then leave the
+// select showing something other than what is actually selected — see the
+// `[selected]` binding in the template for the other half of that bug.
+function withSelectedOption(
+  options: { minutes: number; label: string }[],
+  selectedMinutes: number,
+): { minutes: number; label: string }[] {
+  if (options.some((option) => option.minutes === selectedMinutes)) {
+    return options;
   }
-  if (mins > 0) {
-    parts.push(`${mins} ${mins === 1 ? 'minute' : 'minutes'}`);
-  }
-  return parts.length > 0 ? parts.join(' ') : '0 minutes';
+  return [...options, { minutes: selectedMinutes, label: formatMinutesOfDay(selectedMinutes) }].sort(
+    (a, b) => a.minutes - b.minutes,
+  );
 }
+
+// The selected-time panel's duration phrasing moved to local-date.ts in
+// Phase 3 step 3, once the booking screen had to show the same duration in
+// the same words — see formatDurationWords there for why it was extracted at
+// the second caller rather than the third.
 
 // WP-7 Phase 2. Step 3 built the shell, step 4 the date-range/quantity
 // controls. This step (5) wires them to AvailabilityService and renders the
@@ -144,6 +168,8 @@ export class AvailabilityComponent {
   private readonly router = inject(Router);
   private readonly resourcesService = inject(ResourcesService);
   private readonly availabilityService = inject(AvailabilityService);
+  private readonly blackoutPeriodsService = inject(BlackoutPeriodsService);
+  private readonly injector = inject(Injector);
   private readonly breadcrumbService = inject(BreadcrumbService);
   private readonly destroyRef = inject(DestroyRef);
 
@@ -186,12 +212,31 @@ export class AvailabilityComponent {
   // timeZoneId, not the live fromDate()/toDate()/resource() signals —
   // self-consistent with whatever was actually asked and answered, rather
   // than coupled to the exact instant those signals happen to read at.
+  // Only ever *labels* gaps the availability response already excluded, so a
+  // failed or still-pending blackout fetch costs a reason, never correctness:
+  // the grid then shows those gaps as plain "Booked", which is what they are
+  // as far as this screen can tell without them.
+  protected readonly blackouts = signal<readonly BlackoutPeriodSummary[]>([]);
+
   protected readonly dayRows = computed(() => {
     const response = this.availabilityResponse();
     if (!response) {
       return [];
     }
-    return buildDayRows(datesInRange(response.fromLocalDate, response.toLocalDate), response.intervals, response.timeZoneId);
+    // The resource's own opening windows and its blackouts are what turn "not
+    // offered" into a reason (decision `0020`: the endpoint answers with
+    // bookable time only, never with why the rest isn't).
+    return buildDayRows(
+      datesInRange(response.fromLocalDate, response.toLocalDate),
+      response.intervals,
+      response.timeZoneId,
+      this.resource()?.availabilityWindows ?? [],
+      // The two DTOs name their instants differently — a bookable interval is
+      // startUtc/endUtc, a blackout row is startsAtUtc/endsAtUtc after its own
+      // columns — so they are mapped onto one shape here rather than the grid
+      // module learning both.
+      this.blackouts().map((blackout) => ({ startUtc: blackout.startsAtUtc, endUtc: blackout.endsAtUtc })),
+    );
   });
 
   protected readonly axis = computed(() => computeAxis(this.dayRows()));
@@ -229,7 +274,10 @@ export class AvailabilityComponent {
       return [];
     }
     const latestStart = Math.max(segment.startMinutes, segment.endMinutes - effectiveMinDuration(resource));
-    return buildTimeOptions(segment.startMinutes, latestStart);
+    return withSelectedOption(
+      buildTimeOptions(segment.startMinutes, latestStart),
+      this.selectedStartMinutes(),
+    );
   });
 
   // Bounded on both sides by the resource's own duration limits relative to
@@ -245,7 +293,10 @@ export class AvailabilityComponent {
     const start = this.selectedStartMinutes();
     const earliestEnd = Math.min(start + effectiveMinDuration(resource), segment.endMinutes);
     const latestEnd = Math.min(start + effectiveMaxDuration(resource), segment.endMinutes);
-    return buildTimeOptions(earliestEnd, Math.max(earliestEnd, latestEnd));
+    return withSelectedOption(
+      buildTimeOptions(earliestEnd, Math.max(earliestEnd, latestEnd)),
+      this.selectedEndMinutes(),
+    );
   });
 
   // A defensive fallback, not the primary guard — startTimeOptions/
@@ -269,11 +320,11 @@ export class AvailabilityComponent {
     const duration = this.selectedEndMinutes() - this.selectedStartMinutes();
     const minDuration = resource.minDurationMinutes;
     if (minDuration !== null && duration < minDuration) {
-      return `This resource requires bookings of at least ${formatSelectionDuration(minDuration)}, but this slot only fits ${formatSelectionDuration(segment.endMinutes - segment.startMinutes)}.`;
+      return `This resource requires bookings of at least ${formatDurationWords(minDuration)}, but this slot only fits ${formatDurationWords(segment.endMinutes - segment.startMinutes)}.`;
     }
     const maxDuration = effectiveMaxDuration(resource);
     if (duration > maxDuration) {
-      return `This resource allows bookings of at most ${formatSelectionDuration(maxDuration)}.`;
+      return `This resource allows bookings of at most ${formatDurationWords(maxDuration)}.`;
     }
     return null;
   });
@@ -288,7 +339,7 @@ export class AvailabilityComponent {
   );
 
   protected readonly selectedDurationLabel = computed(() =>
-    formatSelectionDuration(this.selectedEndMinutes() - this.selectedStartMinutes()),
+    formatDurationWords(this.selectedEndMinutes() - this.selectedStartMinutes()),
   );
 
   private resourceId: string;
@@ -585,12 +636,55 @@ export class AvailabilityComponent {
   // than the resource's minimum (durationError's own remaining case). With
   // no maxDurationMinutes set, effectiveMaxDuration is Infinity and this
   // reduces to the old "whole segment" behavior exactly.
-  protected selectSegment(segment: DaySegment): void {
+  protected selectSegment(segment: DaySegment, event?: Event): void {
     this.selectedSegment.set(segment);
     const resource = this.resource();
     const maxDuration = resource ? effectiveMaxDuration(resource) : Number.POSITIVE_INFINITY;
     this.selectedStartMinutes.set(segment.startMinutes);
     this.selectedEndMinutes.set(Math.min(segment.startMinutes + maxDuration, segment.endMinutes));
+    this.keepSelectionInView(event);
+  }
+
+  // Bug reported by the owner, 2026-09-17: on a range that needs scrolling,
+  // clicking a bar low in the grid left it out of view, so the very row just
+  // clicked had to be scrolled back to.
+  //
+  // Nothing actually scrolls the container. The selection panel below the
+  // grid appears only once something is selected, and `.grid` is a flex child
+  // — so the panel taking its space shrinks `.grid-rows`' visible height by
+  // its own height, while scrollTop stays where it was. The rows nearest the
+  // bottom are exactly the ones that fall outside the shortened viewport, and
+  // the clicked one was, by definition, one of them.
+  //
+  // afterNextRender, not an immediate call: the panel has to have taken its
+  // space before "is this still visible" can be answered. `block: 'nearest'`
+  // then scrolls the minimum amount and does nothing at all when the row is
+  // already fully visible — so a click near the top of the grid stays put
+  // rather than being yanked into a different position.
+  private keepSelectionInView(event?: Event): void {
+    const target = event?.currentTarget;
+    if (!(target instanceof HTMLElement) || typeof target.scrollIntoView !== 'function') {
+      return;
+    }
+
+    afterNextRender(() => target.scrollIntoView({ block: 'nearest' }), { injector: this.injector });
+  }
+
+  protected unbookableLabel(kind: UnbookableKind): string {
+    return kind === 'blackout' ? 'Unavailable' : 'Booked';
+  }
+
+  protected unbookableAccessibleLabel(date: LocalDateString, span: DayUnbookableSpan): string {
+    const reason = span.kind === 'blackout' ? 'unavailable' : 'already booked';
+    return `${formatLocalDateWithFullWeekday(date)}, ${formatMinutesOfDay(span.startMinutes)} to ${formatMinutesOfDay(span.endMinutes)}, ${reason}`;
+  }
+
+  protected unbookableLeftPercent(span: DayUnbookableSpan): number {
+    return minuteSpanStylePercent(span, this.axis()).leftPercent;
+  }
+
+  protected unbookableWidthPercent(span: DayUnbookableSpan): number {
+    return minuteSpanStylePercent(span, this.axis()).widthPercent;
   }
 
   protected clearSelection(): void {
@@ -643,14 +737,16 @@ export class AvailabilityComponent {
     const startUtc = resourceLocalMinutesToUtc(segment, this.selectedStartMinutes(), resource.timeZoneId);
     const endUtc = resourceLocalMinutesToUtc(segment, this.selectedEndMinutes(), resource.timeZoneId);
 
-    // Phase 3 builds the real booking form at this route; for now it's the
-    // same placeholder every other not-yet-built screen loads — the router
-    // state is what Phase 3 reads to pre-fill the form, carried forward now
-    // so nothing has to be re-derived once that screen exists (mirrors
-    // Phase 1's own precedent of wiring a route to a placeholder ahead of
-    // the phase that gives it a real destination).
+    // **Query parameters, not router state** (owner's decision, 2026-09-17 —
+    // the first implementation used `state`). The selected slot is now part
+    // of the booking screen's URL, so it can be shared, bookmarked, opened in
+    // a new tab and read off the address bar, none of which the History API's
+    // invisible per-entry state could do. buildBookingQueryParams owns the
+    // parameter names and the whole-second UTC formatting; the booking screen
+    // reads the same contract back through parseBookingSelection, so the two
+    // cannot drift.
     void this.router.navigate(['/resources', resource.id, 'book'], {
-      state: { startUtc, endUtc, quantity: this.quantity() },
+      queryParams: buildBookingQueryParams({ startUtc, endUtc, quantity: this.quantity() }),
     });
   }
 
@@ -863,6 +959,42 @@ export class AvailabilityComponent {
           }
           this.availabilityLoading.set(false);
           this.availabilityError.set(true);
+        },
+      });
+
+    this.fetchBlackouts(requestId);
+  }
+
+  // Runs beside the availability request rather than after it, and shares its
+  // request id so the same stale-response guard covers both. Its failure is
+  // deliberately silent: there is no error state and no retry button for it,
+  // because the grid is still correct without it — see the `blackouts` signal.
+  private fetchBlackouts(requestId: number): void {
+    this.blackouts.set([]);
+
+    this.blackoutPeriodsService
+      .list(this.resourceId, {
+        // A day either side of the visible range, in UTC, so a blackout that
+        // starts late on the day before (or ends early on the day after) in
+        // the resource's own timezone is still returned — the endpoint's
+        // filter is an overlap, so a generous window costs nothing but
+        // guarantees the edges are covered whatever the offset.
+        from: `${addDays(this.fromDate(), -1)}T00:00:00Z`,
+        to: `${addDays(this.toDate(), 2)}T00:00:00Z`,
+        pageSize: BLACKOUT_PAGE_SIZE,
+      })
+      .subscribe({
+        next: (result) => {
+          if (requestId !== this.latestAvailabilityRequestId) {
+            return;
+          }
+          this.blackouts.set(result.items);
+        },
+        error: () => {
+          if (requestId !== this.latestAvailabilityRequestId) {
+            return;
+          }
+          this.blackouts.set([]);
         },
       });
   }

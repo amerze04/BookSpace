@@ -146,9 +146,26 @@
             <div class="grid-row">
               <span class="day-label">{{ dayLabel(row.date) }}</span>
               <div class="day-track">
-                @if (row.segments.length === 0) {
+                @if (row.segments.length === 0 && row.unbookable.length === 0) {
                   <span class="no-hours">{{ emptyDayLabel(row.date) }}</span>
                 } @else {
+                  <!-- Why the rest of the opening hours isn't offered. The
+                       availability endpoint answers with bookable time only
+                       (decision `0020`), so these are derived: opening hours
+                       minus bookable time, split by whatever a blackout
+                       covers. -->
+                  @for (span of row.unbookable; track span.startMinutes) {
+                    <span
+                      class="unbookable"
+                      [class.unbookable--blackout]="span.kind === 'blackout'"
+                      [style.left.%]="unbookableLeftPercent(span)"
+                      [style.width.%]="unbookableWidthPercent(span)"
+                      [attr.aria-label]="unbookableAccessibleLabel(row.date, span)"
+                    >
+                      <span class="unbookable-label">{{ unbookableLabel(span.kind) }}</span>
+                    </span>
+                  }
+
                   @for (segment of row.segments; track segment.startMinutes) {
                     <button
                       type="button"
@@ -158,7 +175,7 @@
                       [attr.aria-label]="segmentAccessibleLabel(row.date, segment)"
                       [style.left.%]="segmentLeftPercent(segment)"
                       [style.width.%]="segmentWidthPercent(segment)"
-                      (click)="selectSegment(segment)"
+                      (click)="selectSegment(segment, $event)"
                     >
                       {{ segmentLabel(segment) }}
                     </button>
@@ -226,20 +243,35 @@
             </div>
           </div>
 
+          <!-- `[selected]` on each option, not `[value]` on the select.
+               Bug found 2026-09-17: a `[value]` binding sets the select's
+               value *property* once, but the browser resets a single select
+               to its first option whenever the option list is replaced — and
+               Angular doesn't re-apply a binding whose own value hasn't
+               changed, so the dropdown silently showed the first option while
+               the selection signal held something else. The End dropdown hit
+               this on every click (its list starts at Start + the resource's
+               minimum, while the default End is Start + its maximum).
+               A per-option binding survives the list being rebuilt, because
+               each new option carries its own state. -->
           <label class="time-field">
             Start time
-            <select [value]="selectedStartMinutes()" (change)="onSelectedStartChange($event)">
+            <select (change)="onSelectedStartChange($event)">
               @for (opt of startTimeOptions(); track opt.minutes) {
-                <option [value]="opt.minutes">{{ opt.label }}</option>
+                <option [value]="opt.minutes" [selected]="opt.minutes === selectedStartMinutes()">
+                  {{ opt.label }}
+                </option>
               }
             </select>
           </label>
 
           <label class="time-field">
             End time
-            <select [value]="selectedEndMinutes()" (change)="onSelectedEndChange($event)">
+            <select (change)="onSelectedEndChange($event)">
               @for (opt of endTimeOptions(); track opt.minutes) {
-                <option [value]="opt.minutes">{{ opt.label }}</option>
+                <option [value]="opt.minutes" [selected]="opt.minutes === selectedEndMinutes()">
+                  {{ opt.label }}
+                </option>
               }
             </select>
           </label>

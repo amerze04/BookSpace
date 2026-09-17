@@ -14,6 +14,14 @@ function interval(startUtc: string, endUtc: string, remainingCapacity = 1): Book
   return { startUtc, endUtc, remainingCapacity };
 }
 
+// 2026-09-21 is a Monday, 09-22 a Tuesday, 09-23 a Wednesday — the dates every
+// test below uses, so one weekday window per day is enough.
+const WEEKDAY_WINDOWS = [
+  { weekday: 'Monday', opensAt: '09:00:00', closesAt: '17:00:00' },
+  { weekday: 'Tuesday', opensAt: '09:00:00', closesAt: '17:00:00' },
+  { weekday: 'Wednesday', opensAt: '09:00:00', closesAt: '17:00:00' },
+];
+
 // minuteSpanStylePercent doesn't care about startUtc/endUtc at all — this fills
 // them with an arbitrary but valid ISO string just to satisfy the type.
 function fakeSegment(overrides: Partial<import('./availability-grid').DaySegment> = {}) {
@@ -164,8 +172,11 @@ describe('availability-grid', () => {
               remainingCapacity: 1,
             },
           ],
+          // Empty with no opening windows passed: without them there is no
+          // "inside opening hours" for a gap to be inside of.
+          unbookable: [],
         },
-        { date: '2026-09-22', segments: [] },
+        { date: '2026-09-22', segments: [], unbookable: [] },
         {
           date: '2026-09-23',
           segments: [
@@ -178,8 +189,259 @@ describe('availability-grid', () => {
               remainingCapacity: 1,
             },
           ],
+          unbookable: [],
         },
       ]);
+    });
+
+    // Why an opening-hours span isn't bookable — derived client-side, since
+    // GET /resources/{id}/availability answers with bookable time only.
+    describe('unbookable spans', () => {
+      it('labels a gap between two bookable spans as booked', () => {
+        const rows = buildDayRows(
+          ['2026-09-21'],
+          [
+            interval('2026-09-21T09:00:00Z', '2026-09-21T11:00:00Z'),
+            interval('2026-09-21T13:00:00Z', '2026-09-21T17:00:00Z'),
+          ],
+          'UTC',
+          WEEKDAY_WINDOWS,
+        );
+
+        expect(rows[0].unbookable).toEqual([
+          { startMinutes: 11 * 60, endMinutes: 13 * 60, kind: 'booked' },
+        ]);
+      });
+
+      it('labels a gap a blackout covers as blacked out', () => {
+        const rows = buildDayRows(
+          ['2026-09-21'],
+          [
+            interval('2026-09-21T09:00:00Z', '2026-09-21T11:00:00Z'),
+            interval('2026-09-21T13:00:00Z', '2026-09-21T17:00:00Z'),
+          ],
+          'UTC',
+          WEEKDAY_WINDOWS,
+          [{ startUtc: '2026-09-21T11:00:00Z', endUtc: '2026-09-21T13:00:00Z' }],
+        );
+
+        expect(rows[0].unbookable).toEqual([
+          { startMinutes: 11 * 60, endMinutes: 13 * 60, kind: 'blackout' },
+        ]);
+      });
+
+      // A blackout covering only part of a gap splits it: the covered part is
+      // "Unavailable", what remains is still "Booked".
+      it('splits one gap into its blacked-out and merely-booked parts', () => {
+        const rows = buildDayRows(
+          ['2026-09-21'],
+          [
+            interval('2026-09-21T09:00:00Z', '2026-09-21T10:00:00Z'),
+            interval('2026-09-21T14:00:00Z', '2026-09-21T17:00:00Z'),
+          ],
+          'UTC',
+          WEEKDAY_WINDOWS,
+          [{ startUtc: '2026-09-21T11:00:00Z', endUtc: '2026-09-21T13:00:00Z' }],
+        );
+
+        expect(rows[0].unbookable).toEqual([
+          { startMinutes: 10 * 60, endMinutes: 11 * 60, kind: 'booked' },
+          { startMinutes: 11 * 60, endMinutes: 13 * 60, kind: 'blackout' },
+          { startMinutes: 13 * 60, endMinutes: 14 * 60, kind: 'booked' },
+        ]);
+      });
+
+      it('covers a whole day that is open but entirely blacked out', () => {
+        const rows = buildDayRows(['2026-09-21'], [], 'UTC', WEEKDAY_WINDOWS, [
+          { startUtc: '2026-09-21T08:00:00Z', endUtc: '2026-09-21T18:00:00Z' },
+        ]);
+
+        expect(rows[0].segments).toEqual([]);
+        expect(rows[0].unbookable).toEqual([
+          { startMinutes: 9 * 60, endMinutes: 17 * 60, kind: 'blackout' },
+        ]);
+      });
+
+      // A closed day is not "unavailable", it is simply not open — the row's
+      // own empty-day label already says so, and drawing a bar across hours
+      // the resource never opens would claim something untrue.
+      it('says nothing about a weekday the resource has no window for', () => {
+        const rows = buildDayRows(['2026-09-26'], [], 'UTC', WEEKDAY_WINDOWS, [
+          { startUtc: '2026-09-26T09:00:00Z', endUtc: '2026-09-26T17:00:00Z' },
+        ]);
+
+        expect(rows[0].unbookable).toEqual([]);
+      });
+
+      it('never labels time outside the opening window', () => {
+        const rows = buildDayRows(
+          ['2026-09-21'],
+          [interval('2026-09-21T09:00:00Z', '2026-09-21T17:00:00Z')],
+          'UTC',
+          WEEKDAY_WINDOWS,
+        );
+
+        // Fully bookable inside 09:00-17:00 — the hours either side are
+        // closed, not unbookable.
+        expect(rows[0].unbookable).toEqual([]);
+      });
+
+      // Decision `0022`: a window closing at 23:59:59 means the following
+      // midnight, so the last minute of the day must not read as an
+      // unbookable sliver.
+      it('treats a 23:59:59 close as midnight', () => {
+        const rows = buildDayRows(
+          ['2026-09-21'],
+          [interval('2026-09-21T09:00:00Z', '2026-09-22T00:00:00Z')],
+          'UTC',
+          [{ weekday: 'Monday', opensAt: '09:00:00', closesAt: '23:59:59' }],
+        );
+
+        expect(rows[0].unbookable).toEqual([]);
+      });
+
+      // The owner's own case, 2026-09-17: the seeded 3D Printer's weekday
+      // hours are two *touching* windows (09:00-12:00 and 12:00-17:00), which
+      // cut a single 11:00-13:00 blackout into "Unavailable 11-12" and
+      // "Unavailable 12-13". Contiguous windows describe one continuous
+      // opening span, so there is no closed time at 12:00 for the split to
+      // stand for.
+      it('does not split a span at a boundary between two touching windows', () => {
+        const rows = buildDayRows(
+          ['2026-09-21'],
+          [
+            interval('2026-09-21T09:00:00Z', '2026-09-21T11:00:00Z'),
+            interval('2026-09-21T13:00:00Z', '2026-09-21T17:00:00Z'),
+          ],
+          'UTC',
+          [
+            { weekday: 'Monday', opensAt: '09:00:00', closesAt: '12:00:00' },
+            { weekday: 'Monday', opensAt: '12:00:00', closesAt: '17:00:00' },
+          ],
+          [{ startUtc: '2026-09-21T11:00:00Z', endUtc: '2026-09-21T13:00:00Z' }],
+        );
+
+        expect(rows[0].unbookable).toEqual([
+          { startMinutes: 11 * 60, endMinutes: 13 * 60, kind: 'blackout' },
+        ]);
+      });
+
+      it('merges overlapping windows too, not just touching ones', () => {
+        const rows = buildDayRows(
+          ['2026-09-21'],
+          [],
+          'UTC',
+          [
+            { weekday: 'Monday', opensAt: '09:00:00', closesAt: '13:00:00' },
+            { weekday: 'Monday', opensAt: '11:00:00', closesAt: '17:00:00' },
+          ],
+        );
+
+        expect(rows[0].unbookable).toEqual([
+          { startMinutes: 9 * 60, endMinutes: 17 * 60, kind: 'booked' },
+        ]);
+      });
+
+      // The other way the same stretch could be cut in two: separate blackout
+      // rows that abut. One reason, one pill.
+      it('shows one pill for two blackouts that meet end to end', () => {
+        const rows = buildDayRows(['2026-09-21'], [], 'UTC', WEEKDAY_WINDOWS, [
+          { startUtc: '2026-09-21T10:00:00Z', endUtc: '2026-09-21T12:00:00Z' },
+          { startUtc: '2026-09-21T12:00:00Z', endUtc: '2026-09-21T14:00:00Z' },
+        ]);
+
+        expect(rows[0].unbookable).toEqual([
+          { startMinutes: 9 * 60, endMinutes: 10 * 60, kind: 'booked' },
+          { startMinutes: 10 * 60, endMinutes: 14 * 60, kind: 'blackout' },
+          { startMinutes: 14 * 60, endMinutes: 17 * 60, kind: 'booked' },
+        ]);
+      });
+
+      it('shows one pill for two overlapping blackouts', () => {
+        const rows = buildDayRows(['2026-09-21'], [], 'UTC', WEEKDAY_WINDOWS, [
+          { startUtc: '2026-09-21T10:00:00Z', endUtc: '2026-09-21T13:00:00Z' },
+          { startUtc: '2026-09-21T11:00:00Z', endUtc: '2026-09-21T14:00:00Z' },
+        ]);
+
+        expect(rows[0].unbookable).toEqual([
+          { startMinutes: 9 * 60, endMinutes: 10 * 60, kind: 'booked' },
+          { startMinutes: 10 * 60, endMinutes: 14 * 60, kind: 'blackout' },
+          { startMinutes: 14 * 60, endMinutes: 17 * 60, kind: 'booked' },
+        ]);
+      });
+
+      // Merging must not run across a change of reason: a blackout ending
+      // where booked time begins is still two different answers.
+      it('keeps a blackout and the booked time next to it apart', () => {
+        const rows = buildDayRows(
+          ['2026-09-21'],
+          [interval('2026-09-21T09:00:00Z', '2026-09-21T11:00:00Z')],
+          'UTC',
+          WEEKDAY_WINDOWS,
+          [{ startUtc: '2026-09-21T11:00:00Z', endUtc: '2026-09-21T13:00:00Z' }],
+        );
+
+        expect(rows[0].unbookable).toEqual([
+          { startMinutes: 11 * 60, endMinutes: 13 * 60, kind: 'blackout' },
+          { startMinutes: 13 * 60, endMinutes: 17 * 60, kind: 'booked' },
+        ]);
+      });
+
+      // A split shift: the gap between two windows is closed time, not
+      // unbookable time, so merging across it would mislabel it — which is
+      // why only *touching* windows merge.
+      it('leaves the gap between two same-day windows alone', () => {
+        const rows = buildDayRows(
+          ['2026-09-21'],
+          [interval('2026-09-21T09:00:00Z', '2026-09-21T12:00:00Z')],
+          'UTC',
+          [
+            { weekday: 'Monday', opensAt: '09:00:00', closesAt: '12:00:00' },
+            { weekday: 'Monday', opensAt: '14:00:00', closesAt: '17:00:00' },
+          ],
+        );
+
+        expect(rows[0].unbookable).toEqual([
+          { startMinutes: 14 * 60, endMinutes: 17 * 60, kind: 'booked' },
+        ]);
+      });
+
+      // A blackout is a UTC span like any other and can cover parts of two
+      // local days — it goes through the same splitter bookable intervals do.
+      it('applies a blackout that spans local midnight to both days', () => {
+        const rows = buildDayRows(
+          ['2026-09-21', '2026-09-22'],
+          [],
+          'UTC',
+          WEEKDAY_WINDOWS,
+          [{ startUtc: '2026-09-21T16:00:00Z', endUtc: '2026-09-22T10:00:00Z' }],
+        );
+
+        // Nothing is bookable on either day here, so the whole window is
+        // accounted for: the blackout's own hours as "Unavailable", the rest
+        // as "Booked".
+        expect(rows[0].unbookable).toEqual([
+          { startMinutes: 9 * 60, endMinutes: 16 * 60, kind: 'booked' },
+          { startMinutes: 16 * 60, endMinutes: 17 * 60, kind: 'blackout' },
+        ]);
+        expect(rows[1].unbookable).toEqual([
+          { startMinutes: 9 * 60, endMinutes: 10 * 60, kind: 'blackout' },
+          { startMinutes: 10 * 60, endMinutes: 17 * 60, kind: 'booked' },
+        ]);
+      });
+
+      it('reads both windows and blackouts in the resource\'s own timezone', () => {
+        // 13:00-15:00Z is 09:00-11:00 in New York, so a blackout there covers
+        // the first two hours of a 09:00-17:00 local window.
+        const rows = buildDayRows(['2026-09-21'], [], 'America/New_York', WEEKDAY_WINDOWS, [
+          { startUtc: '2026-09-21T13:00:00Z', endUtc: '2026-09-21T15:00:00Z' },
+        ]);
+
+        expect(rows[0].unbookable).toEqual([
+          { startMinutes: 9 * 60, endMinutes: 11 * 60, kind: 'blackout' },
+          { startMinutes: 11 * 60, endMinutes: 17 * 60, kind: 'booked' },
+        ]);
+      });
     });
 
     it('sorts multiple segments on the same day by start time', () => {

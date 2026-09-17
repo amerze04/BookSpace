@@ -7,6 +7,7 @@ import { AvailabilityComponent } from './availability.component';
 import { BreadcrumbService } from '../../layout/breadcrumb.service';
 import { ResourceDetail } from '../resources/resources.models';
 import { AvailabilityResponse } from './availability.models';
+import { BlackoutPeriodSummary } from './blackout-periods.models';
 import { DayRow, DaySegment } from './availability-grid';
 
 const API = 'http://localhost:5270';
@@ -45,20 +46,24 @@ type TestableAvailabilityComponent = AvailabilityComponent & {
   availabilityError: () => boolean;
   isArchivedResource: () => boolean;
   dayRows: () => DayRow[];
+  unbookableLabel(kind: 'blackout' | 'booked'): string;
+  unbookableAccessibleLabel(date: string, span: { startMinutes: number; endMinutes: number; kind: 'blackout' | 'booked' }): string;
   retryAvailability(): void;
   segmentLabel(segment: DaySegment): string;
   emptyDayLabel(date: string): string;
   segmentAccessibleLabel(date: string, segment: DaySegment): string;
   selectedSegment: () => DaySegment | null;
   selectedStartMinutes: () => number;
-  selectedEndMinutes: () => number;
+  // .set is exposed on the End signal so the off-grid regression below can
+  // put it where a drag would, without simulating a whole pointer sequence.
+  selectedEndMinutes: { (): number; set(minutes: number): void };
   startTimeOptions: () => { minutes: number; label: string }[];
   endTimeOptions: () => { minutes: number; label: string }[];
   selectedDateLabel: () => string;
   selectedTimeRangeLabel: () => string;
   selectedDurationLabel: () => string;
   isSegmentSelected(segment: DaySegment): boolean;
-  selectSegment(segment: DaySegment): void;
+  selectSegment(segment: DaySegment, event?: Event): void;
   clearSelection(): void;
   onSelectedStartChange(event: Event): void;
   onSelectedEndChange(event: Event): void;
@@ -191,6 +196,35 @@ describe('AvailabilityComponent', () => {
     return TestBed.createComponent(AvailabilityComponent);
   }
 
+  // One page of blackout periods, in the PagedResult envelope the endpoint
+  // actually answers with.
+  function blackoutPage(items: BlackoutPeriodSummary[]) {
+    return {
+      items,
+      page: 1,
+      pageSize: 100,
+      totalCount: items.length,
+      totalPages: 1,
+      hasPreviousPage: false,
+      hasNextPage: false,
+    };
+  }
+
+  function emptyBlackoutPage() {
+    return blackoutPage([]);
+  }
+
+  function fakeBlackout(startsAtUtc: string, endsAtUtc: string): BlackoutPeriodSummary {
+    return {
+      id: `bo-${startsAtUtc}`,
+      resourceId: 'r1',
+      startsAtUtc,
+      endsAtUtc,
+      reason: 'Maintenance',
+      createdAtUtc: '2026-09-01T00:00:00Z',
+    };
+  }
+
   // Flushes the availability request a successful resource load cascades
   // into (step 5) — matched by URL only (no query-param assertion), since
   // most callers here don't care what exact from/to/quantity landed. The
@@ -213,6 +247,16 @@ describe('AvailabilityComponent', () => {
   }
 
   afterEach(() => {
+    // The blackout fetch rides along with every availability fetch (it is what
+    // labels an unbookable gap "Unavailable" rather than "Booked"), and most
+    // tests here have no interest in it — draining it once, here, keeps them
+    // from each having to flush a request they never meant to exercise. The
+    // tests that *do* care flush it themselves first, so nothing is left for
+    // this to drain.
+    httpMock
+      .match((request) => request.url.endsWith('/blackout-periods'))
+      .forEach((request) => request.flush(emptyBlackoutPage()));
+
     httpMock.verify();
     breadcrumbService.setInsertBeforeLast(null);
   });
@@ -623,6 +667,115 @@ describe('AvailabilityComponent', () => {
       expect(component.availabilityLoading()).toBe(false);
     });
 
+    // Owner's request, 2026-09-17: say *why* an hour inside opening time
+    // isn't offered. The endpoint answers only with what is bookable
+    // (decision `0020`), so the reason is derived from two things this
+    // client can already read — the resource's own windows, and the blackout
+    // list (which is on TenantMember exactly so a member can see it).
+    describe('labelling what is not bookable', () => {
+      it('asks for blackouts covering the visible range, a day either side', () => {
+        createFixture();
+        httpMock.expectOne(`${API}/resources/r1`).flush(fakeDetail({ timeZoneId: 'UTC' }));
+        httpMock.expectOne((r) => r.url === `${API}/resources/r1/availability`).flush(fakeAvailability());
+
+        const req = httpMock.expectOne((r) => r.url === `${API}/resources/r1/blackout-periods`);
+        expect(req.request.method).toBe('GET');
+        expect(req.request.params.get('from')).toBe('2026-09-20T00:00:00Z');
+        expect(req.request.params.get('to')).toBe('2026-09-29T00:00:00Z');
+        req.flush(emptyBlackoutPage());
+      });
+
+      it('labels a blacked-out gap "Unavailable" and a merely-taken one "Booked"', () => {
+        const fixture = createFixture();
+        const component = fixture.componentInstance as TestableAvailabilityComponent;
+        httpMock.expectOne(`${API}/resources/r1`).flush(
+          fakeDetail({
+            timeZoneId: 'UTC',
+            availabilityWindows: [
+              { id: 'w1', weekday: 'Monday', opensAt: '09:00:00', closesAt: '17:00:00' },
+            ],
+          }),
+        );
+        httpMock.expectOne((r) => r.url === `${API}/resources/r1/availability`).flush(
+          fakeAvailability({
+            intervals: [
+              { startUtc: '2026-09-21T09:00:00Z', endUtc: '2026-09-21T11:00:00Z', remainingCapacity: 1 },
+              { startUtc: '2026-09-21T15:00:00Z', endUtc: '2026-09-21T17:00:00Z', remainingCapacity: 1 },
+            ],
+          }),
+        );
+        httpMock
+          .expectOne((r) => r.url === `${API}/resources/r1/blackout-periods`)
+          .flush(blackoutPage([fakeBlackout('2026-09-21T13:00:00Z', '2026-09-21T15:00:00Z')]));
+
+        expect(component.dayRows()[0].unbookable).toEqual([
+          { startMinutes: 11 * 60, endMinutes: 13 * 60, kind: 'booked' },
+          { startMinutes: 13 * 60, endMinutes: 15 * 60, kind: 'blackout' },
+        ]);
+        expect(component.unbookableLabel('blackout')).toBe('Unavailable');
+        expect(component.unbookableLabel('booked')).toBe('Booked');
+      });
+
+      // The grid is still correct without blackouts — they only turn "Booked"
+      // into "Unavailable" — so a failure here is silent rather than an error
+      // state the member has to dismiss.
+      it('falls back to "Booked" when the blackout fetch fails', () => {
+        const fixture = createFixture();
+        const component = fixture.componentInstance as TestableAvailabilityComponent;
+        httpMock.expectOne(`${API}/resources/r1`).flush(
+          fakeDetail({
+            timeZoneId: 'UTC',
+            availabilityWindows: [
+              { id: 'w1', weekday: 'Monday', opensAt: '09:00:00', closesAt: '17:00:00' },
+            ],
+          }),
+        );
+        httpMock.expectOne((r) => r.url === `${API}/resources/r1/availability`).flush(
+          fakeAvailability({
+            intervals: [{ startUtc: '2026-09-21T09:00:00Z', endUtc: '2026-09-21T11:00:00Z', remainingCapacity: 1 }],
+          }),
+        );
+        httpMock
+          .expectOne((r) => r.url === `${API}/resources/r1/blackout-periods`)
+          .flush('boom', { status: 500, statusText: 'Server Error' });
+
+        expect(component.availabilityError()).toBe(false);
+        expect(component.dayRows()[0].unbookable).toEqual([
+          { startMinutes: 11 * 60, endMinutes: 17 * 60, kind: 'booked' },
+        ]);
+      });
+
+      it('renders the labelled spans alongside the bookable bars', () => {
+        const fixture = createFixture();
+        httpMock.expectOne(`${API}/resources/r1`).flush(
+          fakeDetail({
+            timeZoneId: 'UTC',
+            availabilityWindows: [
+              { id: 'w1', weekday: 'Monday', opensAt: '09:00:00', closesAt: '17:00:00' },
+            ],
+          }),
+        );
+        httpMock.expectOne((r) => r.url === `${API}/resources/r1/availability`).flush(
+          fakeAvailability({
+            intervals: [{ startUtc: '2026-09-21T09:00:00Z', endUtc: '2026-09-21T11:00:00Z', remainingCapacity: 1 }],
+          }),
+        );
+        httpMock
+          .expectOne((r) => r.url === `${API}/resources/r1/blackout-periods`)
+          .flush(blackoutPage([fakeBlackout('2026-09-21T11:00:00Z', '2026-09-21T13:00:00Z')]));
+        fixture.detectChanges();
+
+        const firstTrack = (fixture.nativeElement as HTMLElement).querySelector('.day-track');
+        const unbookable = Array.from(firstTrack?.querySelectorAll('.unbookable') ?? []);
+        expect(unbookable.map((el) => el.textContent?.trim())).toEqual(['Unavailable', 'Booked']);
+        expect(unbookable[0].classList.contains('unbookable--blackout')).toBe(true);
+        expect(unbookable[1].classList.contains('unbookable--blackout')).toBe(false);
+        expect(firstTrack?.querySelector('.segment')).not.toBeNull();
+        // Still the empty-day text on a day with neither bars nor reasons.
+        expect((fixture.nativeElement as HTMLElement).querySelectorAll('.no-hours').length).toBeGreaterThan(0);
+      });
+    });
+
     it('builds one day row per date in range, assigning each interval to its own local day', () => {
       const fixture = createFixture();
       const component = fixture.componentInstance as TestableAvailabilityComponent;
@@ -851,6 +1004,142 @@ describe('AvailabilityComponent', () => {
       );
     }
 
+    // Bug reported by the owner, 2026-09-17: on a range that needs scrolling,
+    // clicking a bar low in the grid left it out of view — the selection panel
+    // appearing below the grid shrinks the scroll box from the bottom while
+    // scrollTop stays put, so the row just clicked falls outside it.
+    describe('keeping the clicked bar in view', () => {
+      function clickEventFrom(element: HTMLElement): Event {
+        return { currentTarget: element } as unknown as Event;
+      }
+
+      function fakeSegmentButton(): HTMLElement {
+        const button = document.createElement('button');
+        // jsdom implements no scrolling at all, so this is the only way to
+        // observe the call — which is also why the component checks the method
+        // exists before calling it.
+        button.scrollIntoView = vi.fn();
+        return button;
+      }
+
+      it('scrolls the clicked bar back into view once the panel has taken its space', async () => {
+        const fixture = createFixture();
+        const component = fixture.componentInstance as TestableAvailabilityComponent;
+        loadWithOneSegment(component);
+        const button = fakeSegmentButton();
+
+        component.selectSegment(component.dayRows()[0].segments[0], clickEventFrom(button));
+        fixture.detectChanges();
+        await fixture.whenStable();
+
+        // 'nearest' — the minimum scroll needed, and nothing at all when the
+        // bar is already fully visible, so a click near the top of the grid
+        // isn't yanked somewhere else.
+        expect(button.scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+      });
+
+      it('selects normally when called without an event (the dropdowns, tests)', async () => {
+        const fixture = createFixture();
+        const component = fixture.componentInstance as TestableAvailabilityComponent;
+        loadWithOneSegment(component);
+
+        const segment = component.dayRows()[0].segments[0];
+        expect(() => component.selectSegment(segment)).not.toThrow();
+        fixture.detectChanges();
+        await fixture.whenStable();
+
+        expect(component.selectedSegment()).toBe(segment);
+      });
+    });
+
+    // Bug found by the owner, 2026-09-17, on the seeded 3D Printer (min 60,
+    // max 180): clicking a bar selected 09:00-12:00, but the End dropdown
+    // displayed 10:00 — its own *first* option, Start + the minimum — and
+    // every subsequent Start change moved that displayed number without
+    // moving the selection. Cause: `[value]` on the <select> sets the value
+    // property once, while the browser resets a single select to its first
+    // option whenever the option list is rebuilt (endTimeOptions depends on
+    // selectedStartMinutes, so it is rebuilt constantly) and Angular doesn't
+    // re-apply a binding whose own value hasn't changed.
+    //
+    // These assert against the rendered DOM on purpose: every signal-level
+    // assertion in this file was already passing while the screen was wrong.
+    describe('the Start/End dropdowns show what is actually selected', () => {
+      function loadPrinterLikeResource(component: TestableAvailabilityComponent): void {
+        httpMock
+          .expectOne(`${API}/resources/r1`)
+          .flush(fakeDetail({ timeZoneId: 'UTC', minDurationMinutes: 60, maxDurationMinutes: 180 }));
+        httpMock.expectOne((r) => r.url === `${API}/resources/r1/availability`).flush(
+          fakeAvailability({
+            intervals: [{ startUtc: '2026-09-21T08:00:00Z', endUtc: '2026-09-21T17:00:00Z', remainingCapacity: 1 }],
+          }),
+        );
+        component.selectSegment(component.dayRows()[0].segments[0]);
+      }
+
+      function timeSelects(fixture: { nativeElement: unknown }): HTMLSelectElement[] {
+        return Array.from(
+          (fixture.nativeElement as HTMLElement).querySelectorAll<HTMLSelectElement>('.time-field select'),
+        );
+      }
+
+      it('renders the defaulted End (Start + the maximum), not the first option', () => {
+        const fixture = createFixture();
+        const component = fixture.componentInstance as TestableAvailabilityComponent;
+        loadPrinterLikeResource(component);
+        fixture.detectChanges();
+
+        const [startSelect, endSelect] = timeSelects(fixture);
+        expect(component.selectedEndMinutes()).toBe(11 * 60); // 08:00 + 180
+        expect(startSelect.value).toBe(String(8 * 60));
+        expect(endSelect.value).toBe(String(11 * 60)); // not 09:00, the earliest legal End
+      });
+
+      it('keeps showing the held End after a Start change rebuilds the option list', () => {
+        const fixture = createFixture();
+        const component = fixture.componentInstance as TestableAvailabilityComponent;
+        loadPrinterLikeResource(component);
+        fixture.detectChanges();
+
+        // 09:00 start, End 11:00 is still valid (2 hours, inside 1-3), so the
+        // selection must not move — and neither must what the dropdown shows.
+        component.onSelectedStartChange(inputChangeEvent(String(9 * 60)));
+        fixture.detectChanges();
+
+        const [startSelect, endSelect] = timeSelects(fixture);
+        expect(component.selectedStartMinutes()).toBe(9 * 60);
+        expect(component.selectedEndMinutes()).toBe(11 * 60);
+        expect(startSelect.value).toBe(String(9 * 60));
+        expect(endSelect.value).toBe(String(11 * 60));
+      });
+
+      // The option grid steps from the segment's own start; a drag snaps to
+      // absolute 15-minute marks. On a segment starting at an odd offset (a
+      // blackout can leave one), the two grids don't line up, so the held
+      // value has to be added to the list or the select cannot show it.
+      it('offers the held value even when it falls between two steps', () => {
+        const fixture = createFixture();
+        const component = fixture.componentInstance as TestableAvailabilityComponent;
+        httpMock
+          .expectOne(`${API}/resources/r1`)
+          .flush(fakeDetail({ timeZoneId: 'UTC', minDurationMinutes: 60, maxDurationMinutes: 180 }));
+        httpMock.expectOne((r) => r.url === `${API}/resources/r1/availability`).flush(
+          fakeAvailability({
+            intervals: [{ startUtc: '2026-09-21T08:07:00Z', endUtc: '2026-09-21T17:00:00Z', remainingCapacity: 1 }],
+          }),
+        );
+        component.selectSegment(component.dayRows()[0].segments[0]);
+
+        // Where a drag would land: an absolute 11:00, off the 09:07/09:22/…
+        // grid the End options otherwise step through.
+        component.selectedEndMinutes.set(11 * 60);
+        fixture.detectChanges();
+
+        expect(component.endTimeOptions().some((o) => o.minutes === 11 * 60)).toBe(true);
+        expect(timeSelects(fixture)[1].value).toBe(String(11 * 60));
+      });
+    });
+
     it('selecting a bar defaults Start to the segment\'s own start and End to Start + the resource\'s maxDurationMinutes (owner\'s correction)', () => {
       const fixture = createFixture();
       const component = fixture.componentInstance as TestableAvailabilityComponent;
@@ -1048,7 +1337,7 @@ describe('AvailabilityComponent', () => {
       component.continueToBooking(fakeDetail({ id: 'r1', timeZoneId: 'UTC', minDurationMinutes: null, maxDurationMinutes: null }));
       expect(routerNavigate).toHaveBeenCalledWith(
         ['/resources', 'r1', 'book'],
-        { state: { startUtc: '2026-09-21T08:00:00.000Z', endUtc: '2026-09-21T08:10:00.000Z', quantity: 1 } },
+        { queryParams: { startUtc: '2026-09-21T08:00:00Z', endUtc: '2026-09-21T08:10:00Z', quantity: '1' } },
       );
     });
 
@@ -1091,6 +1380,11 @@ describe('AvailabilityComponent', () => {
       expect(component.selectedEndMinutes()).toBe(12 * 60); // untouched — still after the new Start
     });
 
+    // Query parameters, not router state (owner's decision, 2026-09-17): the
+    // selected slot is part of the booking screen's URL, so it can be shared,
+    // bookmarked and reopened. The instants are whole-second and UTC —
+    // buildBookingQueryParams drops the ".000" toISOString() produces, since
+    // the API refuses fractional seconds.
     it('continueToBooking navigates to the book route carrying the selected UTC span and quantity', () => {
       const fixture = createFixture();
       const component = fixture.componentInstance as TestableAvailabilityComponent;
@@ -1109,10 +1403,10 @@ describe('AvailabilityComponent', () => {
       expect(routerNavigate).toHaveBeenCalledWith(
         ['/resources', 'r1', 'book'],
         {
-          state: {
-            startUtc: '2026-09-21T09:00:00.000Z',
-            endUtc: '2026-09-21T11:00:00.000Z',
-            quantity: 1,
+          queryParams: {
+            startUtc: '2026-09-21T09:00:00Z',
+            endUtc: '2026-09-21T11:00:00Z',
+            quantity: '1',
           },
         },
       );

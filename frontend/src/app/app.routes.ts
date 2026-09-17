@@ -49,15 +49,21 @@ export const routes: Routes = [
               import('./features/availability/availability.component').then((m) => m.AvailabilityComponent),
           },
           {
-            // WP-7 Phase 3 replaces this with the real booking form — the
-            // availability screen's "Continue to booking" (step 6) already
-            // navigates here, carrying the selected span via router state,
-            // the same one-route-at-a-time pattern Phase 1 used for this
-            // very route before Phase 2 existed.
+            // WP-7 Phase 3 step 2: the placeholder this route carried since
+            // Phase 1 is now the real booking screen. The availability
+            // screen's "Continue to booking" navigates here carrying the
+            // selected span via router state.
+            //
+            // 'Book resource' rather than the design's shorter 'Book' crumb:
+            // ShellComponent derives the page heading *from* the last crumb
+            // deliberately (one source for both), so the two cannot differ
+            // without reopening that decision for one screen. The design's
+            // heading is the more prominent of the two, so it wins; the crumb
+            // reads 'Resources > Conference Room A > Book resource'.
             path: ':id/book',
-            data: { title: 'Book' },
+            data: { title: 'Book resource' },
             loadComponent: () =>
-              import('./features/placeholder/placeholder.component').then((m) => m.PlaceholderComponent),
+              import('./features/booking/booking.component').then((m) => m.BookingComponent),
           },
         ],
       },

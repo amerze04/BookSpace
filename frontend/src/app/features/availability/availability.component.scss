@@ -485,6 +485,47 @@ $day-label-width: 8rem;
   border-radius: var(--radius-md);
 }
 
+// A span inside opening hours that isn't offered, and why. Declared before
+// .segment so a bookable bar always wins the overlap at a shared boundary.
+//
+// There is deliberately no full-width background track behind these: the
+// owner's "no empty spaces" correction meant the *gaps* should be accounted
+// for, which these pills now do — a silver bed under everything was tried and
+// removed as not what was asked for.
+.unbookable {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-text-secondary) 12%, var(--color-bg));
+  color: var(--color-text-secondary);
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  // Not interactive: there is nothing to click here, and swallowing pointer
+  // events would only stop the document-click listener from clearing a
+  // selection.
+  pointer-events: none;
+
+  &--blackout {
+    background: color-mix(in srgb, var(--color-warning) 14%, var(--color-bg));
+    color: color-mix(in srgb, var(--color-warning) 75%, black);
+  }
+}
+
+// Hidden rather than clipped mid-word when the span is too narrow to read —
+// the bar itself still shows the time is taken, and the accessible label on
+// the parent carries the reason regardless.
+.unbookable-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 0.3rem;
+}
+
 // A bookable span, clickable (step 6). Stays green even once clicked — only
 // an outline marks it as "the bar the current selection came from" — rather
 // than turning solid burgundy, per the owner's own correction: filling the

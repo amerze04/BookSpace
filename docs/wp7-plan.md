@@ -22,6 +22,28 @@ reversed to real backend query params, CLAUDE.md's "Resource list filters
 extended for WP-7" entry) and its subsequent redo. 89 vitest tests pass, 0
 failed. See §5 below for what each step delivered.
 
+**Phase 3 (booking form) is in progress — steps 1 and 2 done 2026-09-17.**
+Eight steps in §5 below, written before any code as every prior phase was.
+Three calls were settled with the owner first: idempotency is the recurring
+path only (the one-off gap is flagged in §7 with a named owner), manual
+one-off date/time entry is dropped in favour of pre-fill-only, and the phase
+did not wait for a design. **Steps 1–5 are done — the whole one-off half of
+this phase**: models + both services, the route's shell, the one-off form and
+its submit, the Confirmed-vs-Pending outcome panel, and the full rejection
+catalogue. The design arrived mid-phase
+(`design/booking_view_design.png`, 2026-09-17) and everything from step 2 on
+was built against it. Steps 6–7 (the recurring half) are next, and the owner
+is branching/PR-ing at that seam. **A fourth call, taken on review of step
+2**: the selected slot travels from availability to booking as **query
+parameters**, not router state — see step 2 for the reasoning and what was
+weighed against it. 376 vitest tests pass, 0 failed.
+
+**The one-off half of this phase is steps 3–5** (form + submit, the
+Confirmed-vs-Pending outcome, and the full rejection catalogue); steps 6–7 are
+the recurring half. The owner is branching/PR-ing at that seam, so nothing
+recurring — including the one-time/recurring toggle itself — is built before
+step 5 is done.
+
 **Phase 2 (availability view) is done, 2026-09-16** — seven steps, including
 four rounds of owner-driven refinement on step 6's selection interaction
 (min/max duration enforcement, a burgundy sub-range overlay instead of the
@@ -165,7 +187,7 @@ with no design to build against.
 | 1 | **Resource list** | Provided — `design/resources_design.png`. Admin actions (New resource, per-card `⋮` menu) not built; see §3. |
 | 1 | **Resource detail** | Provided — `design/resource_details_design.png`. "Edit resource" not built; "Check availability" routes to Phase 2. |
 | 2 | **Availability view** | Needed before Phase 2 starts. |
-| 3 | **Booking form** (one-off + recurring, validation states) | Needed before Phase 3 starts. |
+| 3 | **Booking form** (one-off + recurring, validation states) | Provided mid-phase, 2026-09-17 — `design/booking_view_design.png`. Covers the one-time half only; the owner's instruction is that choosing "Recurring" expands the recurrence fields in place, under Title, in the same component. Deviations recorded in Phase 3's step 2 below. |
 | 4 | **My Bookings** (list, detail, cancel confirmation, series-vs-occurrence cancel choice) | Needed before Phase 4 starts. |
 | 5 | **Calendar** (month/week view, event card, empty/loading/overflow states) | Needed before Phase 5 starts. |
 | 6 | **Approval queue** (pending list, approve/reject with note) | Needed before Phase 6 starts. |
@@ -467,7 +489,10 @@ implied behavior.
    it; the "Selected time" panel (date/time/duration, an approval-required
    tag or remaining-units badge, Start/End dropdowns); "Continue to booking"
    navigates to a new `:id/book` placeholder route carrying `{ startUtc,
-   endUtc, quantity }` via router state. The core problem: turning a
+   endUtc, quantity }` via router state — **amended 2026-09-17 to query
+   parameters** (`?startUtc=…&endUtc=…&quantity=…`, owner's decision; the
+   reasoning is in Phase 3 step 2 below). It touched one line of this screen,
+   `continueToBooking`. The core problem: turning a
    *narrowed* local-time selection back into a precise UTC instant, when
    only the original interval carries one — solved by giving each
    `DaySegment` its own `startUtc`/`endUtc`, walked forward from the
@@ -489,6 +514,95 @@ implied behavior.
    same as the explicit "Clear selection" link. All four used the Pointer
    Capture API (`setPointerCapture`) for dragging — mouse/touch/pen alike,
    no document-level listener teardown to get wrong.
+   **Bug found by the owner on 2026-09-17 (while Phase 3 was in flight) and
+   fixed the same day: the Start/End dropdowns displayed the wrong time.** On
+   the seeded 3D Printer (min 60, max 180) clicking a bar selected 09:00–12:00
+   — the overlay, the summary line and the eventual booking were all correct —
+   but the End dropdown showed 10:00, its own *first* option (Start + the
+   resource's minimum). Dragging the overlay or the Start handle moved that
+   displayed number without moving the selection; only dragging the End handle
+   made it agree, and from then on it behaved.
+   Cause: `<select [value]="…">` with `@for`-rendered options. The binding
+   sets the select's `value` *property* once, but a single select falls back
+   to its first option whenever its option list is rebuilt — and
+   `endTimeOptions` is rebuilt on every Start change, since it depends on
+   `selectedStartMinutes`. Angular then doesn't re-apply the binding, because
+   `selectedEndMinutes` itself never changed. Dragging the End handle
+   "fixed" it only because that finally changed the bound value.
+   Fixed by binding `[selected]` on each option instead, which survives the
+   list being rebuilt because each option carries its own state, plus
+   `withSelectedOption`, which adds the held value to the list when it falls
+   between two steps (the option grid steps from the segment's own start,
+   which a blackout can leave on an odd offset, while a drag snaps to
+   absolute 15-minute marks — the two grids need not line up).
+   **The lesson worth keeping**: every existing assertion about this
+   interaction was at the signal level and every one of them passed while the
+   screen was visibly wrong. The three regression tests added assert against
+   the rendered DOM, and were confirmed to fail against the old template
+   before the fix was kept. The resource list's own `[value]` select is *not*
+   affected — its options are static and never rebuilt — so it was left alone.
+
+   **Three further owner-requested changes, 2026-09-17** (alongside the
+   dropdown bug above, and likewise during Phase 3):
+
+   1. **Selecting a bar low in the grid no longer leaves it out of view.**
+      Nothing was scrolling: the selection panel only exists once something is
+      selected, and `.grid` is a flex child, so the panel taking its space
+      shrinks `.grid-rows`' visible height from the bottom while `scrollTop`
+      stays — which puts the row just clicked outside the shortened viewport.
+      `selectSegment` now takes the click event and, in `afterNextRender` (the
+      panel has to have taken its space before "is it still visible" can be
+      answered), calls `scrollIntoView({ block: 'nearest' })` on the clicked
+      button: the minimum scroll needed, and none at all when the bar is
+      already fully visible, so a click near the top isn't yanked elsewhere.
+   2. **The empty space between bars is accounted for** — by item 3's own
+      labelled pills, not by a background track. A full-width silver bed
+      (`.track-base`) was built first and **removed the same day** on the
+      owner's correction: what was actually wanted was no *unexplained* gaps,
+      which the "Unavailable"/"Booked" pills already deliver. Recorded rather
+      than quietly reverted, since the first reading is a plausible one to
+      arrive at again.
+   3. **Unbookable time now says why** — "Unavailable" for a blackout,
+      "Booked" for anything else inside opening hours. **No backend change
+      was needed**, which was the owner's own condition: the availability
+      endpoint answers with bookable time only (decision `0020`), but both
+      missing pieces are already readable by a member —
+      `ResourceDetail.availabilityWindows` for the opening hours, and
+      `GET /resources/{id}/blackout-periods`, which sits on `TenantMember`
+      precisely because (its own handler comment) "a member choosing when to
+      book needs to see when a resource is blacked out". So the reason is
+      *derived*: opening hours minus bookable time is unbookable time, and the
+      blackout list splits that into the two labels. "Booked" is deliberately
+      the fallback rather than a positive test — on a pooled resource, "some
+      units left but fewer than you asked for" is also honestly "Booked".
+      New `blackout-periods.service.ts`/`.models.ts`; the set arithmetic
+      (`buildUnbookableSpans`, `subtractSpans`, `intersectSpans`,
+      `openSpansFor`) lives in `availability-grid.ts` with the rest of the
+      grid math, and `computeAxis` now considers unbookable spans too, so a
+      day whose whole morning is blacked out still has an axis wide enough to
+      draw it. A blackout is a UTC span like a bookable interval and goes
+      through the same `splitIntervalByLocalDay`, so one that crosses local
+      midnight lands on both days without a second conversion.
+      **A closed day says nothing**: no window for that weekday means no
+      label, because "closed" is not "unavailable" — the empty-day text
+      already covers it. And the blackout fetch's failure is deliberately
+      silent (no error state, no retry button): it can only ever turn "Booked"
+      into "Unavailable", so without it the grid is still correct, just less
+      specific.
+      **One pill per continuous reason** (owner's correction, same day): the
+      first version drew one 11:00–13:00 blackout as *two* "Unavailable"
+      pills, 11–12 and 12–13. Not two blackouts — the dev database's 3D
+      Printer carries two *touching* weekday windows (09:00–12:00 and
+      12:00–17:00, replaced at some point by hand; `SeedData.AddWeekdayWindows`
+      creates a single 09:00–17:00 window), and the gap was being cut at that
+      boundary. Contiguous or overlapping windows now merge into one opening
+      span before anything is subtracted, while windows with a real gap
+      between them stay apart — merging across a genuine split shift would
+      mislabel closed time as unbookable, which is the mistake in the other
+      direction. The resulting spans are then merged again by kind, so two
+      abutting blackout rows likewise read as one pill, while a blackout
+      meeting booked time stays two.
+
    **A genuine debugging detour**, separate from the feature work: the
    owner's "only the grid scrolls, keep the chrome pinned" request took
    three attempts, because the first two relied on `height: 100%`
@@ -516,10 +630,14 @@ and confirm "Continue to booking" carries the right UTC span forward.
 
 ### Phase 3 — Booking form (one-off + recurring)
 
+**Plan written 2026-09-16**, before any code, same as every prior phase. The
+step breakdown below is added now because this phase is next, per §7's rule
+that a phase is broken down immediately before it starts and not sooner.
+
 - `BookingsService.create()` / `RecurrenceRulesService.create()`.
-- One form, a one-off/recurring toggle. Pre-filled from Phase 2's selected
-  interval when arriving that way; also reachable directly from a resource's
-  detail page for a manual date/time entry.
+- One screen, a one-off/recurring toggle. The one-off half is pre-filled from
+  Phase 2's selection; the recurring half is entered by hand (see "Three calls
+  settled" below for why those two differ).
 - Recurring fields: frequency, interval value, local start/end time, start
   date, end date **or** occurrence count (mutually exclusive, mirroring the
   command's own shape).
@@ -532,15 +650,536 @@ and confirm "Continue to booking" carries the right UTC span forward.
   by construction, not by guessing what might come back.
 - A created-but-`Pending` booking is shown distinctly from `Confirmed`
   (FR-7.1) — not just a generic success toast.
-- **Idempotency-Key handling**: the client generates one GUID per submission
-  *attempt* and reuses it only when retrying that same attempt after a
-  transport failure (a network error, a 5xx) — never on a deliberate resubmit
-  after the user changes the form. Documented in the component, not left
-  implicit, since getting this backwards would either let a genuine retry
-  create a second series or make an intentional second series collide with
-  the first.
 
-**Screens needed:** booking form (to be designed).
+#### The contract this phase actually consumes
+
+Read off the backend before planning, because the two endpoints are **not**
+symmetric and the asymmetry drives most of the phasing below.
+
+`POST /bookings` — `{ resourceId, startsAtUtc, endsAtUtc, quantity, title }`,
+**UTC instants**, no idempotency support of any kind.
+`CreateBookingCommandRequestValidator` additionally requires that each instant
+carry a zone designator (a bare local-looking timestamp is `Unspecified` and is
+refused) and carry **no fractional seconds** (`datetime2(0)` would round it,
+and the response would then disagree with the row a client reads back —
+CLAUDE.md §4.3). Both hold for anything Phase 2 hands over, since the
+availability endpoint's own instants come out of `datetime2(0)` columns and
+`addMinutesToUtc` only ever adds whole minutes — but the client truncates to
+whole seconds on the way out anyway rather than relying on that chain staying
+true. 201 returns `status` (`Confirmed` | `Pending`) and
+`approval: { approvalRequestId, expiresAtUtc } | null`; it deliberately carries
+no `remainingCapacity` (that record's own header explains why — a number a
+client might act on invites the check-then-act race the procedure exists to
+prevent).
+
+`POST /recurrence-rules` — `{ resourceId, frequency, intervalValue,
+localStartTime, localEndTime, startDate, endDate?, occurrenceCount?, quantity,
+title }`, **resource-local wall clock**, never instants (decision `0003`: the
+client names *when* the series runs, the handler resolves *what instant that
+is*, per occurrence, via the resource's own `TimeZoneId`). There is
+deliberately no `timeZoneId` field to send. Plus an `Idempotency-Key`
+**header**, not a body field. 201 returns `{ recurrenceRuleId, occurrences[] }`
+where each entry is `{ occurrenceDate, status, bookingId, reasonCode }` and
+`status` is `Created` | `SkippedSpringForwardGap` | `Refused` (FR-5.4: never a
+bare count).
+
+**The all-refused case carries the identical breakdown on a 422.**
+`NoOccurrencesCreatedException` puts it in `AppException.Extensions`, and
+`GlobalExceptionHandler` copies those onto `ProblemDetails.Extensions`, so
+`occurrences` arrives as a **top-level key on the problem response** — the same
+level as `reasonCode` and `errors`, not nested. One renderer serves both the
+201 and the 422; only the framing differs.
+
+#### Three calls settled before the phase starts (2026-09-16)
+
+**Idempotency is the recurring path only, and the one-off gap is flagged, not
+papered over.** `POST /bookings` has no idempotency key — no header, no
+operation record, nothing. Only `POST /recurrence-rules` does (the 2026-09-15
+hardening pass, item 11, `RecurrenceCreationOperation`). Owner's call: this is
+a frontend package and §7's rule stands — no backend change mid-WP. So the
+recurring submit sends a key and the one-off submit does not, which means **a
+one-off booking retried after a lost response can create a duplicate**. That is
+a real gap with a real consequence, so it gets an owner rather than a comment:
+recorded in §7 below against a future backend package, and mitigated as far as
+the client can — the one-off submit never auto-retries, and a transport failure
+tells the user their booking *may* have been created and links them to check,
+rather than offering a retry button that could double-book them.
+
+**Manual one-off date/time entry is dropped; the one-off path is pre-fill
+only.** The earlier bullet here said the form was "also reachable directly from
+a resource's detail page for a manual date/time entry" — reversed, because it
+implies something the frontend should not be doing. `POST /bookings` takes UTC,
+so a hand-typed local time would need an *unanchored* local→UTC inversion in
+the client; `resourceLocalMinutesToUtc` only works anchored to a `DaySegment`
+whose UTC bounds came from the server, and a general inverter would put
+DST-ambiguity policy in the browser, which CLAUDE.md §4.3 keeps deliberately
+backend-only. So: `/resources/:id/book` reached with no selection renders a
+"pick a time first" state linking to the availability screen, and the detail
+page's CTA keeps pointing at availability as it does today. **Recurrence is
+unaffected and keeps full manual entry** — it sends local wall-clock times
+natively and the backend does the conversion, which is exactly the split §4.3
+wants.
+
+**No booking-form design exists and the phase does not wait for one.** §4 lists
+one as needed; `design/` has none. Built against `design/BookSpace Visual
+Identity — Premium Burgundy.md` and the availability screen's own card /
+summary-panel / form vocabulary, the same way Phase 2 ran before its design
+landed mid-phase. If a design arrives later it is applied as a refinement step,
+not a rebuild.
+
+**Superseded 2026-09-17, the same way Phase 2's design did** — the booking
+design landed mid-phase (`design/booking_view_design.png`), before step 2 was
+written, so nothing had to be reworked. It is followed closely from step 2 on;
+the owner's standing instruction is to adapt where it doesn't fit this app's
+own flow or data and to follow it otherwise. Its one structural gap is
+deliberate and already answered: it shows the one-time half only, and choosing
+"Recurring" expands the recurrence fields **in place, under Title, in the same
+component** rather than routing anywhere — which is what step 6 already
+planned (one component, two form groups, not two routes).
+
+**Steps:**
+
+1. **Models + the two services, no UI — done, 2026-09-17.**
+   `features/booking/booking.models.ts`
+   (`BookingStatus`, `BookingApprovalDetail`, `CreateBookingRequest`,
+   `CreateBookingResponse`) and `recurrence.models.ts` (`RecurrenceFrequency`,
+   `RecurrenceOccurrenceReportStatus`, `RecurrenceOccurrenceReport`,
+   `CreateRecurrenceSeriesRequest`, `CreateRecurrenceSeriesResponse`), mirroring
+   the backend records field-for-field the way `resources.models.ts` and
+   `availability.models.ts` already do. `bookings.service.ts` (`create()`) and
+   `recurrence-rules.service.ts` (`create(request, idempotencyKey)`), both
+   `skipErrorToast()` — this screen renders its own inline states, same
+   reasoning as `ResourcesService` and `AvailabilityService`.
+   **One shape to confirm against the live API rather than assume**, following
+   `problem-details.ts`'s own precedent: what `TimeOnly`/`DateOnly` accept on
+   the wire (the client will send `"HH:mm:ss"` and `"yyyy-MM-dd"` explicitly
+   rather than rely on the shorter time form being parsed), and the exact
+   casing of the `occurrences` extension and its members on a real 422.
+   **Tests:** `HttpTestingController` specs for both bodies, the
+   `Idempotency-Key` header being present on the recurring call and absent on
+   the one-off one, and the mutually-exclusive end condition serializing as
+   exactly one of the two fields.
+
+   **Delivered, with the wire shapes confirmed live rather than assumed.**
+   Both model files and both services landed as planned; 11 new vitest tests
+   (254 total, 0 failed), `npx ng build` clean. Four things worth recording:
+
+   - **The 422's `occurrences` shape was verified against the running API**,
+     not inferred from the C# records — it had to be, because
+     `NoOccurrencesCreatedException` puts the breakdown into
+     `AppException.Extensions` as a boxed `object`, so its casing and its
+     enum rendering depend on which JSON options serialize `ProblemDetails`
+     rather than on the record's own declaration. A deliberately all-refused
+     weekly series (03:00–04:00 local on a 09:00–17:00 resource) answered
+     `422` with `occurrences` as a **top-level key beside `reasonCode`**,
+     camelCase members, `status` as its name (`"Refused"`) and
+     `occurrenceDate` as `"yyyy-MM-dd"` — byte-identical to the 201's own
+     list, which is what lets step 7 use one renderer for both. Typed as
+     `NoOccurrencesCreatedProblem extends ProblemDetails`. The probe left no
+     trace: the all-refused path compensates its own up-front
+     `RecurrenceRule` row away (`RemoveOrphanedRuleAsync`) before throwing.
+   - **`TimeOnly`/`DateOnly` both accept what this client sends** —
+     `"03:00:00"` and `"2026-09-20"`. The shorter `"03:00"` is *also*
+     accepted, which is exactly why the client keeps sending the full
+     three-part form: nothing here depends on the shorter form continuing to
+     mean what it means today.
+   - **The one-off validator's two instant rules were confirmed as real
+     rejections**, since step 3 relies on them: `2026-09-21T13:00:00.500Z`
+     comes back `400 ValidationFailed` with `errors.StartsAtUtc` (PascalCase
+     key, as `problem-details.ts` already documents), and an interval in the
+     past comes back `422 BookingInThePast`. Both are what step 3's truncation
+     and step 5's field mapping are written against.
+   - **`CK_RecurrenceRules_EndCondition` is mirrored in the type system**, not
+     just in a runtime check: `RecurrenceEndCondition` is a union of
+     `{ endDate; occurrenceCount?: never }` and
+     `{ endDate?: never; occurrenceCount }`, so submitting both or neither is
+     a compile error in the form rather than a 400 the form could have
+     prevented. Its own test asserts against
+     `JSON.parse(JSON.stringify(body))` rather than the request object, since
+     what matters is that an explicitly-`undefined` key is *dropped* on the
+     wire (a `null` one would not be).
+
+   `RecurrenceRulesService.create(request, idempotencyKey)` takes the key as a
+   **required** parameter even though the header is optional server-side: a
+   caller that omits it silently gets the pre-hardening-pass behaviour (a
+   fresh rule and a fresh attempt at every occurrence on any retry), which is
+   the exact failure `RecurrenceCreationOperation` exists to prevent, so the
+   decision is forced to the call site where the attempt's lifecycle is known.
+   `BookingsService.create` carries the mirror-image comment — no retry
+   anywhere above it, because that endpoint has no key at all (§7).
+
+2. **The booking route's shell — resource load, arrival state, no form yet —
+   done, 2026-09-17.**
+   Replaces the `:id/book` placeholder in `app.routes.ts` with a real
+   `features/booking/booking.component.ts`. Resource fetch through the same
+   route-id-keyed `switchMap` pipeline `ResourceDetailComponent` and
+   `AvailabilityComponent` both use since the 2026-09-16 frontend hardening
+   pass (a stale fetch cancelled outright, not merely ignored), with the same
+   loading / 404 / error-retry states. Breadcrumb via `BreadcrumbService`'s
+   `insertBeforeLast`, not `override` — this route is a **sibling** of `:id`,
+   exactly like `:id/availability`, so the resource's own crumb has to be
+   inserted rather than replacing "Book".
+   **Reads Phase 2's selected-slot contract** (`{ startUtc, endUtc, quantity }`).
+   "No selection" is a normal state, not an error — it renders the "pick a time
+   first" panel the manual-entry call above settled on. An archived resource
+   renders the same not-bookable notice the list and detail screens already do.
+   **Tests:** the arrival-with-selection and arrival-without-selection
+   branches, the 404/error/retry paths, the breadcrumb insertion, and the
+   archived case.
+
+   **Delivered, against the design that landed the same day.** 37 new vitest
+   tests (291 total, 0 failed), `npx ng build` clean — the booking chunk
+   carries no new SCSS budget warning. The screen renders the design's own
+   structure: the resource summary card (icon, name, type/capacity/approval
+   chips, description, "View details →"), the panel area below it, and the
+   "Need to make a change? … Back to availability" bar. Where the form goes,
+   step 2 renders a one-line note; steps 3–7 fill it.
+
+   **The selected slot travels as query parameters, not router state — the
+   owner's decision, taken on review of step 2 and applied the same day.** The
+   first implementation used router state (the History API's per-entry state
+   object; ASP.NET's `TempData` is the closest analogue). It survives a reload,
+   but it is invisible in the URL and cannot be shared, bookmarked or opened in
+   a new tab, so "here's the slot, book it" was not expressible as a link and
+   nothing — neither the owner nor a test — could see what the screen had been
+   handed. `/resources/{id}/book?startUtc=2026-09-24T13:15:00Z&endUtc=…&quantity=1`
+   is visible, shareable, survives a reload and works with back/forward.
+   Alternatives weighed and rejected: a **shared signal service** (empty after
+   a reload, and it makes the booking screen silently depend on the
+   availability screen having run in this same session), **sessionStorage**
+   (solves reload, not sharing, and adds staleness nothing owns), and a
+   **backend "hold" record** (the strongest option, and what a ticketing site
+   does — but it is a backend change mid-frontend-WP, §7, and it would put a
+   second claim on capacity beside `dbo.CreateBooking`'s, with an expiry job
+   and a cleanup path to match).
+
+   **The URL is not a trust boundary, and nothing pretends otherwise.** Anyone
+   can hand-edit these parameters — but `dbo.CreateBooking` re-checks
+   availability, blackouts and peak capacity under its own lock at submit time
+   regardless of what the client pre-filled, so an edited URL earns an ordinary
+   `SlotUnavailable`/`OutsideAvailability` rejection, exactly as a stale shared
+   link would. Nor does this reopen the "no manual date/time entry" call above:
+   that was about the *client* never inverting local→UTC, and these parameters
+   are UTC instants, same as router state was.
+
+   **Both halves of the contract live in `booking-arrival.ts`** — the writer
+   (`buildBookingQueryParams`, called by the availability screen) and the
+   reader (`parseBookingSelection`) — so the parameter names exist once and
+   cannot drift. That is why the *availability* feature imports from the
+   *booking* feature here: the consumer owns the contract. Kept out of the
+   components for the same reason `availability-grid.ts` was: none of it is
+   Angular-specific (`QueryParamSource` is a one-method interface Angular's own
+   `ParamMap` satisfies structurally) and the validation is worth testing on
+   its own.
+
+   **Validated, never cast**, and the rules mirror the server's so the form
+   never builds a request the API would only refuse: both instants must carry a
+   zone designator (`CreateBookingCommandRequestValidator.CarryAZone` — without
+   this a zone-less `2026-09-24T13:15:00` in the URL would be read as the
+   *viewer's* local time and silently shift the booking by their offset, the
+   exact class of bug CLAUDE.md §4.3 keeps out of this client), the interval
+   must be real and forward (`CK_Bookings_Interval`), and quantity must be a
+   positive integer (`CK_Bookings_Quantity`, parsed with `Number` rather than
+   `parseInt`, which would read `"2 rooms"` as 2). Anything else resolves to
+   `null` — the ordinary "pick a time first" panel, not an error.
+   What survives is normalized to whole-second UTC by a new
+   `local-date.ts` helper (`toWholeSecondUtcIso`), used on both sides: the
+   availability screen writes `…T08:00:00Z` rather than the `.000Z` its own
+   `toISOString()` produces, and an offset form in a hand-edited URL resolves
+   to the identical selection. `POST /bookings` refuses fractional seconds
+   outright, so step 3's submit now has nothing left to truncate.
+
+   **Deviations from the design, each deliberate:**
+   - **No resource photo.** The design shows one in both the header card and
+     the summary card; no resource carries an image on the API
+     (`GetResourceQueryResponse` has no such field), and adding one would be a
+     backend change inside a frontend package (§7's rule). The type icon every
+     other resource screen already uses stands in its place.
+   - **The page heading reads "Book resource" and so does the last crumb**,
+     where the design has the heading "Book resource" over a shorter "Book"
+     crumb. `ShellComponent` derives the heading *from* the last crumb on
+     purpose (one source, so the two can't disagree), so honouring both would
+     mean reopening that decision for one screen. The heading is the more
+     prominent of the two, so it won.
+   - **No "Home" crumb.** The design's breadcrumb starts at Home; this app's
+     breadcrumb has been the matched route-title chain since WP-6 and no other
+     screen shows one either. An app-wide breadcrumb change is not step 2's to
+     make — flagged here rather than done quietly.
+   - **An archived resource gets its own panel** ("Archived — not bookable"),
+     which the design has no state for — the same treatment the list and
+     detail screens already give in place of their booking CTAs, rather than a
+     form that could only ever be refused with `ResourceArchived` on submit.
+   - **Quantity is absent from the design** (its example is a single-capacity
+     room). It arrives in step 3 as the same stepper Phase 2 uses, shown only
+     for `Capacity > 1` (decision `0005`).
+
+3. **One-off form + submit — done, 2026-09-17.** Title (optional, 200-char
+   bound mirrored from
+   `CreateBookingCommandRequestValidator.MaxTitleLength`), the quantity stepper
+   (hidden entirely for `Capacity = 1`, per decision `0005`'s amendment —
+   reusing Phase 2's own stepper behaviour), and a read-back of the selected
+   span in the resource's timezone with the viewer's own zone named alongside
+   it if they differ. Duration checked client-side against the resource's
+   `minDurationMinutes`/`maxDurationMinutes` before submit — and specifically
+   against `resource.minDurationMinutes` directly, **not** against the grid's
+   15-minute UI step, which is the exact false-minimum bug the 2026-09-16
+   frontend hardening pass fixed in `effectiveMinDuration`. Submit posts to
+   `POST /bookings` with instants truncated to whole seconds.
+   **Tests:** the request body built from arrival state, quantity bounds, the
+   duration guard (including `null` min/max meaning "no rule", not "15
+   minutes"), and double-submit being blocked.
+
+   **Delivered.** 25 new vitest tests (316 total, 0 failed), `npx ng build`
+   clean. The screen is the design's two-card layout: "Booking details" (the
+   read-only Date / Time / Duration fields, the quantity stepper for a pooled
+   resource, the Title input with its hint) beside "Booking summary" (the
+   resource, the same four values as rows, the approval notice, and Confirm
+   booking), with the "Need to make a change?" bar below — now hidden once a
+   booking exists, since "go back and pick a different time" is the wrong
+   advice at that point.
+
+   **The one-time/recurring toggle is deliberately not here.** It belongs to
+   step 6 together with the fields it reveals; rendering a dead "Recurring" tab
+   now would ship a control that does nothing, and the owner is taking the
+   one-off half as its own PR/branch — a half-wired toggle is exactly what
+   should not be in it.
+
+   **What the form guards, and what it deliberately doesn't.** Duration is
+   checked against the resource's own `minDurationMinutes`/`maxDurationMinutes`
+   and nothing else — `null` means "no rule configured", never a default,
+   which is the false-minimum bug the 2026-09-16 hardening pass fixed one
+   screen over and worth not reintroducing here. Title length mirrors
+   `MaxTitleLength` (the input is also `maxlength`-bounded, so the check
+   catches a paste that slips past it). Quantity is clamped to the resource's
+   capacity. **Not guarded, on purpose**: raising the quantity above what the
+   availability query was answered for. Only `dbo.CreateBooking` can say
+   whether a pool has room, so the form says so in a hint
+   ("Availability was checked for 2 units…") and lets the request go — a
+   `CapacityExceeded` rejection then reads as expected rather than arbitrary.
+
+   **Double-submit is the one thing the client genuinely has to prevent**
+   (§7's flagged gap: `POST /bookings` has no idempotency key, so a repeat
+   creates a second booking). The button is disabled while a request is in
+   flight and `confirmBooking` re-checks the same guard for anything reaching
+   it programmatically; nothing retries, anywhere.
+
+   **Two readings of the same span, when they differ.** The Date/Time fields
+   are the resource's own timezone (decision `0003` — the zone the
+   availability question was asked in), with a line naming the viewer's own
+   zone and the same span in it when the two differ, so a member in Sarajevo
+   booking a New York room knows when to actually be there. An overnight span
+   carries the end's own date, since it lands on two calendar days.
+
+   `formatDurationWords` ("2 hours 15 minutes") moved from
+   `availability.component.ts` into `local-date.ts` at its **second** caller
+   rather than the usual third: it is user-visible copy rendering the *same*
+   duration on two screens in one flow, so a second copy that drifted would be
+   a visible inconsistency, not merely duplicated code.
+
+   **Verified against the running backend**, not only by unit tests: the exact
+   body this form builds was posted to the real API for both resource kinds —
+   Conference Room A answered `201 Confirmed` with `approval: null`, the
+   approval-gated 3D Printer answered `201 Pending` with a real
+   `approvalRequestId` and a 24-hour `expiresAtUtc` (FR-7.4), and re-posting
+   the same slot answered `409 SlotUnavailable`. Both test bookings were
+   cancelled afterwards, so the dev database carries only the two cancelled
+   rows. Those three responses are exactly what steps 4 and 5 render.
+
+   **Left for the steps that own them**: the created-booking panel is a
+   one-line placeholder (step 4 makes it the real Confirmed-vs-Pending
+   confirmation), and a submit failure shows one generic sentence (step 5
+   replaces it with the reason-code catalogue, message *and* placement).
+
+4. **Success, and `Pending` shown as its own outcome — done, 2026-09-17.**
+   FR-7.1 — a booking on
+   an approval-gated resource comes back `Pending`, and the member has to be
+   told at the moment of booking, not left to discover it in a list later. A
+   confirmation panel rather than a toast: `Confirmed` states the reserved span
+   plainly; `Pending` names who decides (from `ResourceDetail.approvers`, which
+   this screen has already loaded) and when the request expires (from
+   `approval.expiresAtUtc`), and says explicitly that the slot is **not** held
+   as confirmed.
+   **A sequencing detail, not an oversight**: "View my bookings" points at the
+   `my-bookings` route, which is still WP-6's placeholder — Phase 4 gives it a
+   real destination. The link is correct today and simply becomes useful then;
+   it is not a dead route.
+   **Tests:** both outcomes rendering distinctly, the approver list and expiry
+   appearing only on `Pending`.
+
+   **Delivered.** 14 new vitest tests (349 total, 0 failed), `npx ng build`
+   clean. The panel replaces the form entirely once a booking exists, and the
+   "Need to make a change?" bar goes with it — going back to pick a different
+   time is advice for a booking that hasn't happened yet.
+
+   **Everything in it reads the create *response*, never the selection the
+   form was built from.** The two agree today; a panel that quietly showed the
+   request instead of the response would be the wrong one to trust if they
+   ever didn't. That is asserted directly — a response naming a different span
+   than the form asked for renders the response's.
+
+   `Confirmed` states the reservation plainly. `Pending` says, in the lead
+   sentence rather than a footnote, that the time is **not held yet**; names
+   who decides from `ResourceDetail.approvers` (already loaded — nothing extra
+   is fetched), falling back to "a tenant administrator" when a resource lists
+   none, since decision `0018` leaves a TenantAdmin able to approve anything
+   in the tenant; and gives the expiry from `approval.expiresAtUtc`, with
+   FR-7.4's "no configured expiry" getting its own sentence rather than a
+   blank date. Colour (green vs amber) carries the same distinction the
+   heading and copy do rather than being the only thing that does.
+
+   **One deliberate mixing of zones**, worth knowing: the booked span reads in
+   the *resource's* timezone (plus the viewer's own, when they differ), the
+   same as the form above it — but the approval expiry reads in the
+   **viewer's** zone, named explicitly. An expiry is not a fact about the
+   room's schedule; it is a deadline a person watches.
+
+5. **One-off rejection rendering — every reason code, none generic — done,
+   2026-09-17.** One map
+   from reason code to message *and placement*, in its own file so the
+   catalogue is greppable against `ReasonCodes` rather than scattered across
+   throw-site-shaped `if`s:
+   - Top-of-form, with a "re-check availability" action back to Phase 2's
+     screen, because the slot genuinely moved: `SlotUnavailable`,
+     `CapacityExceeded` (409s — and per CLAUDE.md §6 these split by what is
+     *left*, so `CapacityExceeded` is worded as "fewer units free than you
+     asked for" and can only ever appear on a pooled resource).
+   - Top-of-form, no retry action, because re-checking cannot help:
+     `ResourceArchived`, `BlackoutPeriod`, `OutsideAvailability`,
+     `BookingInThePast` (422s).
+   - Field-level: `BookingDurationOutOfRange` against the duration control,
+     and `ValidationFailed`'s `errors` dictionary mapped by **PascalCase**
+     backend property name → form control, the translation `LoginComponent`
+     already established in one place (`BACKEND_FIELD_NAMES`) rather than at
+     every reader.
+   - The two non-catalogue cases the stack can still produce:
+     `ConcurrencyConflict` (409 from `DbUpdateConcurrencyException`) and
+     `status === 0` (never reached a server — `HttpErrorResponse.error` is a
+     `ProgressEvent`, not a `ProblemDetails`, so it must be checked *before*
+     any reason-code branch, exactly as `handleLoginError` does). The latter is
+     where the flagged one-off idempotency gap surfaces in the UI: "your
+     booking may have been created" plus a link to check, never a retry button.
+   - `ResourceNotFound` (404) reuses step 2's own not-found state.
+   **Tests:** one per code, asserting message *and* placement, plus the
+   status-0 branch taking priority over reason-code handling.
+
+   **Delivered.** `booking-rejection.ts` (`describeBookingRejection`) resolves
+   an error into message, placement and which actions to offer; the component
+   never branches on a reason code itself. 27 new vitest tests (376 total, 0
+   failed), `npx ng build` clean.
+
+   **Every mapped code was triggered against the running API**, not assumed —
+   a typo in a code string fails silently into the generic message, which is
+   exactly the failure this catalogue exists to prevent. Confirmed live:
+   `OutsideAvailability` (422, a 03:00 local slot), `BlackoutPeriod` (422,
+   booking into the Sep 23 blackout), `BookingDurationOutOfRange` (422, both
+   under the 60-minute minimum and over the 180-minute maximum),
+   `ResourceNotFound` (404), `CapacityExceeded` (409), `ValidationFailed`
+   (400, an over-long title) — plus `SlotUnavailable` (409) and
+   `BookingInThePast` (422) from step 3's own probes. Nothing was created:
+   every one is a refusal.
+
+   **A discrepancy this turned up, flagged not fixed** (CLAUDE.md §6): that
+   section says an exclusive resource "can only ever produce
+   [`SlotUnavailable`], since `Capacity = 1` admits no quantity but 1". The
+   live API answers **`CapacityExceeded`** for `quantity: 3` on a capacity-1
+   resource — because the validator deliberately has no upper bound on
+   quantity (`CreateBookingCommandRequestValidator`: "what is too many depends
+   on the resource's Capacity, which this cannot see"), so an over-large
+   quantity *can* be asked for and is refused by the procedure. The rule's
+   premise holds for what can succeed, not for what can be sent. Owner's call
+   whether to reword §6.
+   Handled on the client, and **the first attempt at handling it was wrong**:
+   the form clamped a URL-supplied quantity down to the resource's capacity,
+   so the owner's own `?quantity=16` on the single-unit 3D Printer booked
+   *one* unit and reported success, having silently changed what was asked
+   for. Corrected the same day: the requested quantity is kept, and
+   `capacityError` refuses it before any request goes out — the same instinct
+   decision `0015` applies server-side when it rejects an oversized `pageSize`
+   rather than clamping it, and the same pre-flight the duration check already
+   gets. Placement follows where the member can actually act: against the
+   stepper when there is one (stepping back within capacity clears it), and at
+   the top of the form with a link back to availability when there isn't —
+   an exclusive resource renders no stepper at all (decision `0005`), so a
+   field-level message would have nothing to attach to.
+
+   **Placement, as built:** `SlotUnavailable`, `CapacityExceeded` and
+   `ConcurrencyConflict` are top-of-form **with** a link back to availability;
+   `ResourceArchived`, `BlackoutPeriod`, `OutsideAvailability` and
+   `BookingInThePast` are top-of-form **without** one, because re-checking
+   cannot change a rule refusal and offering the action would imply it might.
+   `BookingDurationOutOfRange` lands on the duration control;
+   `ValidationFailed` maps `Title`/`Quantity` onto their own controls and
+   anything else (the instants, the resource id — fields this form has no
+   control for, since they come from the URL) to a top-of-form "pick a slot
+   again". `ResourceNotFound` hands over to step 2's not-found state.
+
+   **The two unknown-outcome cases share one answer.** A `status === 0` (the
+   request reached no server; `HttpErrorResponse.error` is a `ProgressEvent`,
+   so this is checked *before* any reason-code branch) and a 5xx (which did
+   reach the server, so `dbo.CreateBooking` may well have committed) both say
+   the booking **may** have been created and link to My Bookings. Neither
+   offers a retry, anywhere — §7's idempotency gap as the member experiences
+   it.
+
+6. **The recurring toggle and its fields.** A segmented one-off/recurring
+   control on the same screen (one component, two form groups — not two
+   routes), with the recurring group carrying frequency (`Daily`/`Weekly`/
+   `Monthly`), interval value, local start and end time, start date, and an
+   end condition as a radio between end date and occurrence count — mutually
+   exclusive, mirroring `CK_RecurrenceRules_EndCondition`, so the form can
+   never submit both or neither.
+   Pre-filled from the same arrival state via `local-date.ts`'s existing
+   `utcToResourceLocal` (Phase 2 already built exactly this UTC→resource-local
+   reading for the grid), so switching from one-off to recurring keeps the time
+   the user already picked instead of blanking the form.
+   **Client-side guards that mirror the server's rather than invent their
+   own**, the same way Phase 2 mirrored `AvailabilityQueryRules.MaxRangeDays`:
+   end time after start time, and decision `0007`'s two-year span cap for both
+   end-condition paths — using the same arithmetic
+   `CreateRecurrenceSeriesCommandRequestValidator.IsWithinMaxSpan` /
+   `IsOccurrenceCountWithinMaxSpan` use, so the two cannot disagree about what
+   "within two years" means and the user is not told by a 400 what the form
+   could have told them immediately.
+   **Copy that prevents a real misreading**: `Weekly` takes no weekday field —
+   the weekday comes from `StartDate` — so the control says so rather than
+   leaving the user hunting for a day picker that does not exist.
+   **Tests:** the end-condition exclusivity, the span guard at and past the
+   boundary for each frequency, the one-off→recurring pre-fill, and the
+   local-time fields serializing as `"HH:mm:ss"`.
+
+7. **Recurring submit and the per-occurrence report.** The
+   `Idempotency-Key` lifecycle, documented in the component rather than left
+   implicit because getting it backwards fails in both directions: **one GUID
+   per submission *attempt***, reused only when retrying that same attempt
+   after a transport failure (network error, 5xx), regenerated whenever the
+   user changes the form and submits again. Reuse it too eagerly and a
+   deliberate second series silently resolves to the first; regenerate it on a
+   retry and a crash-resumed request creates a duplicate series — which is the
+   precise thing `RecurrenceCreationOperation` was built to prevent.
+   One occurrence-report component renders both the 201 and the 422, since the
+   payload is byte-identical and only the framing differs: a created/skipped/
+   refused summary line, then the per-date breakdown — `Created` with its
+   booking, `SkippedSpringForwardGap` worded from decision `0008` ("this date's
+   start time does not exist — the clocks moved forward; skipped rather than
+   shifted"), and `Refused` carrying its own reason code through step 5's same
+   catalogue. FR-5.4's whole point is that no conflicting occurrence is dropped
+   silently, so the breakdown is the primary result of a recurring submit, not
+   a detail behind a disclosure.
+   **Tests:** all three occurrence statuses rendering, the 422 and the 201
+   producing the same breakdown, and the idempotency-key lifecycle (stable
+   across a forced retry, fresh after a form edit).
+
+8. **Final verification.** Full `npx ng test --watch=false` and `npx ng build`,
+   plus a live click-through against the real running backend — which Phase 2
+   established as the bar, and which Phase 1 had to leave open. Specifically:
+   a one-off on an approval-gated resource landing `Pending`; a one-off into a
+   deliberately-taken slot producing the right 409; a recurring weekly series
+   with at least one forced rejection so the breakdown is genuinely exercised;
+   and an all-refused series proving the 422 path renders the same way the 201
+   does.
+
+**Screens needed:** booking form — none provided; built against the visual
+identity, per the third call above.
 
 **Demo:** book a one-off slot on an approval-gated resource (see it land
 Pending); book a recurring weekly series across a few weeks and see the
@@ -552,8 +1191,14 @@ exercised, not just the happy path.
 
 ### Phase 4 — My Bookings (view, cancel, series cancel)
 
-- `BookingsService.list()` / `getById()` already built in Phase 3; adds
-  `cancel()` and `RecurrenceRulesService.cancel()`.
+- `BookingsService` gains `list()`, `getById()` and `cancel()`, plus
+  `RecurrenceRulesService.cancel()`.
+  **Corrected 2026-09-17, while building Phase 3 step 1**: this bullet used to
+  say `list()`/`getById()` were "already built in Phase 3", but Phase 3's own
+  step 1 specifies `create()` alone — nothing in Phase 3 reads bookings back,
+  so building the read calls there would have been untested-until-Phase-4
+  surface. They belong to this phase, which is the first one with a screen for
+  them. Nothing in Phase 3 depends on the change; only this list did.
 - List: own bookings, paged, filterable by status/date; each row shows
   resource name, span, status, and a recurrence badge when
   `RecurrenceRuleId` is set.
@@ -685,6 +1330,24 @@ inventing a different shape on the frontend.
   it is not in WP-7's task list. Needs its own subsection when a future work
   package picks it up; until then the buttons stay absent from the UI rather
   than pointing at nothing.
+- **Flagged gap, with a named owner: `POST /bookings` has no idempotency
+  key.** Found while planning Phase 3 (2026-09-16). `POST /recurrence-rules`
+  gained one in the 2026-09-15 hardening pass (item 11,
+  `RecurrenceCreationOperation` + an `Idempotency-Key` header); the single-
+  booking endpoint never did. The consequence is concrete: a one-off booking
+  whose response is lost in transit cannot be safely retried — a second
+  attempt creates a second booking, and `dbo.CreateBooking` is right to allow
+  it, since two legitimately distinct bookings of the same slot on a pooled
+  resource are a real thing. Owner's call (2026-09-16): **not fixed inside
+  WP-7**, because a frontend package does not patch the backend (the rule
+  directly above this list). Phase 3 mitigates what the client can — no
+  auto-retry on a one-off submit, and a transport failure that says the
+  booking *may* have been created and links the member to check, rather than
+  a retry button that could double it. **The fix belongs to whichever backend
+  work package comes after WP-7**: mirror the recurrence approach
+  (an operation record keyed on `(OrgId, UserId, IdempotencyKey)`, a header
+  on `BookingsController.Create`, resolution to the same `Booking` on a
+  repeat), at which point Phase 3's mitigation is replaced by a real retry.
 - Each phase's own section above is the outline; the actual step-by-step
   breakdown (the granularity WP-3 through WP-6 used for review checkpoints)
   is added to this document **one phase at a time, immediately before that

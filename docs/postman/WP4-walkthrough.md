@@ -183,13 +183,23 @@ Two worth understanding rather than just ticking:
 - **`BookingInThePast` tests the *end*, not the start.** A slot that started an
   hour ago and runs for another hour is **accepted** — "book the room I am
   already sitting in" is the ordinary case.
-- **`CapacityExceeded` cannot be produced on either seeded resource**, because
-  both are capacity 1 and an exclusive resource admits no quantity but 1. To see
-  it, create a pooled resource as `admin@acme.test` (`capacity: 4`, a weekly
-  schedule via `PUT /resources/{id}/availability-windows`), book `quantity: 3`,
-  then ask for `quantity: 2` on the same slot → **409 `CapacityExceeded`**. Ask
-  for 5 up front and you get `SlotUnavailable` instead: the two are split by
-  **what is left**, not by the resource.
+- **`SlotUnavailable` vs `CapacityExceeded` is decided by what is left at the
+  peak**, and nothing else: `dbo.CreateBooking` answers `SlotUnavailable` when
+  the remaining capacity is **zero or less**, and `CapacityExceeded` whenever
+  something is left but less than was asked for.
+  **Corrected 2026-09-17.** This bullet used to say `CapacityExceeded` "cannot
+  be produced on either seeded resource, because both are capacity 1", and that
+  asking for 5 up front on a capacity-4 resource gives `SlotUnavailable`. Both
+  are wrong, and the procedure's own `CASE WHEN @remaining <= 0` is why:
+  - `quantity: 2` on a free, capacity-1 seeded resource leaves 1 remaining, so
+    it is **409 `CapacityExceeded`** — verified against the running API. The
+    validator deliberately leaves `Quantity` unbounded (it cannot see
+    `Capacity`), so the request is well-formed and reaches the procedure.
+  - `quantity: 5` on a free, capacity-4 resource leaves 4 remaining, so it is
+    **`CapacityExceeded`** as well, not `SlotUnavailable`.
+  - To actually see `SlotUnavailable`, the slot has to be **fully taken**: book
+    `quantity: 4` on that capacity-4 resource first, then ask for any quantity
+    on the same slot.
 
 ## 5. Blackouts beat bookings (FR-3.4, decision 0001)
 
