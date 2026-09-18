@@ -15,7 +15,14 @@ import {
   spanLabels,
 } from '../../../availability/date/local-date';
 import { BookingsService } from '../../services/bookings.service';
-import { BookingDetail, BookingStatus } from '../../models/booking.models';
+import {
+  BookingDetail,
+  BookingStatus,
+  CancelBookingResponse,
+  MAX_CANCELLATION_REASON_LENGTH,
+} from '../../models/booking.models';
+import { BookingRejection } from '../../rejection/booking-rejection';
+import { describeCancelRejection } from '../../rejection/cancel-rejection';
 
 type BookingLoadResult =
   | { kind: 'success'; booking: BookingDetail }
@@ -80,6 +87,10 @@ export class BookingDetailComponent {
 
   private bookingId: string;
   private readonly retry$ = new Subject<void>();
+
+  // Read once, when the component is created, rather than ticking — see
+  // `canCancel` for why a stale "now" is the right trade here.
+  private readonly loadedAtMs = Date.now();
 
   // **The viewer's own zone leads here**, which is the opposite emphasis from
   // the booking *form* one screen back — deliberately. Decision `0003` governs
@@ -146,6 +157,54 @@ export class BookingDetailComponent {
     };
   });
 
+  // ---- Step 5: cancelling ----
+
+  protected readonly confirming = signal(false);
+  protected readonly cancelling = signal(false);
+  protected readonly reason = signal('');
+  protected readonly cancelRejection = signal<BookingRejection | null>(null);
+  protected readonly cancelled = signal(false);
+
+  // `Booking.CanBeCancelled` mirrored: not terminal **and** not already ended.
+  // The second half is on `EndsAtUtc` rather than `StartsAtUtc` on purpose — a
+  // meeting already under way can still be called off, because the room is free
+  // from then on, which is the whole point.
+  //
+  // **The server stays the authority and this is only about whether to offer
+  // the action.** `now` is read when the booking loads rather than ticking, so
+  // a booking that ends while the screen sits open still shows the button; the
+  // request then answers `422 BookingNotCancellable` and the dialect above
+  // explains it. That is the right failure mode — the alternative is a button
+  // vanishing under the pointer.
+  protected readonly canCancel = computed(() => {
+    const booking = this.booking();
+    if (!booking || this.cancelled()) {
+      return false;
+    }
+    return (
+      (booking.status === 'Pending' || booking.status === 'Confirmed')
+      && Date.parse(booking.endsAtUtc) > this.loadedAtMs
+    );
+  });
+
+  // A series occurrence's button says **which** it cancels, rather than being a
+  // single ambiguous "Cancel booking" on a booking that belongs to eleven
+  // others. Step 6 adds the second option beside it; the wording is already
+  // unambiguous on its own so nothing misleading ships in the meantime.
+  protected readonly cancelActionLabel = computed(() =>
+    this.isRecurring() ? 'Cancel this occurrence' : 'Cancel booking',
+  );
+
+  // Mirrors `Bookings.CancellationReason NVARCHAR(300)` so the box bounds the
+  // input rather than letting a 400 be the first thing that says so.
+  protected readonly maxReasonLength = MAX_CANCELLATION_REASON_LENGTH;
+
+  protected readonly reasonError = computed(() =>
+    this.reason().length > MAX_CANCELLATION_REASON_LENGTH
+      ? `Keep this under ${MAX_CANCELLATION_REASON_LENGTH} characters.`
+      : null,
+  );
+
   protected readonly approvalRequestedAt = computed(() => this.instant(this.booking()?.approval?.requestedAtUtc));
   protected readonly approvalExpiresAt = computed(() => this.instant(this.booking()?.approval?.expiresAtUtc));
   protected readonly approvalDecidedAt = computed(() => this.instant(this.booking()?.approval?.decidedAtUtc));
@@ -188,6 +247,90 @@ export class BookingDetailComponent {
 
   protected retry(): void {
     this.retry$.next();
+  }
+
+  protected startConfirming(): void {
+    this.confirming.set(true);
+    this.cancelRejection.set(null);
+  }
+
+  protected stopConfirming(): void {
+    this.confirming.set(false);
+    this.reason.set('');
+    this.cancelRejection.set(null);
+  }
+
+  protected onReasonInput(event: Event): void {
+    this.reason.set((event.target as HTMLTextAreaElement).value);
+    // A server message about the reason is cleared as soon as the control it
+    // belongs to is edited — otherwise it could only be cleared by the submit
+    // it is blocking. Same precedence the recurring form settled on in the
+    // 2026-09-17 hardening pass.
+    if (this.cancelRejection()?.fieldMessages.reason) {
+      this.cancelRejection.set(null);
+    }
+  }
+
+  // **Nothing retries this, anywhere.** `POST .../cancel` is deliberately not
+  // idempotent, so a repeat either answers 422 or rewrites who cancelled it —
+  // see `cancel-rejection.ts`. The button is disabled while the request is in
+  // flight and this re-checks the same guard for anything reaching it
+  // programmatically.
+  protected confirmCancel(): void {
+    const booking = this.booking();
+    if (!booking || this.cancelling() || this.reasonError() !== null) {
+      return;
+    }
+
+    this.cancelling.set(true);
+    this.cancelRejection.set(null);
+
+    const reason = this.reason().trim();
+
+    this.bookingsService
+      .cancel(booking.id, { reason: reason === '' ? null : reason })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (response) => {
+          this.cancelling.set(false);
+          this.confirming.set(false);
+          this.cancelled.set(true);
+          this.applyCancellation(response);
+        },
+        error: (error: unknown) => {
+          this.cancelling.set(false);
+          this.cancelRejection.set(describeCancelRejection(error));
+        },
+      });
+  }
+
+  // Updated from the response rather than re-fetching: it carries the
+  // cancellation trio and the freed interval precisely so a client does not
+  // have to ask again.
+  //
+  // The **one** thing it does not carry is what became of the approval request,
+  // and leaving that showing "Pending" on a cancelled booking would be a
+  // visible lie. `ApprovalRequest.Withdraw` turns a still-pending request into
+  // `Withdrawn` whenever its booking is cancelled — verified against the live
+  // API, not assumed — so that transition is mirrored here, the same way
+  // `canCancel` mirrors `CanBeCancelled`.
+  private applyCancellation(response: CancelBookingResponse): void {
+    const booking = this.booking();
+    if (!booking) {
+      return;
+    }
+
+    this.booking.set({
+      ...booking,
+      status: response.status,
+      cancelledByUserId: response.cancelledByUserId,
+      cancelledAtUtc: response.cancelledAtUtc,
+      cancellationReason: response.cancellationReason,
+      approval:
+        booking.approval && booking.approval.decision === 'Pending'
+          ? { ...booking.approval, decision: 'Withdrawn', decidedAtUtc: response.cancelledAtUtc }
+          : booking.approval,
+    });
   }
 
   protected statusLabel(status: BookingStatus): string {

@@ -125,7 +125,7 @@ describe('describeRecurrenceRejection', () => {
         new HttpErrorResponse({ status, statusText: 'Error', error: new ProgressEvent('error') }),
       );
 
-      expect(rejection.mayHaveBeenCreated).toBe(true);
+      expect(rejection.outcomeUnknown).toBe(true);
       expect(rejection.formMessage).toContain('series may have been created');
       expect(rejection.formMessage).toContain('Check your calendar');
     });

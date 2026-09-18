@@ -23,7 +23,7 @@ into its own smaller steps once it is about to start, not all up front.
 | 2 — Availability view | **Done** 2026-09-16 (7 steps) | 199 |
 | 3 — Booking form (one-off + recurring) | **Done** 2026-09-17 (8 steps) | 462 |
 | — Recurring-booking hardening pass | **Done** 2026-09-17 (7 findings) | 556 |
-| 4 — Calendar, booking detail & cancellation (the hard problem) | **In progress** — re-planned 2026-09-18; steps 1–4 of 7 done | 695 |
+| 4 — Calendar, booking detail & cancellation (the hard problem) | **In progress** — re-planned 2026-09-18; steps 1–5 of 7 done | 724 |
 | ~~5 — Calendar~~ | **Absorbed into Phase 4**, 2026-09-18 — number retired, not reused | — |
 | 6 — Approval queue | Not started | — |
 | 7 — End-to-end wiring + AC sweep | Not started | — |
@@ -1915,7 +1915,7 @@ becoming the landing screen at `/calendar`** with `/my-bookings` removed.
    retry that cannot help. Only reachable by hand-typing that exact id, so it is
    recorded here rather than given a special case.
 
-5. **Cancel one booking.** Confirm-then-act, with an optional reason.
+5. **Cancel one booking — done, 2026-09-18.** Confirm-then-act, with an optional reason.
    `CanBeCancelled` is mirrored client-side to decide whether the action shows
    (not terminal **and** `EndsAtUtc > now`); the server stays the authority.
    Refusals go through a cancel dialect on the `RejectionDialect` the
@@ -1929,6 +1929,69 @@ becoming the landing screen at `/calendar`** with `/my-bookings` removed.
    **And the chip disappears**, which is this phase's own status rule doing its
    job: a cancelled booking is not drawn, so the calendar must drop it from the
    window it is already holding rather than re-querying.
+
+   **Delivered.** 29 new vitest tests (724 total, 0 failed), build clean.
+
+   **A third dialect on the shared machinery, not a second mapper.**
+   `rejection/cancel-rejection.ts` supplies the vocabulary — `BookingNotFound`,
+   `BookingNotCancellable`, `ConcurrencyConflict`, plus `ValidationFailed` on
+   the one control a member can edit — and nothing else. Every code's copy sends
+   the member to **look again rather than try again**, because a cancel that
+   refuses has just proven the screen's own copy of the rule stale, and because
+   re-checking availability (the create dialect's way out) has nothing to do
+   with cancelling.
+
+   **`BookingRejection.mayHaveBeenCreated` was renamed `outcomeUnknown`.** With
+   a third dialect setting it, the old name would have meant "may have been
+   *cancelled*" at one of its three call sites — the kind of quiet lie that
+   misleads later. The flag always meant the same thing: the write may have
+   landed, no retry is safe, go and look.
+
+   **The unknown-outcome rule is inherited for a different reason than the
+   create path's.** There a repeat could double a booking (§7's idempotency
+   gap); here a repeat would overwrite `CancelledByUserId`, `CancelledAtUtc` and
+   the reason with a second actor's, so the record of who called the meeting off
+   would quietly change. Same conclusion, no retry button anywhere on the path —
+   the only action offered is "Reload this booking".
+
+   **`canCancel` mirrors `Booking.CanBeCancelled`** — not terminal **and**
+   `EndsAtUtc > now`, the second half on the *end* so a meeting already under
+   way can still be called off. "Now" is read when the component loads rather
+   than ticking: a booking that ends while the screen sits open still shows the
+   button, the request answers `422 BookingNotCancellable`, and the dialect
+   explains it. That is the better failure mode — the alternative is a button
+   vanishing under the pointer.
+
+   **A series occurrence's button says which one it cancels** ("Cancel this
+   occurrence"), so the ambiguous single button the phase rules out never ships
+   even as an intermediate state. Step 6 adds the whole-series option beside it.
+
+   **The one thing the response does not carry is the approval**, and leaving it
+   reading "Pending" on a cancelled booking would be a visible lie. The screen
+   mirrors `ApprovalRequest.Withdraw` — **verified live, not assumed** (below) —
+   the same way `canCancel` mirrors the cancellation rule.
+
+   **Verified against the running API, end to end.** A real `Pending` booking
+   was created on the approval-gated 3D Printer and cancelled with the exact
+   body the screen sends:
+   - the 200 carries `id, resourceId, userId, startsAtUtc, endsAtUtc, quantity,
+     title, status, cancelledByUserId, cancelledAtUtc, cancellationReason` —
+     and **no `approval`**, which is precisely why the screen has to mirror that
+     transition itself;
+   - re-reading the booking answers `status: Cancelled` with
+     `approval.decision: "Withdrawn"`, `decidedAtUtc` set and `decidedByUserId`
+     null — exactly what `applyCancellation` writes;
+   - a second cancel answers **422 `BookingNotCancellable`**, the code the
+     dialect renders.
+   The test booking is cancelled; the owner's live bookings were not touched.
+
+   **The last sentence of this step's plan does not apply as written**, and is
+   worth correcting rather than quietly skipping: it assumed cancelling happens
+   *on* the calendar, so the grid would have to drop a chip from a window it was
+   already holding. Cancelling happens on the detail screen, and returning to
+   the calendar is an ordinary navigation that creates the component and
+   re-fetches its window — so the chip disappears for free. No cross-screen
+   state sync was built, because none is needed.
 
 6. **The series choice.** A booking carrying a `recurrenceRuleId` offers an
    explicit two-way choice — *this occurrence* or *the whole remaining series* —

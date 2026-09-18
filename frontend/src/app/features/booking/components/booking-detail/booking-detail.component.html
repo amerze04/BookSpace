@@ -182,6 +182,77 @@
       Booked {{ createdAt() }}@if (updatedAt() !== createdAt()) {, last updated {{ updatedAt() }}}.
     </p>
 
+    @if (cancelled()) {
+      <p class="cancel-done" role="status">
+        This booking is cancelled and the time is free again.
+      </p>
+    }
+
+    @if (canCancel()) {
+      <section class="cancel-box">
+        @if (!confirming()) {
+          <button type="button" class="danger-button" (click)="startConfirming()">
+            {{ cancelActionLabel() }}
+          </button>
+        } @else {
+          <!--
+            An inline expanding panel rather than a dialog: this app has no
+            modal primitive, and a focus-trapped one is a real component with
+            real accessibility obligations that nothing else here needs.
+          -->
+          <h3 class="card-title">{{ cancelActionLabel() }}?</h3>
+          <p class="confirm-lead">
+            The time is released immediately and anyone can book it. This cannot be undone.
+          </p>
+
+          <label class="reason-label" for="cancel-reason">Reason <span class="muted">(optional)</span></label>
+          <textarea
+            id="cancel-reason"
+            class="reason-input"
+            rows="2"
+            [value]="reason()"
+            [disabled]="cancelling()"
+            [attr.maxlength]="maxReasonLength"
+            [attr.aria-invalid]="reasonError() !== null || null"
+            [attr.aria-describedby]="reasonError() || cancelRejection()?.fieldMessages?.reason ? 'cancel-reason-error' : null"
+            (input)="onReasonInput($event)"
+          ></textarea>
+          @if (reasonError() || cancelRejection()?.fieldMessages?.reason) {
+            <p class="field-error" id="cancel-reason-error">
+              {{ cancelRejection()?.fieldMessages?.reason ?? reasonError() }}
+            </p>
+          }
+
+          @if (cancelRejection()?.formMessage; as message) {
+            <div class="cancel-error" role="alert">
+              <p>{{ message }}</p>
+              <!--
+                No retry button, ever, on this path. `POST .../cancel` is
+                deliberately not idempotent: a repeat either answers 422 or
+                rewrites who called the meeting off. Reloading is the honest
+                way out.
+              -->
+              <button type="button" class="secondary-button" (click)="retry()">Reload this booking</button>
+            </div>
+          }
+
+          <div class="confirm-actions">
+            <button
+              type="button"
+              class="danger-button"
+              [disabled]="cancelling() || reasonError() !== null"
+              (click)="confirmCancel()"
+            >
+              {{ cancelling() ? 'Cancelling…' : 'Yes, cancel it' }}
+            </button>
+            <button type="button" class="secondary-button" [disabled]="cancelling()" (click)="stopConfirming()">
+              Keep it
+            </button>
+          </div>
+        }
+      </section>
+    }
+
     <div class="detail-actions">
       <a class="secondary-button" routerLink="/calendar">Back to your calendar</a>
     </div>

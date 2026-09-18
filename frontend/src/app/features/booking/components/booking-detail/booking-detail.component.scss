@@ -226,3 +226,101 @@
     color: #d63c3c;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Cancelling (step 5)
+// ---------------------------------------------------------------------------
+
+.cancel-done {
+  background: #f1eeef;
+  border: 1px solid #e5d8dd;
+  border-radius: 10px;
+  color: #1d171a;
+  margin: 0;
+  padding: 12px 16px;
+}
+
+.cancel-box {
+  background: #ffffff;
+  border: 1px solid #e5d8dd;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 20px;
+}
+
+.confirm-lead {
+  color: #1d171a;
+  margin: 0;
+}
+
+.reason-label {
+  color: #6a6065;
+  font-size: 0.85rem;
+}
+
+.reason-input {
+  border: 1px solid #e5d8dd;
+  border-radius: 10px;
+  color: #1d171a;
+  font: inherit;
+  padding: 8px 10px;
+  resize: vertical;
+  width: 100%;
+
+  &:focus-visible {
+    border-color: #6b1835;
+    outline: 2px solid #f4e9ed;
+  }
+}
+
+.field-error,
+.cancel-error {
+  color: #d63c3c;
+  margin: 0;
+}
+
+.cancel-error {
+  border: 1px solid #d63c3c;
+  border-radius: 10px;
+  padding: 12px 14px;
+
+  p {
+    margin: 0 0 10px;
+  }
+}
+
+.confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+// The destructive semantic red, not the burgundy brand colour — the visual
+// identity is explicit that error/destructive states use the brighter red.
+.danger-button {
+  align-self: flex-start;
+  background: #d63c3c;
+  border: 1px solid #d63c3c;
+  border-radius: 10px;
+  color: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  padding: 9px 16px;
+
+  &:hover:not(:disabled) {
+    background: #bf3333;
+  }
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+}
+
+.secondary-button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}

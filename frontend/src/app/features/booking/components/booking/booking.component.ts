@@ -767,7 +767,7 @@ export class BookingComponent {
   protected readonly canRetrySeries = computed(
     () =>
       this.mode() === 'recurring' &&
-      (this.rejection()?.mayHaveBeenCreated ?? false) &&
+      (this.rejection()?.outcomeUnknown ?? false) &&
       this.formMatchesPendingAttempt(),
   );
 
@@ -1020,7 +1020,7 @@ export class BookingComponent {
         // case where trying again means "finish that attempt" rather than
         // "start another". Any other refusal created nothing, so the next
         // submit should be a fresh attempt.
-        if (!rejection.mayHaveBeenCreated) {
+        if (!rejection.outcomeUnknown) {
           this.pendingAttempt.set(null);
         }
 

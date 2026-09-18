@@ -35,7 +35,10 @@ export type BookingFieldName =
   | 'interval'
   | 'times'
   | 'occurrenceCount'
-  | 'endDate';
+  | 'endDate'
+  // The cancel dialect's only control (`cancel-rejection.ts`) — the optional
+  // reason, which the server caps at 300 characters.
+  | 'reason';
 
 export interface BookingRejection {
   // Shown above the submit button. Null only when every message this rejection
@@ -47,12 +50,18 @@ export interface BookingRejection {
   // cannot, so the action never suggests that trying again might work.
   recheckAvailability: boolean;
 
-  // The one-off idempotency gap surfacing in the UI (wp7-plan.md §7): the
-  // request may have reached `dbo.CreateBooking` and committed even though no
-  // usable response came back, and `POST /bookings` has no idempotency key to
-  // make a retry safe. So the member is told the booking *may* exist and sent
-  // to check — never offered a retry button that could double it.
-  mayHaveBeenCreated: boolean;
+  // **The write may have landed even though no usable answer came back** — the
+  // request reached no server (status 0) or the server could not report what
+  // happened (5xx). Whatever the write was, the member is told the outcome is
+  // unknown and sent to check, never offered a retry.
+  //
+  // Named for the *shape* rather than for creating, because all three dialects
+  // now set it and only two of them are about creation: for `POST /bookings`
+  // it is wp7-plan.md §7's idempotency gap (a repeat could double the booking),
+  // for `POST /recurrence-rules` it is the same gap minus the key's protection
+  // once the form has moved on, and for a cancel it is that a repeat would
+  // quietly rewrite who called the meeting off.
+  outcomeUnknown: boolean;
 
   // Per-control messages, keyed by the form's own field names.
   fieldMessages: Partial<Record<BookingFieldName, string>>;
@@ -192,14 +201,14 @@ export function describeRejection(error: unknown, dialect: RejectionDialect): Bo
   // would find nothing and fall through to a message that claims more than is
   // known.
   if (error.status === 0) {
-    return { ...formOnly(dialect.unknownOutcomeMessage), mayHaveBeenCreated: true };
+    return { ...formOnly(dialect.unknownOutcomeMessage), outcomeUnknown: true };
   }
 
   // A 5xx *did* reach the server, so the booking may well have been committed
   // before whatever failed — same unknown outcome, same advice. This is why
   // there is no "try again" button anywhere on this path.
   if (error.status >= 500) {
-    return { ...formOnly(dialect.unknownOutcomeMessage), mayHaveBeenCreated: true };
+    return { ...formOnly(dialect.unknownOutcomeMessage), outcomeUnknown: true };
   }
 
   if (!isProblemDetails(error.error)) {
@@ -262,7 +271,7 @@ function empty(): BookingRejection {
   return {
     formMessage: null,
     recheckAvailability: false,
-    mayHaveBeenCreated: false,
+    outcomeUnknown: false,
     fieldMessages: {},
     resourceNotFound: false,
   };

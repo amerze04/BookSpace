@@ -26,7 +26,7 @@ describe('describeBookingRejection', () => {
       expect(rejection.formMessage).toContain('booked this time while you were filling in the form');
       expect(rejection.recheckAvailability).toBe(true);
       expect(rejection.fieldMessages).toEqual({});
-      expect(rejection.mayHaveBeenCreated).toBe(false);
+      expect(rejection.outcomeUnknown).toBe(false);
     });
 
     // CLAUDE.md §6: the two 409s split by what is *left*, so only this one
@@ -133,7 +133,7 @@ describe('describeBookingRejection', () => {
         new HttpErrorResponse({ status: 0, statusText: 'Unknown Error', error: new ProgressEvent('error') }),
       );
 
-      expect(rejection.mayHaveBeenCreated).toBe(true);
+      expect(rejection.outcomeUnknown).toBe(true);
       expect(rejection.formMessage).toContain('may have been created');
       expect(rejection.recheckAvailability).toBe(false);
     });
@@ -145,7 +145,7 @@ describe('describeBookingRejection', () => {
         new HttpErrorResponse({ status: 500, statusText: 'Server Error', error: 'boom' }),
       );
 
-      expect(rejection.mayHaveBeenCreated).toBe(true);
+      expect(rejection.outcomeUnknown).toBe(true);
       expect(rejection.formMessage).toContain('may have been created');
     });
 
@@ -162,7 +162,7 @@ describe('describeBookingRejection', () => {
         }),
       );
 
-      expect(rejection.mayHaveBeenCreated).toBe(true);
+      expect(rejection.outcomeUnknown).toBe(true);
       expect(rejection.recheckAvailability).toBe(false);
     });
   });
@@ -173,7 +173,7 @@ describe('describeBookingRejection', () => {
 
       expect(rejection.formMessage).toBe('This booking could not be created.');
       expect(rejection.recheckAvailability).toBe(false);
-      expect(rejection.mayHaveBeenCreated).toBe(false);
+      expect(rejection.outcomeUnknown).toBe(false);
     });
 
     it('handles a non-HTTP error', () => {
@@ -188,7 +188,7 @@ describe('describeBookingRejection', () => {
       );
 
       expect(rejection.formMessage).toBe('This booking could not be created.');
-      expect(rejection.mayHaveBeenCreated).toBe(false);
+      expect(rejection.outcomeUnknown).toBe(false);
     });
   });
 });

@@ -4,7 +4,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 import { BehaviorSubject } from 'rxjs';
 import { BookingDetailComponent } from '../components/booking-detail/booking-detail.component';
-import { BookingDetail } from '../models/booking.models';
+import { BookingDetail, CancelBookingResponse } from '../models/booking.models';
 import { ResourceDetail } from '../../resources/models/resources.models';
 import { BreadcrumbService } from '../../../layout/breadcrumb.service';
 
@@ -39,6 +39,23 @@ function fakeBooking(overrides: Partial<BookingDetail> = {}): BookingDetail {
     createdAtUtc: localInstant(2026, 8, 17, 9, 0),
     updatedAtUtc: localInstant(2026, 8, 17, 9, 0),
     approval: null,
+    ...overrides,
+  };
+}
+
+function cancelResponse(overrides: Partial<CancelBookingResponse> = {}): CancelBookingResponse {
+  return {
+    id: 'b1',
+    resourceId: 'r1',
+    userId: 'u1',
+    startsAtUtc: localInstant(2026, 8, 24, 9, 0),
+    endsAtUtc: localInstant(2026, 8, 24, 10, 30),
+    quantity: 1,
+    title: null,
+    status: 'Cancelled',
+    cancelledByUserId: 'u1',
+    cancelledAtUtc: localInstant(2026, 8, 20, 11, 0),
+    cancellationReason: null,
     ...overrides,
   };
 }
@@ -327,6 +344,280 @@ describe('BookingDetailComponent', () => {
       load({ status: 'Confirmed' });
 
       expect(root().querySelector('.card--cancelled')).toBeNull();
+    });
+  });
+
+  // Step 5. Every assertion is against the rendered DOM.
+  describe('cancelling', () => {
+    // The action is offered from `Booking.CanBeCancelled` mirrored: not
+    // terminal, and not already ended.
+    function cancelButton(): HTMLButtonElement | null {
+      return root().querySelector('.cancel-box .danger-button');
+    }
+
+    function future() {
+      const start = new Date(Date.now() + 86_400_000);
+      return {
+        startsAtUtc: start.toISOString(),
+        endsAtUtc: new Date(start.getTime() + 3_600_000).toISOString(),
+      };
+    }
+
+    function past() {
+      const start = new Date(Date.now() - 86_400_000);
+      return {
+        startsAtUtc: start.toISOString(),
+        endsAtUtc: new Date(start.getTime() + 3_600_000).toISOString(),
+      };
+    }
+
+    function openConfirm() {
+      cancelButton()!.click();
+      fixture.detectChanges();
+    }
+
+    function confirm() {
+      const buttons = Array.from(root().querySelectorAll('.confirm-actions button')) as HTMLButtonElement[];
+      buttons.find((b) => b.textContent?.includes('Yes, cancel it'))!.click();
+      fixture.detectChanges();
+    }
+
+    it.each(['Confirmed', 'Pending'] as const)('offers the action for a live %s booking', (status) => {
+      createFixture();
+      load({ status, ...future() });
+
+      expect(cancelButton()?.textContent?.trim()).toBe('Cancel booking');
+    });
+
+    // Both halves of the rule, each on its own.
+    it.each(['Cancelled', 'Rejected', 'Completed', 'NoShow'] as const)(
+      'offers nothing for a terminal %s booking',
+      (status) => {
+        createFixture();
+        load({ status, ...future() });
+
+        expect(cancelButton()).toBeNull();
+      },
+    );
+
+    // The test is on EndsAtUtc, not StartsAtUtc — a meeting under way can still
+    // be called off, because the room is free from then on.
+    it('offers nothing once the booking has ended', () => {
+      createFixture();
+      load({ status: 'Confirmed', ...past() });
+
+      expect(cancelButton()).toBeNull();
+    });
+
+    it('still offers it for a booking already under way', () => {
+      createFixture();
+      load({
+        status: 'Confirmed',
+        startsAtUtc: new Date(Date.now() - 600_000).toISOString(),
+        endsAtUtc: new Date(Date.now() + 600_000).toISOString(),
+      });
+
+      expect(cancelButton()).not.toBeNull();
+    });
+
+    // A single "Cancel booking" on a booking that belongs to eleven others
+    // would be exactly the ambiguous button the plan rules out. Step 6 adds the
+    // series option beside it; this wording is unambiguous on its own already.
+    it('says which one it cancels for a series occurrence', () => {
+      createFixture();
+      load({ status: 'Confirmed', recurrenceRuleId: 'rr1', ...future() });
+
+      expect(cancelButton()?.textContent?.trim()).toBe('Cancel this occurrence');
+    });
+
+    it('confirms before acting, and sends nothing until confirmed', () => {
+      createFixture();
+      load({ status: 'Confirmed', ...future() });
+
+      openConfirm();
+      expect(text()).toContain('released immediately');
+      httpMock.expectNone(`${API}/bookings/b1/cancel`);
+    });
+
+    it('backs out without sending anything', () => {
+      createFixture();
+      load({ status: 'Confirmed', ...future() });
+
+      openConfirm();
+      (Array.from(root().querySelectorAll('.confirm-actions button')) as HTMLButtonElement[])
+        .find((b) => b.textContent?.includes('Keep it'))!
+        .click();
+      fixture.detectChanges();
+
+      expect(root().querySelector('.confirm-actions')).toBeNull();
+      expect(cancelButton()).not.toBeNull();
+    });
+
+    it('posts an optional reason, omitted as null when blank', () => {
+      createFixture();
+      load({ status: 'Confirmed', ...future() });
+
+      openConfirm();
+      confirm();
+
+      const req = httpMock.expectOne(`${API}/bookings/b1/cancel`);
+      expect(req.request.body).toEqual({ reason: null });
+      req.flush(cancelResponse());
+    });
+
+    it('sends the reason the member typed', () => {
+      createFixture();
+      load({ status: 'Confirmed', ...future() });
+
+      openConfirm();
+      const box = root().querySelector('.reason-input') as HTMLTextAreaElement;
+      box.value = '  Meeting moved  ';
+      box.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+      confirm();
+
+      const req = httpMock.expectOne(`${API}/bookings/b1/cancel`);
+      expect(req.request.body).toEqual({ reason: 'Meeting moved' });
+      req.flush(cancelResponse({ cancellationReason: 'Meeting moved' }));
+    });
+
+    // Not idempotent: a second call rewrites who cancelled it. So the control
+    // is disabled in flight rather than merely ignored.
+    it('blocks a second submit while the first is in flight', () => {
+      createFixture();
+      load({ status: 'Confirmed', ...future() });
+
+      openConfirm();
+      confirm();
+      httpMock.expectOne(`${API}/bookings/b1/cancel`);
+
+      const button = (Array.from(root().querySelectorAll('.confirm-actions button')) as HTMLButtonElement[])
+        .find((b) => b.textContent?.includes('Cancelling'));
+      expect(button?.disabled).toBe(true);
+
+      button!.click();
+      httpMock.verify(); // no second request
+    });
+
+    // Updated from the response, not by re-fetching — it carries the
+    // cancellation trio precisely so a client need not ask again.
+    it('updates the screen from the response without a second request', () => {
+      createFixture();
+      load({ status: 'Confirmed', userId: 'u1', ...future() });
+
+      openConfirm();
+      confirm();
+      httpMock
+        .expectOne(`${API}/bookings/b1/cancel`)
+        .flush(cancelResponse({ cancelledByUserId: 'u1', cancellationReason: 'Meeting moved' }));
+      fixture.detectChanges();
+
+      expect(text()).toContain('the time is free again');
+      expect(root().querySelector('.cancel-lead')?.textContent).toContain('You cancelled this booking');
+      expect(root().querySelector('.cancel-reason')?.textContent).toContain('Meeting moved');
+      // The action is gone — it is no longer cancellable.
+      expect(cancelButton()).toBeNull();
+    });
+
+    // The one thing the cancel response does not carry. Leaving the approval
+    // showing "Pending" on a cancelled booking would be a visible lie;
+    // ApprovalRequest.Withdraw is what the server actually does, verified live.
+    it('marks a pending approval withdrawn once the booking is cancelled', () => {
+      createFixture();
+      load({
+        status: 'Pending',
+        userId: 'u1',
+        ...future(),
+        approval: {
+          approvalRequestId: 'a1',
+          requestedAtUtc: localInstant(2026, 8, 17, 9, 0),
+          expiresAtUtc: null,
+          decision: 'Pending',
+          decidedByUserId: null,
+          decidedAtUtc: null,
+          note: null,
+        },
+      });
+
+      openConfirm();
+      confirm();
+      httpMock.expectOne(`${API}/bookings/b1/cancel`).flush(cancelResponse({ cancelledByUserId: 'u1' }));
+      fixture.detectChanges();
+
+      expect(text()).toContain('cancelled before it was decided');
+      expect(text()).not.toContain('Expires');
+    });
+
+    it('renders a refusal in the cancel vocabulary, with no retry', () => {
+      createFixture();
+      load({ status: 'Confirmed', ...future() });
+
+      openConfirm();
+      confirm();
+      httpMock.expectOne(`${API}/bookings/b1/cancel`).flush(
+        { status: 422, title: 'Refused.', reasonCode: 'BookingNotCancellable' },
+        { status: 422, statusText: 'Unprocessable Content' },
+      );
+      fixture.detectChanges();
+
+      const error = root().querySelector('.cancel-error');
+      expect(error?.textContent).toContain('already ended or already been cancelled');
+      // The only way out is to look again — never "try again", which would
+      // rewrite the actor if it landed.
+      expect(error?.querySelector('button')?.textContent).toContain('Reload');
+      expect(error?.textContent).not.toContain('Try again');
+    });
+
+    it('says an unknown outcome is unknown, and sends the member to reload', () => {
+      createFixture();
+      load({ status: 'Confirmed', ...future() });
+
+      openConfirm();
+      confirm();
+      httpMock.expectOne(`${API}/bookings/b1/cancel`).error(new ProgressEvent('error'));
+      fixture.detectChanges();
+
+      expect(root().querySelector('.cancel-error')?.textContent).toContain(
+        'may or may not have gone through',
+      );
+    });
+
+    it('refuses an over-long reason before any request goes out', () => {
+      createFixture();
+      load({ status: 'Confirmed', ...future() });
+
+      openConfirm();
+      const box = root().querySelector('.reason-input') as HTMLTextAreaElement;
+      box.value = 'x'.repeat(301);
+      box.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      expect(root().querySelector('.field-error')?.textContent).toContain('under 300 characters');
+      confirm();
+      httpMock.expectNone(`${API}/bookings/b1/cancel`);
+    });
+
+    // A server message about a control is cleared when that control is edited —
+    // otherwise only the submit it is blocking could clear it.
+    it('clears a server field message when the reason is edited', () => {
+      createFixture();
+      load({ status: 'Confirmed', ...future() });
+
+      openConfirm();
+      confirm();
+      httpMock.expectOne(`${API}/bookings/b1/cancel`).flush(
+        { status: 400, title: 'Invalid.', reasonCode: 'ValidationFailed', errors: { Reason: ['Too long.'] } },
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+      expect(text()).toContain('Too long.');
+
+      const box = root().querySelector('.reason-input') as HTMLTextAreaElement;
+      box.value = 'Shorter';
+      box.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      expect(text()).not.toContain('Too long.');
     });
   });
 

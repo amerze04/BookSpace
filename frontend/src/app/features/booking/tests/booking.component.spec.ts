@@ -1343,7 +1343,7 @@ describe('BookingComponent', () => {
           .expectOne(`${API}/bookings`)
           .error(new ProgressEvent('error'), { status: 0, statusText: 'Unknown Error' });
 
-        expect(component.rejection()?.mayHaveBeenCreated).toBe(true);
+        expect(component.rejection()?.outcomeUnknown).toBe(true);
         // No key on POST /bookings, so no safe retry to offer (§7).
         expect(component.canRetrySeries()).toBe(false);
       });
@@ -1465,7 +1465,7 @@ describe('BookingComponent', () => {
 
       component.setOccurrenceCount(inputEvent('5'));
 
-      expect(component.rejection()?.mayHaveBeenCreated).toBe(true);
+      expect(component.rejection()?.outcomeUnknown).toBe(true);
       expect(component.topOfFormMessage()).toContain('series may have been created');
     });
   });
@@ -1781,7 +1781,7 @@ describe('BookingComponent', () => {
     it('offers a way to check, never a retry, when the outcome is unknown', () => {
       const { component, submitError, actionHrefs, root } = submitAndFail(0, new ProgressEvent('error'));
 
-      expect(component.rejection()?.mayHaveBeenCreated).toBe(true);
+      expect(component.rejection()?.outcomeUnknown).toBe(true);
       expect(submitError()?.textContent).toContain('may have been created');
       // **The date is the point of this assertion**, not just the route. A list
       // had a top, so "go and check" was enough; a calendar does not, so the

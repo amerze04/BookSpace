@@ -766,7 +766,7 @@ before touching this area:
   (`MaxPageSize` is 100 and rejects anything larger rather than clamping); a
   window is never "everything, filtered in the browser", and **there is no
   client-side recurrence expansion anywhere in this feature** — decision `0007`
-  already made every occurrence its own row. 695 vitest tests.
+  already made every occurrence its own row. 724 vitest tests.
 - **Step 4 is done (2026-09-18)**: `features/booking/detail/` on
   `/bookings/:id`, reached by clicking a chip. It **must keep rendering a
   cancelled booking correctly** even though the calendar no longer draws one —

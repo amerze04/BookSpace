@@ -702,7 +702,7 @@
                 </a>
               }
 
-              @if (rejection()?.mayHaveBeenCreated) {
+              @if (rejection()?.outcomeUnknown) {
                 @if (canRetrySeries()) {
                   <!-- The recurring endpoint *does* carry an idempotency key,
                        so finishing an attempt whose outcome was never observed
