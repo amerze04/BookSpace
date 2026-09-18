@@ -23,7 +23,7 @@ into its own smaller steps once it is about to start, not all up front.
 | 2 — Availability view | **Done** 2026-09-16 (7 steps) | 199 |
 | 3 — Booking form (one-off + recurring) | **Done** 2026-09-17 (8 steps) | 462 |
 | — Recurring-booking hardening pass | **Done** 2026-09-17 (7 findings) | 556 |
-| 4 — Calendar, booking detail & cancellation (the hard problem) | **In progress** — re-planned 2026-09-18; step 1 of 7 done | 572 |
+| 4 — Calendar, booking detail & cancellation (the hard problem) | **In progress** — re-planned 2026-09-18; steps 1–4 of 7 done | 695 |
 | ~~5 — Calendar~~ | **Absorbed into Phase 4**, 2026-09-18 — number retired, not reused | — |
 | 6 — Approval queue | Not started | — |
 | 7 — End-to-end wiring + AC sweep | Not started | — |
@@ -246,7 +246,7 @@ with no design to build against.
 | 2 | **Availability view** | Needed before Phase 2 starts. |
 | 3 | **Booking form** (one-off + recurring, validation states) | Provided mid-phase, 2026-09-17 — `design/booking_view_design.png`. Covers the one-time half only; the owner's instruction is that choosing "Recurring" expands the recurrence fields in place, under Title, in the same component. Deviations recorded in Phase 3's step 2 below. |
 | ~~4~~ | ~~**My Bookings** (list, detail, cancel confirmation, series-vs-occurrence cancel choice)~~ | **Cancelled 2026-09-18** — the screen is not being built (§5, Phase 4's preamble). No design was ever provided and none is wanted. |
-| 4 | **Calendar** (month/week view, event chip, empty/loading/overflow states) | **Needed before Phase 4's step 2.** Moved up from the old Phase 5 when the two merged. The empty, loading and overflow states are the part worth designing rather than the grid: they are what the hard problem makes non-trivial, and the calendar is now the first screen anyone sees after signing in. |
+| 4 | **Calendar** (month/week view, event chip, empty/loading/overflow states) | **Provided 2026-09-18, before step 2 started** — `design/calendar_month_design.png` and `design/calendar_week_design.png`. Followed closely; the deviations (sidebar items, breadcrumb, a data-driven hour axis, and the three states the designs have no answer for) are recorded in step 2 below. |
 | 4 | **Booking detail** (the cancellation trio, approval section, cancel confirmation, series-vs-occurrence choice) | Needed before Phase 4's step 4. What survives of the cancelled My Bookings design — it was always the half of that screen the FRs actually require (FR-4.4, FR-5.2, FR-5.3), and it is now reached from a calendar chip instead of a list row. |
 | 6 | **Approval queue** (pending list, approve/reject with note) | Needed before Phase 6 starts. |
 | 7 | *(none)* | Wiring and AC sweep only. |
@@ -1652,7 +1652,7 @@ becoming the landing screen at `/calendar`** with `/my-bookings` removed.
    revision: it was always a contract rather than a screen, which is why it was
    taken as its own step in the first place.
 
-2. **The calendar shell and the bounded fetch — the hard problem itself.**
+2. **The calendar shell and the bounded fetch — done, 2026-09-18.**
    `/calendar` replaces WP-6's placeholder and takes the landing slot
    (`/home` redirects, `''` points there, the nav item becomes "Calendar", the
    route title with it). A custom month/week grid — **no new dependency**, per
@@ -1673,7 +1673,98 @@ becoming the landing screen at `/calendar`** with `/my-bookings` removed.
    this is the first screen anyone sees after signing in.
    **Screens needed:** the calendar design (§4), wanted before this step.
 
-3. **Chips: what a booking looks like in a cell.** The status rules above, made
+   **Delivered, against both designs, which landed before the step started** —
+   `design/calendar_month_design.png` and `design/calendar_week_design.png`.
+   59 new vitest tests (631 total, 0 failed), `npx ng build` clean. The grid
+   math lives in `calendar-range.ts`, kept out of the component the way
+   `availability-grid.ts` is.
+
+   **The wiring, which was the larger half of this step:** `/calendar` is the
+   landing route, `/home` and `''` redirect to it, `my-bookings` is deleted,
+   the nav item is "Calendar" (the `home` and `bookings` icons went with their
+   items rather than staying as unreachable template branches), and
+   `approverGuard` bounces to `/calendar` rather than through `/home`'s
+   redirect, so the URL it names is the one the visitor lands on. The three
+   booking-screen links were repointed and **the third was rewritten**, as
+   flagged: it now carries `?view=week&date=…` for a one-off and
+   `?view=month&date=…` for a series, because "check My Bookings" only worked
+   when a new booking would be at the top of a list.
+
+   **Deviations from the designs, each deliberate.** The owner's instruction
+   was to follow them closely but adapt anything that disagrees with the app's
+   own conventions, since they were generated without full knowledge of it:
+   - **The sidebar drops "Home" and "My Bookings"**, which both designs still
+     show. That is this phase's own decision, not a design question — Home
+     redirects here and would be a second link to the same page, and My
+     Bookings was cancelled. The designs also omit "Approvals", which this app
+     renders for an eligible approver (decision `0018`).
+   - **The breadcrumb reads "Calendar", not "Home > Calendar".** This app's
+     breadcrumb has been the matched route-title chain since WP-6 and no
+     screen shows a Home crumb; Phase 3 step 2 already flagged the same
+     difference in the booking design. An app-wide breadcrumb change is not
+     this step's to make.
+   - **The week view's hour axis is data-driven, not fixed at 08:00–18:00.**
+     The design's hours are the *default*; a booking outside them — which a
+     viewer in a different timezone from the resource is enough to produce —
+     would otherwise be drawn outside the grid and so be invisible. The window
+     widens to contain whatever the week actually holds, which is the one
+     place a taller grid beats a tidier one.
+   - **A chip shows the booking's title, falling back to the resource name**,
+     which is what both designs actually depict (a mix of "Weekly planning"
+     and "Conference Room A"). An untitled booking is legal, so the fallback
+     is the common case rather than the exception.
+   - **The designs carry no loading, empty or error state**; all three are
+     built. The empty state says "Nothing booked in this month", never "you
+     have no bookings" — the fetch is bounded to the visible window, so the
+     screen genuinely does not know about bookings outside it, and the grid
+     stays drawn behind the notice because an empty September is still
+     September.
+
+   **Two things worth knowing before touching this file.** The visible month is
+   as many whole weeks as it needs rather than a fixed six (September 2026 is
+   five rows, exactly as the design shows), and **the window is walked across
+   pages**: `PagingDefaults.MaxPageSize` is 100 and rejects anything larger
+   rather than clamping, so a window holding more than one page is followed to
+   the end. That is still a bounded fetch — the bound is the visible range.
+
+   **A bug the owner found by looking, fixed the same day.** Week-view chips sat
+   progressively below their own stated times — two compounding one-row errors:
+   the grid drew a row per *label* (eleven for 08:00–18:00) while chip offsets
+   were percentages of the ten-hour *span*, and `.hour-line` was a
+   `border-bottom` sitting an hour under its own label. **No existing assertion
+   could have caught it** — `top: 20%` is the string both the correct and the
+   broken version emit, and jsdom does no layout — which is the availability
+   screen's `<select [value]>` lesson in a new shape. Fixed by making
+   `minuteOffsetPercent` the single place a time becomes a vertical position,
+   with labels and chips both resolved through it; the grid now draws one row
+   per hour span (`hourRows()`, one shorter than `hourTicks()`) and lines are
+   `border-top`. Both regression tests were verified to fail against the
+   pre-fix template and nothing else did. 635 tests.
+
+   **Two more, reported with a screenshot the same day** — and both the same
+   mistake: the day header and the columns were two grids in two different
+   boxes, only one of which scrolled. The scrollbar lives *inside* the
+   scrolling box, so the body's columns came out narrower than the header's and
+   drifted ~17px by Sunday; and the 08:00 label, centred on the body's top
+   edge, was half outside it and clipped, so no scroll position could reveal it.
+   Fixed by making `.grid` the single scroll container for both views with the
+   day header `position: sticky` inside it — the two grids are then the same
+   width by construction rather than by compensating for a scrollbar width that
+   is neither known nor constant — plus a symmetric `padding-top` on
+   `.week-body` and `flex: none` on every direct child (a flex item shrinks to
+   fit, which would leave nothing to scroll). **Testable after all**: jsdom does
+   no layout but does resolve the component stylesheet, checked by probe before
+   writing anything, so five new tests assert the mechanism and all five were
+   proven to fail against the pre-fix CSS. 640 tests.
+
+   **Verified against the running API**, not only by mocks: the exact request
+   the component builds for September 2026
+   (`from=2026-08-30T22:00:00Z&to=2026-10-04T22:00:00Z&page=1&pageSize=100&sort=startsAtUtc`)
+   answered `200` with 8 rows — the owner's 5 live bookings, which the calendar
+   draws, and 3 `Cancelled` ones, which the status rule drops. Both halves of
+   the title/resource-name fallback appear in that response.
+
+3. **Chips: what a booking looks like in a cell — done, 2026-09-18.** The status rules above, made
    visible — `Confirmed` plain, `Pending` distinct (and distinct by more than
    colour), `Completed`/`NoShow` muted, `Cancelled`/`Rejected` not drawn at
    all. A series occurrence carries a recurrence marker, exactly as the old
@@ -1685,7 +1776,81 @@ becoming the landing screen at `/calendar`** with `/my-bookings` removed.
    extend. This is the acceptance criterion "the calendar stays responsive
    under realistic data volume", so it is measured rather than eyeballed.
 
-4. **Booking detail.** `/bookings/:id` — its own route, not a panel, because
+   **Delivered.** 18 new vitest tests (658 total, 0 failed), build clean.
+
+   **Status is never carried by colour alone.** `Pending` takes a dashed outline
+   *and* gains "(Pending)" in its own label — the design's own treatment, and the
+   one distinction a member acts on, since FR-7.1 means the slot is not held yet.
+   `NoShow` likewise gains "(No-show)", because that is information rather than
+   decoration. `Completed` is muted but unannotated: it is the unremarkable past
+   and there is nothing to do about it. Each chip also carries an `aria-label`
+   giving the whole thing as one sentence — time, label, status, whether it is
+   part of a series, and whether it is a clipped piece of a longer booking —
+   since the visual version splits across four elements that read badly
+   announced separately.
+
+   **The overflow affordance expands the day in place**, which is a decision
+   rather than a detail: the design shows "+2 more" but not what it does, and
+   there is no day view to send anyone to, so expanding is what makes the capped
+   chips reachable at all. The expansion is **not** in the URL — it is a
+   disclosure inside one cell, not cross-screen state — and it clears whenever
+   the window changes, since the cells it referred to no longer exist.
+   The summary row takes a chip's *place* rather than being added below the full
+   set; otherwise a capped four-booking day would be exactly as tall as an
+   uncapped one and the cap would buy nothing on the day it matters.
+
+   **No cap in the week view**, deliberately: a week chip is positioned by time
+   rather than stacked, so the DOM is already bounded by what can physically fit
+   in a day, and hiding one would leave a gap in the grid rather than a tidier
+   list.
+
+   **The responsiveness criterion was measured, not asserted.** Rendering the
+   month view against increasing volumes (jsdom, so indicative rather than a
+   browser figure):
+
+   | Bookings in the window | Render | Chips in the DOM |
+   |---|---|---|
+   | 50 | 19 ms | 50 |
+   | 260 (the benchmark) | 21 ms | 56 |
+   | 500 | 41 ms | 56 |
+   | 1000 | 64 ms | 56 |
+
+   **The chip count plateaus at 56 while the data grows twentyfold** — that is
+   the cap working, and it is the property the suite asserts (35 cells × at most
+   3 chips) rather than a timing threshold, which would be flaky in CI and would
+   not say *why*. The residual growth is the single O(n) pass laying rows into
+   cells, which is unavoidable and cheap. Taken with step 2's bounded fetch, the
+   cost of a month is flat in how much history the member has.
+
+   **Verified against the running API**: a real three-occurrence weekly series
+   was created on Conference Room A, confirmed to come back with
+   `recurrenceRuleId` set on every occurrence (which is the only thing the
+   marker keys off), and cancelled afterwards — the dev database is back to the
+   owner's five live bookings. The `Pending` path needs no fixture: three of
+   those five are already Pending.
+
+   **Two more week-view bugs, reported with a screenshot the same day.** The
+   report was "the cards aren't shown fully at the bottom"; the screenshot
+   showed a second problem beside it.
+   - **A short booking's chip was shorter than its own content.** Rows are a
+     fixed 56px per hour, so a 30-minute booking is 28px, while the chip stacks
+     a time line above a label line (~40px) — and `.week-chip` is
+     `overflow: hidden`, so the booking's *name* was swallowed.
+     `isCompactChip` now gives anything under 45 minutes a one-line layout. The
+     threshold is a duration rather than a pixel measurement precisely because
+     the row height is fixed.
+   - **Overlapping bookings were painted on top of one another**, every chip
+     having spanned the full column. `layOutDay` packs a day into side-by-side
+     columns by the standard interval-graph sweep — clusters of transitively
+     overlapping bookings, first free column within a cluster, the count taken
+     per cluster so a crowded morning does not narrow the afternoon's lone
+     booking, and a freed column reused rather than the day growing one per
+     booking. Touching is not overlapping.
+   Three of the four new DOM tests were proven to fail against the pre-fix
+   template and stylesheet; the fourth (a full-hour booking keeping its two-line
+   shape) is a guard on the threshold rather than a regression test. 670 tests.
+
+4. **Booking detail — done, 2026-09-18.** `/bookings/:id` — its own route, not a panel, because
    FR-5.2 asks that each occurrence be independently viewable and because a
    booking worth discussing is worth linking to. Reached by clicking a chip.
    The span renders in the viewer's own zone with the resource's alongside when
@@ -1702,6 +1867,53 @@ becoming the landing screen at `/calendar`** with `/my-bookings` removed.
    screen must render a cancelled booking honestly even though the calendar
    will not route anyone to one. A 404 reuses the established "doesn't exist,
    or you don't have access" wording.
+
+   **Delivered.** `features/booking/detail/`, 25 new vitest tests (695 total, 0
+   failed), build clean. Calendar chips became real `<a>` elements pointing
+   here, in both views — an anchor rather than a click handler, so middle-click,
+   copy-link and open-in-new-tab all work, the same reasoning the 2026-09-16
+   accessibility pass applied to the resource card's title.
+
+   **The resource is a second, best-effort fetch, and its failure is
+   deliberately silent.** `GetBookingQueryResponse` carries `resourceName` but
+   no `timeZoneId`, so without it the screen cannot say what the span means on
+   the room's own clock — but every other fact on the page is still true, so a
+   failed resource read costs one line rather than the screen. Same reasoning as
+   the availability screen's blackout fetch. It is also guarded on arrival: the
+   `switchMap` covers the booking fetch only, so a slow resource read for a
+   previous booking is dropped rather than landing on a newer one.
+
+   **The viewer's zone leads here, the opposite emphasis from the booking form
+   one screen back** — and deliberately so. The form led with the resource's
+   zone because decision `0003` makes that the zone the availability question
+   was asked in, and the member chose against that reading. Reading a booking
+   *back* is the ordinary calendar case (§3), where what a person wants to know
+   is when to actually turn up.
+
+   **`spanLabels`/`instantLabel` moved to `local-date.ts` at their second
+   caller** rather than the usual third, for the reason `formatDurationWords`
+   moved at its second: they are user-visible copy rendering the *same
+   booking's* span on two screens in one flow, so a second copy that drifted
+   would be a visible inconsistency rather than merely duplicated code.
+
+   **Verified against the running API**, every branch against a real row:
+   - a `Pending` booking with `approval.decision: "Pending"` and a real
+     `expiresAtUtc` — the FR-7.1 "not held yet" lead and the expiry row;
+   - a self-cancelled booking where `cancelledByUserId === userId`;
+   - a row that exercises three branches at once — `Cancelled`, a `Withdrawn`
+     approval with a null decider, and `recurrenceRuleId` set — which is what
+     cancelling a `Pending` occurrence of a series actually produces;
+   - `404 BookingNotFound` for a real-but-nonexistent guid, which is the
+     not-found state, and a non-guid path segment that never matches the
+     backend route and answers 404 the same way.
+
+   **One flagged edge, not handled**: an all-zeros guid
+   (`/bookings/00000000-0000-0000-0000-000000000000`) answers **400
+   ValidationFailed** rather than 404, because `CancelBookingCommandRequest`'s
+   sibling validator treats `Guid.Empty` as a malformed request rather than a
+   lookup that missed. It therefore lands in the generic error state with a
+   retry that cannot help. Only reachable by hand-typing that exact id, so it is
+   recorded here rather than given a special case.
 
 5. **Cancel one booking.** Confirm-then-act, with an optional reason.
    `CanBeCancelled` is mirrored client-side to decide whether the action shows

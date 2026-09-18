@@ -47,13 +47,20 @@ describe('shell route guarding (canActivateChild)', () => {
     localStorage.clear();
   });
 
+  // These navigate between two *placeholder* children on purpose. /home used to
+  // serve as the neutral "some authenticated page" here, but since WP-7 Phase 4
+  // it redirects to /calendar, which immediately fetches its own date window —
+  // leaving an open request that httpMock.verify() rightly objects to, and
+  // (worse) corrupting the shared TestBed for every spec file after this one.
+  // What these tests are actually about is the guard wiring, not any particular
+  // screen, so they use routes that fetch nothing.
   it('lets a still-valid session move between two already-loaded shell children, with no network call', async () => {
     seedSession();
-    const harness = await RouterTestingHarness.create('/home');
+    const harness = await RouterTestingHarness.create('/settings');
 
-    await harness.navigateByUrl('/settings');
+    await harness.navigateByUrl('/help');
 
-    expect(router.url).toBe('/settings');
+    expect(router.url).toBe('/help');
     httpMock.expectNone(`${API}/auth/refresh`);
   });
 
@@ -64,11 +71,11 @@ describe('shell route guarding (canActivateChild)', () => {
       // never get rewritten, only real (simulated) time passes underneath it,
       // exactly like a genuinely expiring access token would.
       seedSession(Math.floor(Date.now() / 1000) + 30);
-      const harness = await RouterTestingHarness.create('/home');
+      const harness = await RouterTestingHarness.create('/settings');
 
       vi.setSystemTime(Date.now() + 60_000);
 
-      const navigation = harness.navigateByUrl('/settings');
+      const navigation = harness.navigateByUrl('/help');
       await vi.advanceTimersByTimeAsync(0);
 
       const newAccessToken = buildFakeAccessToken({ sub: 'u1', email: 'a@acme.test', orgId: 'org-1', [ROLE_CLAIM]: 'Member' });
@@ -78,7 +85,7 @@ describe('shell route guarding (canActivateChild)', () => {
 
       await navigation;
 
-      expect(router.url).toBe('/settings');
+      expect(router.url).toBe('/help');
     } finally {
       vi.useRealTimers();
     }
@@ -88,21 +95,21 @@ describe('shell route guarding (canActivateChild)', () => {
     vi.useFakeTimers();
     try {
       seedSession(Math.floor(Date.now() / 1000) + 30);
-      const harness = await RouterTestingHarness.create('/home');
+      const harness = await RouterTestingHarness.create('/settings');
 
       // Time passes and the access token expires; the refresh token is now
       // rejected too — as if it had already been revoked (decisions/0011's
       // reuse-detection, or simply past its own absolute expiry).
       vi.setSystemTime(Date.now() + 60_000);
 
-      const navigation = harness.navigateByUrl('/settings');
+      const navigation = harness.navigateByUrl('/help');
       await vi.advanceTimersByTimeAsync(0);
 
       httpMock.expectOne(`${API}/auth/refresh`).flush(null, { status: 401, statusText: 'Unauthorized' });
 
       await navigation;
 
-      expect(router.url).toBe('/login?returnUrl=%2Fsettings');
+      expect(router.url).toBe('/login?returnUrl=%2Fhelp');
     } finally {
       vi.useRealTimers();
     }
@@ -110,12 +117,54 @@ describe('shell route guarding (canActivateChild)', () => {
 
   it('retains the approver-specific guard on top of canActivateChild', async () => {
     seedSession();
-    const harness = await RouterTestingHarness.create('/home');
+    const harness = await RouterTestingHarness.create('/settings');
 
     await harness.navigateByUrl('/approvals');
 
     // Member is not an eligible approver (decision 0018) — approverGuard
     // still redirects even though canActivateChild's own session check passed.
-    expect(router.url).toBe('/home');
+    // The landing screen is /calendar since WP-7 Phase 4, so the redirect
+    // genuinely renders the calendar and its own window fetch has to be
+    // answered here rather than left open.
+    expect(router.url).toBe('/calendar');
+    flushCalendarWindow();
   });
+
+  // The two redirects the WP-7 Phase 4 re-plan introduced. Worth their own
+  // tests rather than being implied by the ones above: /home was the landing
+  // route for two work packages, so a bookmark pointing at it has to keep
+  // working instead of falling through to the catch-all and bouncing the
+  // visitor to /login.
+  it('redirects /home to the calendar', async () => {
+    seedSession();
+    await RouterTestingHarness.create('/home');
+
+    expect(router.url).toBe('/calendar');
+    flushCalendarWindow();
+  });
+
+  it('redirects the app root to the calendar', async () => {
+    seedSession();
+    await RouterTestingHarness.create('/');
+
+    expect(router.url).toBe('/calendar');
+    flushCalendarWindow();
+  });
+
+  // The calendar fetches its visible window as soon as it renders; these tests
+  // are about routing, so the response is answered and discarded rather than
+  // asserted on (calendar.component.spec.ts owns what the request looks like).
+  function flushCalendarWindow(): void {
+    httpMock
+      .expectOne((r) => r.url === `${API}/bookings`)
+      .flush({
+        items: [],
+        page: 1,
+        pageSize: 100,
+        totalCount: 0,
+        totalPages: 0,
+        hasPreviousPage: false,
+        hasNextPage: false,
+      });
+  }
 });

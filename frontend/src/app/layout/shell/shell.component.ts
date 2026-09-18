@@ -16,13 +16,18 @@ import { BreadcrumbService } from '../breadcrumb.service';
 interface NavItem {
   label: string;
   path: string;
-  icon: 'home' | 'resources' | 'bookings' | 'approvals' | 'settings' | 'help';
+  icon: 'calendar' | 'resources' | 'approvals' | 'settings' | 'help';
 }
 
+// WP-7 Phase 4 (2026-09-18): "Home" and "My Bookings" were both removed and
+// replaced by one "Calendar" item. Home was a placeholder with no assigned job
+// and now redirects here, so keeping it would have been a second link to the
+// same page; My Bookings was cancelled outright, its screen made redundant by
+// the calendar. The `home` and `bookings` icons went with them rather than
+// being left as unreachable branches in the template's switch.
 const BASE_PRIMARY_NAV_ITEMS: NavItem[] = [
-  { label: 'Home', path: '/home', icon: 'home' },
+  { label: 'Calendar', path: '/calendar', icon: 'calendar' },
   { label: 'Resources', path: '/resources', icon: 'resources' },
-  { label: 'My Bookings', path: '/my-bookings', icon: 'bookings' },
 ];
 
 const APPROVALS_NAV_ITEM: NavItem = { label: 'Approvals', path: '/approvals', icon: 'approvals' };

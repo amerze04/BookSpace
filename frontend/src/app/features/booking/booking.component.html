@@ -149,7 +149,9 @@
               Check availability
             </a>
           } @else {
-            <a class="primary-button" routerLink="/my-bookings">View my bookings</a>
+            <a class="primary-button" routerLink="/calendar" [queryParams]="checkCalendarParams()">
+              View your calendar
+            </a>
           }
         </div>
       </section>
@@ -254,10 +256,11 @@
         }
 
         <div class="outcome-actions">
-          <!-- /my-bookings is still WP-6's placeholder; Phase 4 gives it a
-               real destination. The link is correct today and simply becomes
-               useful then — not a dead route. -->
-          <a class="primary-button" routerLink="/my-bookings">View my bookings</a>
+          <!-- Points at the week the booking actually lands in, not just at
+               the calendar: a list had a top, a calendar does not. -->
+          <a class="primary-button" routerLink="/calendar" [queryParams]="checkCalendarParams()">
+            View your calendar
+          </a>
           <a class="secondary-button" [routerLink]="['/resources', resource.id, 'availability']">Book another time</a>
         </div>
       </section>
@@ -673,7 +676,7 @@
               <div>
                 <p class="notice-title">Approval required</p>
                 <p class="notice-text">
-                  This booking will be submitted for approval. You'll see its status in My Bookings.
+                  This booking will be submitted for approval. You'll see its status on your calendar.
                 </p>
               </div>
             </div>
@@ -710,8 +713,8 @@
                        guarantee with it. -->
                   <p class="field-hint">
                     Trying again is safe — this request carries a key that resolves to the same series. That holds
-                    while this page stays open and the form is unchanged; if you reload or edit it, check My Bookings
-                    instead.
+                    while this page stays open and the form is unchanged; if you reload or edit it, check your
+                    calendar instead.
                   </p>
                   <button type="button" class="secondary-button" (click)="confirmBooking()">Try again</button>
                 } @else {
@@ -722,7 +725,19 @@
                        page was reloaded, or a field was edited — so repeating
                        now would be a *new* attempt that could double the
                        first. -->
-                  <a class="secondary-button" routerLink="/my-bookings">Check My Bookings</a>
+                  <!-- Deep-linked to the date in question, and that is the
+                       whole point: "check My Bookings" worked when a new
+                       booking would be at the top of a list, but a calendar
+                       has no top, so the member has to be told which day to
+                       look at. checkCalendarParams() names the week for a
+                       one-off and the month for a series. -->
+                  <a
+                    class="secondary-button"
+                    routerLink="/calendar"
+                    [queryParams]="checkCalendarParams()"
+                  >
+                    Check your calendar
+                  </a>
                 }
               }
             </div>

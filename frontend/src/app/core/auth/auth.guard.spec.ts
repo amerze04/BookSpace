@@ -136,9 +136,13 @@ describe('route guards', () => {
     expect(TestBed.runInInjectionContext(() => approverGuard({} as ActivatedRouteSnapshot, {} as RouterStateSnapshot))).toBe(true);
   });
 
-  it('approverGuard redirects a Member to /home', () => {
+  // /calendar since WP-7 Phase 4 — the app's landing screen. Asserted against
+  // the real destination rather than /home, which is now itself only a
+  // redirect: bouncing through one would make the URL the visitor lands on
+  // differ from the one the guard names.
+  it('approverGuard redirects a Member to /calendar', () => {
     seedSession('Member');
     const blocked = TestBed.runInInjectionContext(() => approverGuard({} as ActivatedRouteSnapshot, {} as RouterStateSnapshot));
-    expect(router.serializeUrl(blocked as UrlTree)).toBe('/home');
+    expect(router.serializeUrl(blocked as UrlTree)).toBe('/calendar');
   });
 });

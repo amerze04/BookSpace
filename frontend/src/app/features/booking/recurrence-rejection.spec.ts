@@ -127,7 +127,7 @@ describe('describeRecurrenceRejection', () => {
 
       expect(rejection.mayHaveBeenCreated).toBe(true);
       expect(rejection.formMessage).toContain('series may have been created');
-      expect(rejection.formMessage).toContain('Check My Bookings');
+      expect(rejection.formMessage).toContain('Check your calendar');
     });
   });
 });

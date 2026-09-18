@@ -552,3 +552,301 @@ away was the paged row list and its URL filters, and nothing else.
 falsified every existing reference to "Phase 5, the hard problem" — in this
 file, in CLAUDE.md, in the plan's earlier sections and in the commit history —
 for nothing but a tidier sequence.
+
+### Step 2 — the calendar shell and the bounded fetch (2026-09-18)
+
+Both designs arrived before the step started (`design/calendar_month_design.png`,
+`design/calendar_week_design.png`) — the first phase in this package to begin
+with its design in hand rather than receiving one mid-build. 59 new vitest tests
+(631 total, 0 failed), production build clean.
+
+`features/calendar/`: `calendar-range.ts` (the URL contract, week/month
+boundaries, the UTC fetch window, day-cell layout and the week hour axis) plus
+the component. The pure module is kept out of the component for the same reason
+`availability-grid.ts` is — none of it is Angular-specific, and the parts most
+likely to be wrong are worth testing without a TestBed.
+
+**The wiring was the larger half of the step.** `/calendar` is the landing
+route; `/home` and `''` redirect to it; `my-bookings` is deleted; the nav item
+is "Calendar", and the `home`/`bookings` icons were removed with their items
+rather than left as unreachable branches in the template's switch;
+`approverGuard` now bounces to `/calendar` directly rather than through
+`/home`'s redirect, so the URL it names is the one the visitor actually lands
+on.
+
+**The one rewrite among the three repointed booking-screen links** is the
+unknown-outcome message — §7's idempotency gap as the member experiences it. It
+now carries `?view=week&date=…` for a one-off and `?view=month&date=…` for a
+series. "Check My Bookings" was sufficient when a newly created booking would be
+at the top of a list; a calendar has no top, so the link has to name the period
+or it is worse than what it replaced.
+
+**A test-infrastructure problem this surfaced, worth remembering.** Making
+`/home` a redirect broke `app.routes.spec.ts`, which had used it as the neutral
+"some authenticated shell child" — it now lands on the calendar, whose window
+fetch was left open, and `httpMock.verify()` failing there **corrupted the
+shared TestBed for every spec file that ran afterwards** ("Cannot configure the
+test module when the test module has already been instantiated"). The visible
+symptom was 23 failures across six unrelated files, with a different subset
+failing on each run. Those tests are about guard wiring rather than any
+particular screen, so they now navigate between two placeholder routes that
+fetch nothing; the two tests that genuinely do land on `/calendar` (the new
+redirect tests, and the approver-guard bounce) answer its request explicitly.
+This is the same class of cross-file TestBed corruption Phase 2 step 5 hit with
+`takeUntilDestroyed`.
+
+**Timezone discipline in the tests, because CI and this machine disagree.** The
+calendar reads instants in the *viewer's* zone (wp7-plan.md §3), GitHub Actions
+runs in UTC and local development here is CET — so a hard-coded `"...T13:15:00Z"`
+literal in an assertion is silently environment-dependent. Every instant in the
+new specs is built from local components (`new Date(2026, 8, 24, 9, 0)`), and
+the two booking-screen assertions that now check a calendar deep link derive the
+expected date the same way rather than hard-coding it.
+
+**Deviations from the designs**, per the owner's instruction to follow them
+closely but adapt what disagrees with the app's own conventions: the sidebar
+drops "Home" and "My Bookings" (both still in the designs) and adds "Approvals"
+for an eligible approver; the breadcrumb is "Calendar" rather than
+"Home > Calendar", matching every other screen since WP-6; the week view's hour
+axis defaults to the design's 08:00–18:00 but **widens to contain whatever the
+week holds**, since a booking outside fixed hours would simply be invisible; a
+chip shows the title falling back to the resource name, which is what both
+designs depict; and the loading, empty and error states — which neither design
+has — were built. The empty state says "Nothing booked in this month" rather
+than "you have no bookings", because a window-bounded fetch cannot know about
+anything outside it.
+
+**Deliberately left to step 3**, so the grid, the navigation and the fetch could
+be reviewed on their own: how a chip actually *looks* — the `Pending`
+distinction, the muted past statuses, the recurrence marker, and the "+N more"
+overflow affordance the month design shows.
+
+**Verified against the running API**: the exact September-2026 window request
+the component builds answered `200` with 8 rows — the owner's 5 live bookings,
+which the calendar draws, and 3 `Cancelled` ones, which the status rule drops.
+The browser walkthrough remains outstanding for the same reason as every prior
+phase: no automation is available in this environment.
+
+#### The week grid's chips sat below their own times (owner, same day)
+
+Found by the owner looking at the screen — the third bug in this package found
+that way and not by the suite, after the availability screen's `<select [value]>`
+and the silently-clamped `?quantity=16`. **Two independent one-row errors,
+compounding:**
+
+1. The grid drew one row per *label* — eleven for an 08:00–18:00 window — while
+   `hourSpanStylePercent` computed offsets as a percentage of the ten-hour
+   *span*. A chip's `top: 20%` therefore resolved against a column an hour
+   taller than the window it was computed from, putting 10:00 at 123px where it
+   belonged at 112px, and growing worse down the day.
+2. `.hour-line` was a `border-bottom`, so each line sat at its row's *foot*
+   while that row's label sat at its *head* — a second full-hour offset in the
+   same direction.
+
+**Why no existing test caught it, and why this is the same lesson again.** The
+percentage *string* is identical under both readings — `top: 20%` is what the
+correct and the broken version both emit — and jsdom performs no layout, so
+there were no pixels to measure. The assertion that existed (`style.top` is
+`'20%'`) passed throughout and was never wrong; it simply was not about the
+thing that broke. What is checkable is the **basis**: that a grid row is an hour
+*span*, and that a label and a chip beginning on that hour resolve to the same
+offset.
+
+**The fix removes the class of bug rather than the instance.** A new
+`minuteOffsetPercent` is the single place a time becomes a vertical position;
+`hourOffsetPercent` (labels) and `hourSpanStylePercent` (chips) both go through
+it, so they cannot drift apart by construction rather than by two calculations
+agreeing. The gutter's labels are absolutely positioned through that function
+instead of taking a grid row each, the columns draw one row per hour span
+(`hourRows()`, deliberately one shorter than `hourTicks()`), and the lines
+became `border-top`. Both ends of the window are still labelled, which is why
+there is one more label than there are rows.
+
+**Both regression tests were proven against the old code**: reverting the
+template to its pre-fix form fails exactly the two new tests and no others.
+
+#### Two more, from the same screen (owner, same day)
+
+Reported with a screenshot (`design/calendar_bug.png`), and both turned out to
+be the *same* mistake seen twice: **the day header and the columns were two
+grids in two different boxes, only one of which scrolled.**
+
+1. **The columns did not line up with their own day headers.** A scrollbar is
+   laid out *inside* the scrolling box, so `.week-body`'s seven columns were
+   each a couple of pixels narrower than `.week-header`'s — a drift that
+   accumulated across the week to about 17px by Sunday, which is exactly what
+   the screenshot shows.
+2. **08:00 could not be brought into view at any scroll position.** The opening
+   label is centred on the grid's own top edge (`translateY(-50%)`), so half of
+   it sat above `.week-body`'s content box and was clipped by that same
+   `overflow: auto`. Scrolling to the top could not reveal it, because it was
+   not above the scroll position — it was outside the box.
+
+**The fix removes the split rather than compensating for it.** `.grid` is now
+the single scroll container for both views, with the day header `position:
+sticky; top: 0` inside it. The two grids are then the same width by
+construction, instead of by guessing at a scrollbar width that is neither known
+nor constant across platforms. `.week-body` gained a symmetric `padding-top` to
+match its existing `padding-bottom`, so both edge-straddling labels have room;
+container padding sits outside the grid area, so the row heights the chip
+offsets are percentages of are untouched. Every direct child of `.grid` is
+`flex: none` — load-bearing, not defensive, since a flex item shrinks to fit by
+default and the grids would otherwise compress into the visible height and leave
+nothing to scroll. The narrow-screen rules lost their now-redundant
+`overflow-x`, and horizontal scrolling improved as a side effect: the header
+travels with the columns instead of having to be kept in sync.
+
+**These are testable after all, which was worth checking rather than assuming.**
+jsdom performs no layout, so neither symptom can be measured here — but it
+*does* resolve the component's stylesheet, confirmed by probing
+`getComputedStyle` before writing anything. So the five new tests assert the
+mechanism the fix rests on: one scroll box, no second one on the body, a sticky
+header, room for the straddling labels, and children that keep their natural
+height. All five were proven to fail against the pre-fix stylesheet, and no
+others did.
+
+**The standing lesson, now three times over in this package**: for anything the
+user sees, the assertion has to be about what actually determines what they see.
+`top: 20%` was true and useless; the row *count* was the thing. A passing
+percentage said nothing about column widths; the *scroll box* was the thing.
+
+### Step 3 — chips, and proving the volume claim (2026-09-18)
+
+18 new vitest tests (658 total, 0 failed), build clean.
+
+**Status is never carried by colour alone.** `Pending` takes the design's dashed
+outline *and* gains "(Pending)" in its own label — the one distinction a member
+acts on, since FR-7.1 means the slot is not held yet. `NoShow` gains
+"(No-show)", because that is information rather than decoration. `Completed` is
+muted but unannotated: the unremarkable past, with nothing to do about it. Each
+chip carries an `aria-label` giving the whole thing as one sentence (time,
+label, status, series membership, and whether it is a clipped piece of a longer
+booking), since the visual chip splits across four elements that read badly
+announced separately.
+
+**The overflow affordance expands the day in place — a decision, not a detail.**
+The design shows "+2 more" but not what it does, and there is no day view to
+send anyone to, so expanding is what makes the capped chips reachable at all.
+The expansion is deliberately **not** in the URL: it is a disclosure inside one
+cell rather than cross-screen state, which is the distinction the
+prefer-the-URL rule actually draws. It clears when the window changes, since the
+cells it referred to are gone and a surviving date string would expand an
+unrelated day. The summary row takes a chip's *place* rather than sitting below
+the full set — otherwise a capped four-booking day would be exactly as tall as
+an uncapped one and the cap would buy nothing on the day it matters.
+
+**No cap in the week view**, deliberately: a week chip is positioned by time
+rather than stacked, so its DOM is already bounded by what can physically fit in
+a day, and hiding one would leave a gap in the grid rather than a shorter list.
+
+**The responsiveness criterion was measured rather than asserted.** Month view,
+increasing volume (jsdom, so indicative rather than a browser figure): 50
+bookings → 19 ms / 50 chips; 260 (the benchmark wp7-plan.md names) → 21 ms / 56;
+500 → 41 ms / 56; 1000 → 64 ms / 56. **The chip count plateaus at 56 while the
+data grows twentyfold** — that is the cap working, and it is the property the
+suite asserts (35 cells × at most 3 chips) rather than a timing threshold, which
+would be flaky in CI and would not say *why*. The residual growth is the single
+O(n) pass laying rows into cells. Taken with step 2's bounded fetch, the cost of
+rendering a month is flat in how much history the member has.
+
+**Verified against the running API**: a real three-occurrence weekly series was
+created, confirmed to come back with `recurrenceRuleId` set on every occurrence
+— the only thing the recurrence marker keys off — and cancelled afterwards, so
+the dev database is back to the owner's five live bookings. The `Pending` path
+needed no fixture: three of those five already are.
+
+#### Two more in the week view (owner, same day)
+
+Reported as "the cards aren't shown fully at the bottom", with a screenshot. The
+clipping was real, and the screenshot showed a second problem alongside it that
+had not been noticed.
+
+1. **A short booking's chip was shorter than its own content.** A week row is a
+   fixed 56px per hour, so a 30-minute booking is 28px — while the chip stacks a
+   time line above a label line, about 40px. `.week-chip` is `overflow: hidden`,
+   so the booking's *name* was silently swallowed. The `min-height: 28px` that
+   was supposed to protect against this was itself too small to matter.
+2. **Overlapping bookings were drawn on top of one another.** Every chip had
+   `left: 3px; right: 3px`, so three overlapping afternoon bookings occupied the
+   identical box and whichever came last in the DOM hid the other two. A member
+   with two bookings at the same time is entirely ordinary — different
+   resources, or a pooled one — so "only one thing at a time" was never a safe
+   assumption to have built in.
+
+**The fixes.** `layOutDay` packs a day's entries into side-by-side columns by
+the standard interval-graph sweep: entries are grouped into clusters of
+transitively-overlapping bookings, and within a cluster each takes the first
+column whose previous occupant has already ended. The column count is the
+*cluster's* rather than the day's busiest moment, so a crowded morning does not
+squeeze the afternoon's lone booking into a sliver, and a freed column is reused
+rather than the day growing a new one per booking. Touching is not overlapping —
+back-to-back bookings each keep the full width.
+`isCompactChip` gives anything under 45 minutes a one-line layout (time and
+label side by side, the label ellipsised) rather than a two-line one it cannot
+fit. That threshold is a duration rather than a pixel measurement precisely
+because the row height is fixed: 56px per hour means two lines need about 43
+minutes' worth of column.
+
+**Verified the way the previous two were**: reverting the template and
+stylesheet to their pre-fix form fails three of the four new DOM tests. The
+fourth — that a full-hour booking keeps its two-line shape — passes against both,
+and is kept as a guard on the threshold rather than a regression test, since a
+compact layout applied to *everything* would be the obvious wrong fix.
+
+### Step 4 — the booking detail screen (2026-09-18)
+
+`features/booking/detail/` on `/bookings/:id`, plus calendar chips becoming real
+`<a>` elements that point at it. 25 new vitest tests (695 total, 0 failed),
+build clean.
+
+**A route rather than a panel.** FR-5.2 asks that each occurrence of a series be
+independently viewable, and a booking worth discussing is worth linking to — the
+same instinct that put Phase 3's selected slot in the URL. The chips are
+anchors rather than click handlers so middle-click, copy-link and open-in-new-tab
+all work, matching what the 2026-09-16 accessibility pass did to the resource
+card's title.
+
+**It has to render a cancelled booking honestly even though the calendar will
+never route anyone to one.** Step 3's status rules mean `Cancelled` and
+`Rejected` are not drawn, so the only ways here are a direct link, a bookmark,
+or the booking screen's own "check your calendar" message — all of which still
+resolve, and all of which are most likely to be used at exactly the moment
+someone wants to know what happened. Hence the three cancellation readings
+survive: `cancelledByUserId === userId` is the member's own, a different actor
+is an administrator (decision `0002` records the actor separately precisely so
+this is visible), and a **null** actor beside a real reason is a blackout —
+`Booking.CancelForBlackout` leaves it null because there is no person behind it,
+and the reason carries decision `0019`'s text snapshot.
+
+**The resource is a second, best-effort fetch whose failure is silent.**
+`GetBookingQueryResponse` carries `resourceName` but no `timeZoneId`, so without
+it the screen cannot say what the span means on the room's own clock — but every
+other fact on the page is still true, so losing it costs one line rather than
+the screen. Same reasoning as the availability screen's blackout fetch. It is
+guarded on arrival too: the `switchMap` covers the booking fetch only, so a slow
+resource read for a previous booking is dropped rather than landing on a newer
+one.
+
+**The viewer's zone leads, the opposite emphasis from the booking form one
+screen back.** The form led with the resource's zone because decision `0003`
+makes that the zone the availability *question* was asked in, and the member
+chose against that reading. Reading a booking back is the ordinary calendar case
+(wp7-plan.md §3), where what a person wants is when to turn up.
+
+**`spanLabels`/`instantLabel` moved into `local-date.ts` at their second caller**
+rather than the usual third, for the same reason `formatDurationWords` moved at
+its second: user-visible copy rendering the *same booking's* span on two screens
+in one flow, where a drifted second copy would be a visible inconsistency.
+
+**Verified against the running API, every branch against a real row**: a
+`Pending` booking carrying `approval.decision: "Pending"` and a real expiry; a
+self-cancelled booking where the actor equals the owner; a row exercising three
+branches at once — `Cancelled`, a `Withdrawn` approval with a null decider, and
+`recurrenceRuleId` set, which is exactly what cancelling a `Pending` occurrence
+of a series produces; and `404 BookingNotFound` for a real-but-nonexistent guid.
+
+**One flagged edge, deliberately not handled**: an all-zeros guid answers **400
+ValidationFailed** rather than 404, because the validator treats `Guid.Empty` as
+a malformed request rather than a lookup that missed — so it lands in the generic
+error state with a retry that cannot help. Reachable only by hand-typing that
+exact id, so it is recorded rather than given a special case.

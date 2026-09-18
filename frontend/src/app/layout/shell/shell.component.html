@@ -9,35 +9,17 @@
         <a [routerLink]="item.path" routerLinkActive="active" class="nav-item">
           <span class="nav-icon">
             @switch (item.icon) {
-              @case ('home') {
+              @case ('calendar') {
                 <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path
-                    d="M4 11.5 12 4l8 7.5M6 10v9a1 1 0 0 0 1 1h3v-6h4v6h3a1 1 0 0 0 1-1v-9"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.6"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  />
+                  <rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.6" />
+                  <path d="M4 10h16M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                  <rect x="7.5" y="13" width="3" height="3" rx="0.5" fill="currentColor" />
                 </svg>
               }
               @case ('resources') {
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.6" />
                   <path d="M4 10h16M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-                </svg>
-              }
-              @case ('bookings') {
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.6" />
-                  <path
-                    d="M8 13l2.5 2.5L16 10"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.6"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  />
                 </svg>
               }
               @case ('approvals') {

@@ -233,3 +233,44 @@ export function formatMinutesOfDay(minutes: number): string {
   const mm = minutes % 60;
   return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 }
+
+// One booked span rendered in one timezone.
+//
+// Extracted here at its *second* caller for the same reason
+// `formatDurationWords` above was: it is user-visible copy rendering the *same
+// booking's* span on two screens in one flow — the booking form and the booking
+// detail — so a second copy that drifted would be a visible inconsistency
+// rather than merely duplicated code.
+export interface SpanLabels {
+  date: string;
+  timeRange: string;
+}
+
+export function spanLabels(
+  span: { startUtc: string; endUtc: string },
+  timeZoneId: string,
+): SpanLabels {
+  const start = utcToResourceLocal(span.startUtc, timeZoneId);
+  const end = utcToResourceLocal(span.endUtc, timeZoneId);
+
+  // An overnight span lands on two calendar days, so the end carries its own
+  // date rather than being read against the start's.
+  const endLabel =
+    end.date === start.date
+      ? formatMinutesOfDay(end.minutesOfDay)
+      : `${formatMinutesOfDay(end.minutesOfDay)} (${formatLocalDateWithWeekdayAndYear(end.date)})`;
+
+  return {
+    date: formatLocalDateWithWeekdayAndYear(start.date),
+    timeRange: `${formatMinutesOfDay(start.minutesOfDay)} – ${endLabel}`,
+  };
+}
+
+// One instant, read in one zone: "Fri, Sep 18, 2026, 11:03". Used for the
+// things that are deadlines or audit stamps rather than facts about a
+// resource's schedule — an approval expiry, a cancellation time — which is why
+// these read in the viewer's own zone with that zone named.
+export function instantLabel(utcIso: string, timeZoneId: string): string {
+  const instant = utcToResourceLocal(utcIso, timeZoneId);
+  return `${formatLocalDateWithWeekdayAndYear(instant.date)}, ${formatMinutesOfDay(instant.minutesOfDay)}`;
+}

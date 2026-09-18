@@ -164,7 +164,7 @@ const INVALID_SELECTION_MESSAGE =
 const GENERIC_MESSAGE = 'This booking could not be created.';
 
 const UNKNOWN_OUTCOME_MESSAGE =
-  'Your booking may have been created — we could not confirm it. Check My Bookings before trying again, so you do not book the same time twice.';
+  'Your booking may have been created — we could not confirm it. Check your calendar on that date before trying again, so you do not book the same time twice.';
 
 const ONE_OFF_DIALECT: RejectionDialect = {
   copy: REJECTION_COPY,

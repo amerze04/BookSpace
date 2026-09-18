@@ -36,5 +36,8 @@ export const approverGuard: CanActivateFn = () => {
   const auth = inject(AuthService);
   const router = inject(Router);
 
-  return auth.canApproveBookings() ? true : router.createUrlTree(['/home']);
+  // /calendar since WP-7 Phase 4 (was /home, which is now itself a redirect
+  // here) — bounced to the app's landing screen rather than through a redirect
+  // hop, so the resulting URL is the one the visitor actually ends up on.
+  return auth.canApproveBookings() ? true : router.createUrlTree(['/calendar']);
 };

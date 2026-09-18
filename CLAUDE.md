@@ -723,6 +723,46 @@ before touching this area:
   `BookingsService.list()/getById()/cancel()` and
   `RecurrenceRulesService.cancel()` exist and are verified against the live API;
   `list()` is exactly the date-window-bounded fetch the calendar needs.
+- **Step 2 is done (2026-09-18)**: `features/calendar/` — `calendar-range.ts`
+  (URL contract, week/month boundaries, the UTC fetch window, day-cell layout,
+  the week hour axis) plus the component, built against both provided designs.
+  The fetch is bounded to the visible window and **walked across pages**
+  (`MaxPageSize` is 100 and rejects anything larger rather than clamping); a
+  window is never "everything, filtered in the browser", and **there is no
+  client-side recurrence expansion anywhere in this feature** — decision `0007`
+  already made every occurrence its own row. 695 vitest tests.
+- **Step 4 is done (2026-09-18)**: `features/booking/detail/` on
+  `/bookings/:id`, reached by clicking a chip. It **must keep rendering a
+  cancelled booking correctly** even though the calendar no longer draws one —
+  a direct link, a bookmark and the booking screen's "check your calendar"
+  message all still resolve there, and that is when someone most wants to know
+  what happened. The three cancellation readings (self / administrator / null
+  actor = blackout) are the point of the screen, not decoration.
+- **The week view makes two assumptions that are easy to undo by accident.**
+  Overlapping bookings are packed into side-by-side columns (`layOutDay`) rather
+  than every chip spanning the width — a member with two bookings at once is
+  ordinary, and full-width chips painted over each other. And a booking under 45
+  minutes gets a one-line chip (`isCompactChip`): the chip is `overflow: hidden`
+  and a row is a fixed 56px per hour, so the two-line shape silently swallowed
+  the names of short bookings.
+- **The week grid's geometry has one source and must keep it**:
+  `minuteOffsetPercent` is the only place a time becomes a vertical position,
+  and both the hour labels and the chips resolve through it. The grid draws one
+  row per hour *span* (`hourRows()`), deliberately one fewer than the labels
+  (`hourTicks()`, which marks both ends). Giving labels a grid row each is what
+  made every chip sit an hour-fraction low on 2026-09-18 — and no percentage
+  assertion can catch that, since jsdom does no layout and the emitted string is
+  identical either way.
+- **Test gotcha this step surfaced, worth knowing before editing route specs**:
+  a spec that navigates to `/home` now lands on the calendar, which fetches
+  immediately — leaving an open request whose `httpMock.verify()` failure
+  **corrupts the shared TestBed for every spec file after it**, showing up as
+  unrelated failures that vary run to run. Route specs use placeholder routes
+  (`/settings`, `/help`) unless they are specifically about the calendar.
+- **Timezone discipline in frontend tests**: the calendar reads instants in the
+  viewer's zone, CI runs in UTC and local development here is CET, so specs
+  build instants from local components (`new Date(2026, 8, 24, 9, 0)`) rather
+  than from `"...Z"` literals, which would be silently environment-dependent.
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across

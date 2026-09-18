@@ -20,11 +20,20 @@ export const routes: Routes = [
     loadComponent: () => import('./layout/shell/shell.component').then((m) => m.ShellComponent),
     children: [
       {
-        path: 'home',
-        data: { title: 'Home' },
+        // WP-7 Phase 4 step 2. The calendar is the landing screen: Home had
+        // been a placeholder since WP-6 with no job assigned to it in the PRD
+        // or any work package, and "what am I booked for" is what a member
+        // opens this app to answer.
+        path: 'calendar',
+        data: { title: 'Calendar' },
         loadComponent: () =>
-          import('./features/placeholder/placeholder.component').then((m) => m.PlaceholderComponent),
+          import('./features/calendar/calendar.component').then((m) => m.CalendarComponent),
       },
+      // Kept as a redirect rather than deleted outright: /home was the app's
+      // landing route for two work packages, so bookmarks and any link written
+      // before 2026-09-18 still resolve instead of falling through to the
+      // catch-all and bouncing the visitor to /login.
+      { path: 'home', pathMatch: 'full', redirectTo: 'calendar' },
       {
         path: 'resources',
         children: [
@@ -68,11 +77,21 @@ export const routes: Routes = [
         ],
       },
       {
-        path: 'my-bookings',
-        data: { title: 'My Bookings' },
+        // WP-7 Phase 4 step 4. A top-level route rather than a child of the
+        // calendar: FR-5.2 makes each occurrence independently viewable, and a
+        // booking reached by a bookmark or a pasted link must resolve without
+        // the calendar having been visited first.
+        path: 'bookings/:id',
+        data: { title: 'Booking' },
         loadComponent: () =>
-          import('./features/placeholder/placeholder.component').then((m) => m.PlaceholderComponent),
+          import('./features/booking/detail/booking-detail.component').then(
+            (m) => m.BookingDetailComponent,
+          ),
       },
+      // `my-bookings` was removed in WP-7 Phase 4 (2026-09-18), not repointed:
+      // a separate list is redundant once the calendar shows the same bookings,
+      // and the source work package never asked for the screen. The three links
+      // that pointed at it now point at /calendar.
       {
         path: 'approvals',
         data: { title: 'Approvals' },
@@ -92,7 +111,7 @@ export const routes: Routes = [
         loadComponent: () =>
           import('./features/placeholder/placeholder.component').then((m) => m.PlaceholderComponent),
       },
-      { path: '', pathMatch: 'full', redirectTo: 'home' },
+      { path: '', pathMatch: 'full', redirectTo: 'calendar' },
     ],
   },
   { path: '**', redirectTo: 'login' },

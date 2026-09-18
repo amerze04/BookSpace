@@ -9,9 +9,12 @@ import { ResourceDetail, ResourceType } from '../resources/resources.models';
 import { ResourceTypeIconComponent } from '../../shared/resource-type/resource-type-icon.component';
 import { resourceCapacityLabel, resourceTypeLabel } from '../../shared/resource-type/resource-type';
 import {
+  SpanLabels,
   formatDurationWords,
   formatLocalDateWithWeekdayAndYear,
   formatMinutesOfDay,
+  instantLabel,
+  spanLabels,
   utcToResourceLocal,
 } from '../availability/local-date';
 import {
@@ -45,45 +48,15 @@ import {
 } from './recurrence-outcome';
 import { RecurrenceRulesService } from './recurrence-rules.service';
 import { BookingMode, BookingSelection, parseBookingMode, parseBookingSelection } from './booking-arrival';
+// The calendar owns the reading of an instant into a *viewer*-local date, the
+// same way booking-arrival.ts owns the selected-slot contract: one definition,
+// imported by whoever needs it, rather than a second copy that could drift.
+import { localDateOf, viewerToday } from '../calendar/calendar-range';
 import { BookingFieldName, BookingRejection, describeBookingRejection } from './booking-rejection';
 import { BookingsService } from './bookings.service';
 import { CreateBookingResponse, MAX_BOOKING_TITLE_LENGTH } from './booking.models';
 
 type ResourceLoadResult = { kind: 'success'; resource: ResourceDetail } | { kind: 'error'; error: unknown };
-
-// The span the member is about to book, rendered in one timezone. Built twice
-// per selection when the viewer's own zone differs from the resource's — see
-// viewerZoneSpan.
-interface SpanLabels {
-  date: string;
-  timeRange: string;
-}
-
-function spanLabels(span: { startUtc: string; endUtc: string }, timeZoneId: string): SpanLabels {
-  const start = utcToResourceLocal(span.startUtc, timeZoneId);
-  const end = utcToResourceLocal(span.endUtc, timeZoneId);
-
-  // An overnight span lands on two calendar days, so the end carries its own
-  // date rather than being read against the start's.
-  const endLabel =
-    end.date === start.date
-      ? formatMinutesOfDay(end.minutesOfDay)
-      : `${formatMinutesOfDay(end.minutesOfDay)} (${formatLocalDateWithWeekdayAndYear(end.date)})`;
-
-  return {
-    date: formatLocalDateWithWeekdayAndYear(start.date),
-    timeRange: `${formatMinutesOfDay(start.minutesOfDay)} – ${endLabel}`,
-  };
-}
-
-// One instant, read in one zone: "Fri, Sep 18, 2026, 11:03". Used for the
-// approval expiry, which — unlike the booked span — is not a fact about the
-// resource's schedule but a deadline people watch, so it reads in the
-// viewer's own zone with that zone named.
-function instantLabel(utcIso: string, timeZoneId: string): string {
-  const instant = utcToResourceLocal(utcIso, timeZoneId);
-  return `${formatLocalDateWithWeekdayAndYear(instant.date)}, ${formatMinutesOfDay(instant.minutesOfDay)}`;
-}
 
 function durationMinutesBetween(startUtc: string, endUtc: string): number {
   return Math.round((Date.parse(endUtc) - Date.parse(startUtc)) / 60_000);
@@ -376,6 +349,29 @@ export class BookingComponent {
   // "Every week", "Every 2 weeks" — the interval reads naturally rather than
   // as a raw number beside a frequency name.
   protected readonly recurrencePatternLabel = computed(() => patternLabel(this.recurrence()));
+
+  // Where "go and check whether this was created" actually sends the member
+  // (WP-7 Phase 4, 2026-09-18). This used to be a bare link to My Bookings,
+  // where a new booking would simply be at the top of a list; the calendar has
+  // no "top", so the link has to name the date it wants them to look at or it
+  // is worse than the list it replaced.
+  //
+  // A one-off lands on the **week** containing the slot that was attempted —
+  // close enough to scan, wide enough to survive a timezone difference pushing
+  // the booking onto the neighbouring day. A series has no single date worth
+  // singling out, so it lands on the **month** its start date falls in.
+  protected readonly checkCalendarParams = computed<{ view: string; date: string }>(() => {
+    if (this.mode() === 'recurring') {
+      const startDate = this.recurrence().startDate;
+      return { view: 'month', date: startDate || viewerToday() };
+    }
+
+    const selection = this.selection();
+    return {
+      view: 'week',
+      date: selection ? localDateOf(selection.startUtc) : viewerToday(),
+    };
+  });
 
   protected readonly submitting = signal(false);
 

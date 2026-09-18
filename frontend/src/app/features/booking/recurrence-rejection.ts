@@ -94,7 +94,7 @@ const RECURRENCE_DIALECT: RejectionDialect = {
   // `BookingComponent.canRetrySeries`). Reload the page or change the form and
   // the honest answer is the same one the one-off path gives.
   unknownOutcomeMessage:
-    'Your series may have been created — we could not confirm it. Check My Bookings before '
+    'Your series may have been created — we could not confirm it. Check your calendar before '
     + 'trying again, so you do not create the same series twice.',
 };
 

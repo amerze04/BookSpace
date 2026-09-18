@@ -145,6 +145,17 @@ const selectionParams = {
   quantity: '1',
 };
 
+// The calendar deep link names the booking's date in the *viewer's* zone
+// (wp7-plan.md §3's display default), so a hard-coded "2026-09-24" would be a
+// quietly timezone-dependent assertion: it holds in UTC (where CI runs) and in
+// CET (where this is usually written), and fails east of about UTC+11. Derived
+// here rather than imported from calendar-range.ts, so the test is not simply
+// restating the implementation it is checking.
+function viewerLocalDateOf(utcIso: string): string {
+  const d = new Date(utcIso);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 describe('BookingComponent', () => {
   let httpMock: HttpTestingController;
   let breadcrumbService: BreadcrumbService;
@@ -1273,10 +1284,13 @@ describe('BookingComponent', () => {
         root = fixture.nativeElement as HTMLElement;
         expect(root.querySelector('.submit-error button')).toBeNull();
         expect(root.querySelector('.submit-error')?.textContent).not.toContain('Trying again is safe');
-        // The honest answer instead: go and look.
-        expect(
-          Array.from(root.querySelectorAll('.submit-error a')).map((a) => a.getAttribute('href')),
-        ).toContain('/my-bookings');
+        // The honest answer instead: go and look — and, since WP-7 Phase 4, at
+        // a named period rather than at a list. A series has no single date
+        // worth singling out, so it points at the month its start date is in.
+        const checkHrefs = Array.from(root.querySelectorAll('.submit-error a')).map((a) =>
+          a.getAttribute('href'),
+        );
+        expect(checkHrefs.some((href) => href?.startsWith('/calendar?view=month&date='))).toBe(true);
       });
 
       // ...and putting it back the way it was restores the guarantee, since
@@ -1316,7 +1330,7 @@ describe('BookingComponent', () => {
 
         const text = (fixture.nativeElement as HTMLElement).querySelector('.submit-error')?.textContent ?? '';
         expect(text).toContain('while this page stays open');
-        expect(text).toContain('check My Bookings');
+        expect(text).toContain('check your calendar');
       });
 
       it('offers a retry only for the recurring half', () => {
@@ -1769,7 +1783,11 @@ describe('BookingComponent', () => {
 
       expect(component.rejection()?.mayHaveBeenCreated).toBe(true);
       expect(submitError()?.textContent).toContain('may have been created');
-      expect(actionHrefs()).toEqual(['/my-bookings']);
+      // **The date is the point of this assertion**, not just the route. A list
+      // had a top, so "go and check" was enough; a calendar does not, so the
+      // link has to land on the week the attempted booking is in or it is worse
+      // than what it replaced (wp7-plan.md, Phase 4's landing-screen section).
+      expect(actionHrefs()).toEqual([`/calendar?view=week&date=${viewerLocalDateOf('2026-09-24T13:15:00Z')}`]);
       expect(root.querySelector('button.confirm-button')?.textContent).not.toContain('Try again');
     });
 
@@ -1929,7 +1947,10 @@ describe('BookingComponent', () => {
       const root = fixture.nativeElement as HTMLElement;
 
       const links = Array.from(root.querySelectorAll('.outcome-actions a')).map((a) => a.getAttribute('href'));
-      expect(links).toEqual(['/my-bookings', '/resources/r1/availability']);
+      expect(links).toEqual([
+        `/calendar?view=week&date=${viewerLocalDateOf('2026-09-24T13:15:00Z')}`,
+        '/resources/r1/availability',
+      ]);
       // The form and the "need to make a change?" bar belong to a booking
       // that hasn't happened yet.
       expect(root.querySelector('#booking-title')).toBeNull();

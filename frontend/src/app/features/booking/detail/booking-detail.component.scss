@@ -1,0 +1,228 @@
+:host {
+  display: block;
+}
+
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 760px;
+}
+
+.detail-header {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.detail-heading {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.booking-name {
+  color: #1d171a;
+  font-size: 1.4rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+// Status is carried by the word itself, not by the colour — the same rule the
+// calendar chips follow.
+.badge {
+  background: #f4e9ed;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: #6b1835;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 3px 12px;
+
+  &--pending {
+    background: #fffdfd;
+    border-color: #b07a8d;
+  }
+
+  &--cancelled {
+    background: #f1eeef;
+    color: #6a6065;
+  }
+
+  &--series {
+    background: #ffffff;
+    border-color: #e5d8dd;
+    color: #6a6065;
+    font-weight: 500;
+  }
+}
+
+.lead-note {
+  background: #fffdfd;
+  border: 1px dashed #b07a8d;
+  border-radius: 10px;
+  color: #1d171a;
+  margin: 0;
+  padding: 10px 14px;
+}
+
+.card {
+  background: #ffffff;
+  border: 1px solid #e5d8dd;
+  border-radius: 12px;
+  padding: 16px 20px;
+
+  &--cancelled {
+    background: #fcfafb;
+  }
+}
+
+.card-title {
+  color: #6a6065;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  margin: 0 0 12px;
+  text-transform: uppercase;
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+
+  dt {
+    color: #6a6065;
+    flex: none;
+    width: 110px;
+  }
+
+  dd {
+    color: #1d171a;
+    margin: 0;
+    min-width: 0;
+  }
+}
+
+.muted {
+  color: #6a6065;
+}
+
+.zone-note {
+  background: #faf6f7;
+  border-radius: 10px;
+  color: #6a6065;
+  font-size: 0.88rem;
+  margin: 14px 0 0;
+  padding: 10px 14px;
+}
+
+.resource-link {
+  align-items: center;
+  color: #6b1835;
+  display: inline-flex;
+  font-weight: 600;
+  gap: 6px;
+}
+
+.resource-icon {
+  display: inline-flex;
+
+  app-resource-type-icon {
+    display: inline-flex;
+    height: 16px;
+    width: 16px;
+  }
+
+  svg {
+    height: 100%;
+    width: 100%;
+  }
+}
+
+.cancel-lead {
+  color: #1d171a;
+  margin: 0;
+}
+
+.cancel-reason {
+  margin: 8px 0 0;
+}
+
+.audit {
+  color: #6a6065;
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.detail-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.primary-button,
+.secondary-button,
+.retry-button {
+  border-radius: 10px;
+  cursor: pointer;
+  display: inline-block;
+  font: inherit;
+  font-weight: 600;
+  padding: 9px 16px;
+  text-align: center;
+}
+
+.primary-button {
+  background: #6b1835;
+  border: 1px solid #6b1835;
+  color: #ffffff;
+
+  &:hover {
+    background: #57112a;
+  }
+}
+
+.secondary-button,
+.retry-button {
+  background: #ffffff;
+  border: 1px solid #e5d8dd;
+  color: #1d171a;
+
+  &:hover {
+    border-color: #b07a8d;
+  }
+}
+
+.state-message {
+  background: #ffffff;
+  border: 1px solid #e5d8dd;
+  border-radius: 12px;
+  color: #6a6065;
+  margin: 0;
+  max-width: 560px;
+  padding: 24px;
+  text-align: center;
+
+  p {
+    margin: 0 0 12px;
+  }
+
+  &--error {
+    border-color: #d63c3c;
+    color: #d63c3c;
+  }
+}
