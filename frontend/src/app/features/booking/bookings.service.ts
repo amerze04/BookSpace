@@ -1,9 +1,18 @@
 import { Injectable, inject } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { environment } from '../../../environments/environment';
+import { PagedResult } from '../../core/http/paged-result';
 import { skipErrorToast } from '../../core/http/skip-error-toast';
-import { CreateBookingRequest, CreateBookingResponse } from './booking.models';
+import {
+  BookingDetail,
+  BookingSummary,
+  CancelBookingRequest,
+  CancelBookingResponse,
+  CreateBookingRequest,
+  CreateBookingResponse,
+  ListBookingsParams,
+} from './booking.models';
 
 // Thin wrapper over POST /bookings — the same "bind and dispatch" thinness
 // ResourcesService and AvailabilityService keep to: no retry policy, no
@@ -35,4 +44,81 @@ export class BookingsService {
       context: skipErrorToast(),
     });
   }
+
+  // FR-4.4, the "view" half. The caller's own bookings — this client sends no
+  // `scope` or `userId` at all (see ListBookingsParams), so the endpoint's own
+  // default of BookingScope.Own applies.
+  list(params: ListBookingsParams = {}): Observable<PagedResult<BookingSummary>> {
+    return this.http.get<PagedResult<BookingSummary>>(`${environment.apiBaseUrl}/bookings`, {
+      params: buildListParams(params),
+      context: skipErrorToast(),
+    });
+  }
+
+  getById(id: string): Observable<BookingDetail> {
+    return this.http.get<BookingDetail>(`${environment.apiBaseUrl}/bookings/${id}`, {
+      context: skipErrorToast(),
+    });
+  }
+
+  // FR-4.4 and decision 0002, the "cancel" half.
+  //
+  // **Nothing retries this, and that is a harder rule here than on create.**
+  // POST /bookings cannot be retried because it has no idempotency key (§7's
+  // gap — a repeat would create a second booking). This one cannot be retried
+  // for a different and more definite reason: it is *deliberately* not
+  // idempotent, so a second call either returns 422 BookingNotCancellable or,
+  // where the first had not yet committed, quietly rewrites CancelledByUserId,
+  // CancelledAtUtc and the reason with a second actor's. Neither outcome is
+  // something a retry button should be offering, so an unknown outcome is
+  // reported as unknown and the member is sent to re-read the booking.
+  //
+  // The body is optional in full server-side; this client always sends one
+  // (with `reason: null` when there is nothing to say) rather than sometimes
+  // omitting it, so there is a single request shape to test and reason about.
+  cancel(id: string, request: CancelBookingRequest): Observable<CancelBookingResponse> {
+    return this.http.post<CancelBookingResponse>(
+      `${environment.apiBaseUrl}/bookings/${id}/cancel`,
+      request,
+      { context: skipErrorToast() },
+    );
+  }
+}
+
+// A field is only added when the caller actually set it, so an omitted filter
+// is genuinely absent from the URL rather than sent as a default this file
+// invented — the backend's own documented defaults then apply, and there is one
+// copy of them, not two that could disagree (decision 0015; the same rule
+// ResourcesService.buildListParams follows).
+//
+// `page`/`pageSize` are checked against `undefined` rather than truthiness for
+// the usual reason, and `status`/`resourceId` for a sharper one: an empty
+// string would serialize as `?status=`, which model-binds to a null enum and so
+// silently widens the query rather than failing.
+function buildListParams(params: ListBookingsParams): HttpParams {
+  let httpParams = new HttpParams();
+
+  if (params.from !== undefined) {
+    httpParams = httpParams.set('from', params.from);
+  }
+  if (params.to !== undefined) {
+    httpParams = httpParams.set('to', params.to);
+  }
+  if (params.status !== undefined) {
+    httpParams = httpParams.set('status', params.status);
+  }
+  if (params.resourceId !== undefined) {
+    httpParams = httpParams.set('resourceId', params.resourceId);
+  }
+  if (params.page !== undefined) {
+    httpParams = httpParams.set('page', params.page);
+  }
+  if (params.pageSize !== undefined) {
+    httpParams = httpParams.set('pageSize', params.pageSize);
+  }
+  if (params.sort !== undefined) {
+    httpParams = httpParams.set('sort', params.sort);
+  }
+
+  return httpParams;
 }

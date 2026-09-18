@@ -4,6 +4,8 @@ import { Observable } from 'rxjs';
 import { environment } from '../../../environments/environment';
 import { skipErrorToast } from '../../core/http/skip-error-toast';
 import {
+  CancelRecurrenceSeriesRequest,
+  CancelRecurrenceSeriesResponse,
   CreateRecurrenceSeriesRequest,
   CreateRecurrenceSeriesResponse,
 } from './recurrence.models';
@@ -48,6 +50,26 @@ export class RecurrenceRulesService {
         headers: new HttpHeaders({ 'Idempotency-Key': idempotencyKey }),
         context: skipErrorToast(),
       },
+    );
+  }
+
+  // FR-5.3. Cancels the series **and every occurrence still worth cancelling**
+  // — not just the rule, since a "cancelled" series whose future occurrences
+  // kept running would not be cancelled in any sense a member cares about.
+  //
+  // **No idempotency key here, unlike create, and that is not an oversight.**
+  // The endpoint takes none: it inherits the single cancel's non-idempotency
+  // one level up (a repeat rewrites the actor and time on every occurrence it
+  // touches), so there is nothing for a key to resolve to and nothing above
+  // this method retries it.
+  cancel(
+    recurrenceRuleId: string,
+    request: CancelRecurrenceSeriesRequest,
+  ): Observable<CancelRecurrenceSeriesResponse> {
+    return this.http.post<CancelRecurrenceSeriesResponse>(
+      `${environment.apiBaseUrl}/recurrence-rules/${recurrenceRuleId}/cancel`,
+      request,
+      { context: skipErrorToast() },
     );
   }
 }

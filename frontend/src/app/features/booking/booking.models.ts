@@ -1,8 +1,14 @@
 // Wire types mirroring the one-off booking DTOs exactly
-// (BookSpace.Application/Features/Bookings/CreateBooking/ plus
-// BookingsController.CreateBookingRequest) — the same "one place to check when
-// the API shape changes" convention resources.models.ts and
-// availability.models.ts already established.
+// (BookSpace.Application/Features/Bookings/CreateBooking/, ListBookings/,
+// GetBooking/, CancelBooking/, plus BookingsController's own request records) —
+// the same "one place to check when the API shape changes" convention
+// resources.models.ts and availability.models.ts already established.
+//
+// Phase 3 needed only the create half; Phase 4 (My Bookings) adds the read and
+// cancel halves below. They stay in this one file rather than a second
+// my-bookings.models.ts because they are the *same resource's* DTOs — a client
+// splitting them by which screen happened to need them first would be filing by
+// accident of history rather than by contract.
 
 // BookSpace.Domain.Enums.BookingStatus, in its own declared order. Serializes
 // as its name, not an ordinal (Program.cs registers JsonStringEnumConverter on
@@ -97,4 +103,218 @@ export interface CreateBookingResponse {
   status: BookingStatus;
   createdAtUtc: string;
   approval: BookingApprovalDetail | null;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 — the read and cancel halves.
+// ---------------------------------------------------------------------------
+
+// The `sort` whitelist BookingSortFields declares server-side (decision 0015),
+// spelled the way each field appears in the response JSON so a sort control can
+// only ever offer something the reader can actually see. Anything not on this
+// list is a 400, not a silently ignored parameter.
+//
+// Deliberately short on the backend's own reasoning: quantity and title are
+// omitted because nobody browses a schedule by either.
+export const BOOKING_SORT_FIELDS = ['startsAtUtc', 'createdAtUtc', 'status'] as const;
+export type BookingSortField = (typeof BOOKING_SORT_FIELDS)[number];
+
+// `name` ascending, `-name` descending — SortOption.TryParse's own grammar,
+// expressed as a type rather than as a `string` the caller has to get right.
+// ListResourcesParams.sort is a bare `string` (Phase 1); this is the stricter
+// version, so a typo is a compile error here rather than a 400 at runtime.
+export type BookingSort = BookingSortField | `-${BookingSortField}`;
+
+// GET /bookings query parameters — BookingsController.ListBookingsRequest.
+//
+// **from/to are an overlap filter, not a containment one** (the query record's
+// own header): a booking counts if any part of it falls inside the window, so a
+// member asking about next week still sees the booking that started this Friday
+// and runs into it.
+//
+// Two rules the validator enforces, which is why the caller cannot treat these
+// as free-form strings: each instant must carry a zone designator (an
+// Unspecified DateTime is refused, exactly as on POST /bookings), and `to` must
+// be strictly after `from` when both are sent — equal is refused too, since a
+// zero-width window overlaps nothing and so could only ever read as "you have
+// no bookings".
+//
+// **userId and scope are deliberately absent.** Both exist on the endpoint and
+// both are admin-only (decision 0002, widened to Approver in WP-5 Phase 3), and
+// Phase 4 is `scope=Own` only — the settled call is that decision 0002's
+// TenantAdmin reach is built once, in Phase 6, with the approval queue that
+// actually needs it. Adding them here for a path nothing exercises would put a
+// parameter in this client that a plain member's token can only ever be 400'd
+// for sending.
+export interface ListBookingsParams {
+  from?: string;
+  to?: string;
+  status?: BookingStatus;
+  resourceId?: string;
+  page?: number;
+  pageSize?: number;
+  sort?: BookingSort;
+}
+
+// One row of GET /bookings — ListBookingsQueryResponse. A summary, not the
+// whole aggregate, and the omissions are load-bearing for the UI rather than
+// incidental: **none of the cancellation fields are here**, so the list can
+// show that a booking is Cancelled but not who cancelled it or why. That is
+// correct (a page of twenty rows should not carry columns null on all of them)
+// and it is why "cancelled by an administrator" is a detail-screen fact, one
+// click deeper — flagged in wp7-plan.md's Phase 4 section rather than
+// discovered at review.
+//
+// resourceName and userName are denormalized onto the row on purpose (owner's
+// call, 2026-09-08 / WP-5 Phase 3): a member's list spans resources by
+// definition, so ids alone would force a fetch per row to render anything a
+// person could read.
+//
+// userName is mapped but not rendered in this phase — with `scope=Own` every
+// row is the viewer's own, so printing their own name on each is noise. Phase
+// 6's queue is its first real reader.
+//
+// recurrenceRuleId is what makes a row a series occurrence (FR-5.2). It is set
+// on every occurrence of a series and null on a one-off booking; the list uses
+// it for the recurrence badge, and the detail screen for the this-occurrence-or
+// -the-whole-series cancel choice.
+export interface BookingSummary {
+  id: string;
+  resourceId: string;
+  resourceName: string;
+  userId: string;
+  userName: string;
+  recurrenceRuleId: string | null;
+  startsAtUtc: string;
+  endsAtUtc: string;
+  quantity: number;
+  title: string | null;
+  status: BookingStatus;
+}
+
+// BookSpace.Domain.Enums.ApprovalDecision, in its own declared order.
+//
+// Withdrawn is not a person's judgment: it is what happens to a still-Pending
+// request whose booking stopped existing to decide on — cancelled directly, by
+// a blackout cascade (decision 0001), or by a whole-series cancellation. It
+// matters to this phase specifically, because cancelling a Pending booking is
+// exactly how a member produces one.
+export const APPROVAL_DECISIONS = [
+  'Pending',
+  'Approved',
+  'Rejected',
+  'Expired',
+  'Withdrawn',
+] as const;
+export type ApprovalDecision = (typeof APPROVAL_DECISIONS)[number];
+
+// The approval section of a detail read — GetBookingApprovalDetail. Present
+// only when the resource required approval, null otherwise.
+//
+// **Not the same type as BookingApprovalDetail above**, and not shared with it,
+// per decision 0015's per-endpoint rule — here they genuinely diverge rather
+// than merely coinciding. A freshly created booking's approval is Pending by
+// construction, so the create response needs only the id and the expiry; this
+// one is read at any time afterwards, so it also carries the outcome once made
+// (decision, decider, when) and the approver's note, plus requestedAtUtc, since
+// "how long has this been waiting" is a question only a detail read is asked.
+//
+// The row is never withdrawn from the response once decided, so a client
+// reading this sees the outcome rather than merely that a request was once open.
+export interface BookingDetailApproval {
+  approvalRequestId: string;
+  requestedAtUtc: string;
+  expiresAtUtc: string | null;
+  decision: ApprovalDecision;
+  decidedByUserId: string | null;
+  decidedAtUtc: string | null;
+  note: string | null;
+}
+
+// GET /bookings/{id} — GetBookingQueryResponse. Everything on the list row plus
+// the fields that only become interesting after creation.
+//
+// **404 for anything this caller may not see, never 403**: another member's
+// booking, another tenant's booking and an id that exists nowhere are
+// byte-identical (AC-4's cross-tenant rule applied within one tenant), which is
+// why the detail screen's not-found copy deliberately does not distinguish
+// "doesn't exist" from "isn't yours".
+//
+// The cancellation trio is three fields and **three** readings, not two, and
+// getting them apart is the whole reason the detail screen exists:
+//   - cancelledByUserId === userId — the member cancelled it themselves;
+//   - cancelledByUserId !== userId — an administrator cancelled it
+//     (decision 0002 records the actor distinctly precisely so this is visible);
+//   - cancelledByUserId === null with a reason — a blackout cancelled it
+//     (Booking.CancelForBlackout leaves the actor null on purpose, and the
+//     reason is decision 0019's text snapshot naming the blackout).
+//
+// checkedInAtUtc is on the wire and is null in practice today — nothing writes
+// it until the no-show job lands (FR-4.x check-in).
+export interface BookingDetail {
+  id: string;
+  resourceId: string;
+  resourceName: string;
+  userId: string;
+  userName: string;
+  recurrenceRuleId: string | null;
+  startsAtUtc: string;
+  endsAtUtc: string;
+  quantity: number;
+  title: string | null;
+  status: BookingStatus;
+  checkedInAtUtc: string | null;
+  cancelledByUserId: string | null;
+  cancelledAtUtc: string | null;
+  cancellationReason: string | null;
+  createdAtUtc: string;
+  updatedAtUtc: string;
+  approval: BookingDetailApproval | null;
+}
+
+// Bookings.CancellationReason NVARCHAR(300), restated from
+// CancelBookingCommandRequestValidator.MaxReasonLength so the form can bound
+// the input rather than letting a 400 be the first thing that says so. The
+// series cancel declares its own copy of the same 300 on the backend; the two
+// have never differed, so this is one constant rather than two.
+export const MAX_CANCELLATION_REASON_LENGTH = 300;
+
+// POST /bookings/{id}/cancel body — BookingsController.CancelBookingRequest.
+// The body is optional in full ("the meeting is off" is often all there is to
+// say), and there is no actor field: who cancelled comes from the token, so an
+// admin cannot attribute their own cancellation to the booking's owner.
+export interface CancelBookingRequest {
+  reason: string | null;
+}
+
+// POST /bookings/{id}/cancel 200 — CancelBookingCommandResponse.
+//
+// **The interval is on the wire even though the booking no longer holds it**,
+// and that is the point of the reply rather than an echo: it names the span
+// that just became bookable again, which re-reading the availability endpoint
+// could not answer (that says what is free *now*, not what this action freed).
+// It is what lets the screen update from the response instead of blind-
+// refetching.
+//
+// cancelledByUserId and cancelledAtUtc are non-nullable here, unlike on the
+// detail read: a response *to* a cancellation always has a real person behind
+// it. The blackout cascade's null actor never reaches this endpoint.
+//
+// **Deliberately not idempotent** — a second call is 422 BookingNotCancellable,
+// not a second 200, because there is something to overwrite: repeating it would
+// quietly rewrite who called the meeting off. That is why the cancel action
+// offers no retry on an unknown outcome, the same rule POST /bookings follows
+// for a different reason (§7's idempotency gap).
+export interface CancelBookingResponse {
+  id: string;
+  resourceId: string;
+  userId: string;
+  startsAtUtc: string;
+  endsAtUtc: string;
+  quantity: number;
+  title: string | null;
+  status: BookingStatus;
+  cancelledByUserId: string;
+  cancelledAtUtc: string;
+  cancellationReason: string | null;
 }

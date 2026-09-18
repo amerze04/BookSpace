@@ -116,3 +116,38 @@ export interface CreateRecurrenceSeriesResponse {
 export interface NoOccurrencesCreatedProblem extends ProblemDetails {
   occurrences: RecurrenceOccurrenceReport[];
 }
+
+// ---------------------------------------------------------------------------
+// Phase 4 — cancelling a whole series (FR-5.3).
+// ---------------------------------------------------------------------------
+
+// POST /recurrence-rules/{id}/cancel body —
+// RecurrenceRulesController's own cancel request. Optional in full, matching
+// the single-booking cancel, and the reason becomes the CancellationReason
+// recorded on *every* occurrence it cancels — which is why the backend
+// validates it once rather than once per occurrence.
+export interface CancelRecurrenceSeriesRequest {
+  reason: string | null;
+}
+
+// POST /recurrence-rules/{id}/cancel 200 —
+// CancelRecurrenceSeriesCommandResponse.
+//
+// **cancelledBookingIds, not a bare count**, and the UI owes it more than a
+// number: this is the exact set of occurrences that were actually freed, so a
+// screen knows precisely what it can stop showing as booked without re-reading
+// GET /bookings (which would answer a different question — what is booked
+// *now*, not what this action just released). The single-booking cancel's freed
+// interval is the same idea one level down.
+//
+// **Only occurrences with EndsAtUtc > now are cancelled**; past ones survive,
+// decision 0002's cancellation window reapplied per occurrence. So this list is
+// routinely shorter than the series is long, and the UI has to say what
+// "remaining" means *before* the member confirms rather than explaining the
+// discrepancy afterwards.
+export interface CancelRecurrenceSeriesResponse {
+  recurrenceRuleId: string;
+  cancelledByUserId: string;
+  cancelledAtUtc: string;
+  cancelledBookingIds: string[];
+}

@@ -4,6 +4,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { firstValueFrom } from 'rxjs';
 import { RecurrenceRulesService } from './recurrence-rules.service';
 import {
+  CancelRecurrenceSeriesResponse,
   CreateRecurrenceSeriesRequest,
   CreateRecurrenceSeriesResponse,
   NoOccurrencesCreatedProblem,
@@ -193,6 +194,86 @@ describe('RecurrenceRulesService', () => {
         reasonCode: 'NoOccurrencesCreated',
         occurrences: [{ reasonCode: 'OutsideAvailability' }, { reasonCode: 'OutsideAvailability' }],
       },
+    });
+  });
+
+  describe('cancel', () => {
+    it('posts to the series cancel sub-route and skips the global toast', async () => {
+      const resultPromise = firstValueFrom(
+        service.cancel('rr1', { reason: 'Project finished early' }),
+      );
+
+      const req = httpMock.expectOne(`${API}/recurrence-rules/rr1/cancel`);
+      expect(req.request.method).toBe('POST');
+      expect(req.request.body).toEqual({ reason: 'Project finished early' });
+      expect(req.request.context.get(SKIP_ERROR_TOAST)).toBe(true);
+
+      const body: CancelRecurrenceSeriesResponse = {
+        recurrenceRuleId: 'rr1',
+        cancelledByUserId: 'u1',
+        cancelledAtUtc: '2026-09-18T10:00:00Z',
+        cancelledBookingIds: ['b2', 'b3'],
+      };
+      req.flush(body);
+
+      expect(await resultPromise).toEqual(body);
+    });
+
+    // Unlike create, this endpoint takes no key — it inherits the single
+    // cancel's non-idempotency one level up, so there is nothing for a key to
+    // resolve to. Asserted rather than assumed: the backend ignores an unknown
+    // header, so a client that believed it had one would then feel free to
+    // retry, which is exactly what must not happen here.
+    it('sends no Idempotency-Key — only the create endpoint has one', () => {
+      firstValueFrom(service.cancel('rr1', { reason: null }));
+
+      const req = httpMock.expectOne(`${API}/recurrence-rules/rr1/cancel`);
+      expect(req.request.headers.has('Idempotency-Key')).toBe(false);
+      expect(req.request.body).toEqual({ reason: null });
+
+      req.flush({
+        recurrenceRuleId: 'rr1',
+        cancelledByUserId: 'u1',
+        cancelledAtUtc: '2026-09-18T10:00:00Z',
+        cancelledBookingIds: [],
+      } satisfies CancelRecurrenceSeriesResponse);
+    });
+
+    // Only occurrences with EndsAtUtc > now are cancelled, so a series whose
+    // every occurrence is in the past frees nothing — a legitimate 200 with an
+    // empty list, not a failure. The screen reports what was actually freed
+    // from this list rather than a bare success, so an empty one has to survive
+    // the round trip as an empty one.
+    it('passes an empty cancelledBookingIds through as a success', async () => {
+      const resultPromise = firstValueFrom(service.cancel('rr1', { reason: null }));
+
+      httpMock.expectOne(`${API}/recurrence-rules/rr1/cancel`).flush({
+        recurrenceRuleId: 'rr1',
+        cancelledByUserId: 'u1',
+        cancelledAtUtc: '2026-09-18T10:00:00Z',
+        cancelledBookingIds: [],
+      } satisfies CancelRecurrenceSeriesResponse);
+
+      expect((await resultPromise).cancelledBookingIds).toEqual([]);
+    });
+
+    it('surfaces a refusal as an error rather than swallowing it', async () => {
+      const resultPromise = firstValueFrom(service.cancel('rr1', { reason: null }));
+
+      httpMock.expectOne(`${API}/recurrence-rules/rr1/cancel`).flush(
+        {
+          title: 'The request was rejected by a rule.',
+          status: 422,
+          reasonCode: 'RecurrenceRuleNotCancellable',
+          correlationId: 'c1',
+        },
+        { status: 422, statusText: 'Unprocessable Content' },
+      );
+
+      await expect(resultPromise).rejects.toMatchObject({
+        status: 422,
+        error: { reasonCode: 'RecurrenceRuleNotCancellable' },
+      });
     });
   });
 });

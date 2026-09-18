@@ -14,16 +14,18 @@ than compressed — mirrored in wp7-plan.md's own phasing.
 - [x] Resource list and detail views. **Done 2026-09-15** (Phase 1).
 - [x] Availability view for a resource and date range. **Done 2026-09-16**
       (Phase 2).
-- [ ] Booking form for one-off and recurring bookings, with clear validation
-      feedback.
+- [x] Booking form for one-off and recurring bookings, with clear validation
+      feedback. **Done 2026-09-17** (Phase 3).
 - [ ] Calendar view rendering bookings, including recurring series, without
-      choking on volume.
+      choking on volume. **In progress** as Phase 4 since the 2026-09-18
+      re-plan.
 - [ ] Approval queue UI for approvers.
-- [ ] Cancellation and blackout handling in the UI.
+- [ ] Cancellation and blackout handling in the UI. **Phase 4's steps 4–6.**
 - [ ] Wire the full flow end-to-end against the real API.
 
-**Hard problem** (not yet reached): the calendar (Phase 5) must stay
-responsive with hundreds of bookings and expanded recurring series.
+**Hard problem**: the calendar must stay responsive with hundreds of bookings
+and expanded recurring series. It was Phase 5 until 2026-09-18, when Phases 4
+and 5 merged — see this file's own Phase 4 section, below.
 
 Acceptance criteria:
 - [ ] A member completes browse → book → confirm entirely through the UI.
@@ -454,3 +456,99 @@ tests and no others, before being restored. The browser walkthrough is still
 outstanding for the same reason as Phase 3's — no automation is available here
 — so what is verified is the rendered DOM in vitest plus the contracts these
 screens consume, not a human click-through.
+
+
+---
+
+## Phase 4 — Calendar, booking detail & cancellation
+
+**Step 1 (types and services) shipped on 2026-09-18**, and later the same day
+the owner re-planned the phase around it. Both halves are recorded here because
+the sequence is the interesting part: a step delivered against a screen that was
+then cancelled, which cost nothing.
+
+### Step 1 — the read and cancel contract
+
+`booking.models.ts` gained `BookingSummary`, `BookingDetail`,
+`BookingDetailApproval`, `ApprovalDecision`, the cancel request/response pair,
+`ListBookingsParams` and the sort/reason-length constants;
+`recurrence.models.ts` gained the series-cancel pair; `BookingsService` gained
+`list()`, `getById()` and `cancel()`; `RecurrenceRulesService` gained
+`cancel()`. 16 new vitest tests (572 total, 0 failed), build clean.
+
+**Every shape was confirmed against the running API rather than read off the C#
+records alone**, following Phase 3 step 1's precedent. Five things that came out
+of it:
+
+- **`sort` is a typed union**, `BookingSortField | \`-${BookingSortField}\``,
+  mirroring `SortOption.TryParse`'s own grammar — stricter than
+  `ListResourcesParams.sort`, which is a bare `string`. Both halves verified:
+  `sort=quantity` is a 400 naming the whitelist, `sort=-startsAtUtc` a 200.
+- **`userId` and `scope` are deliberately absent** from `ListBookingsParams`.
+  Not merely unused surface — a plain member's token sending `scope=tenant`
+  answers **400 ValidationFailed**, confirmed live, so shipping the parameter
+  would break the screen rather than sit idle. Decision `0002`'s reach is still
+  Phase 6's to build.
+- **The `!== undefined` guard in `buildListParams` is load-bearing, and the bug
+  it prevents was reproduced rather than assumed**: `?status=` (an empty string)
+  model-binds to a null enum and answers **200 with every booking** — a silently
+  widened query, not an error. A truthiness check would have produced exactly
+  that on a cleared filter control.
+- **A real `Withdrawn` approval exists in the dev database and reads oddly on
+  purpose**: `decision: "Withdrawn"`, `decidedAtUtc` set, `decidedByUserId`
+  **null** — there is no decider, only a fact (`ApprovalRequest.Withdraw`).
+  `BookingDetailApproval` types the two independently for that reason. It is
+  what cancelling a `Pending` booking produces, which is this phase's own step 5.
+- **Both cancels are non-idempotent as documented**, proven end to end: a second
+  `POST /bookings/{id}/cancel` answers `422 BookingNotCancellable`, a second
+  series cancel `422 RecurrenceRuleNotCancellable`. The series cancel returned
+  `cancelledBookingIds` with all three occurrences' ids.
+
+Everything created for the probes was cancelled afterwards — one one-off and a
+three-occurrence weekly series — so the dev database carries only cancelled rows
+from this step. The owner's five live bookings were not touched, re-checked
+after cleanup.
+
+### The re-plan, later the same day
+
+**The owner's observation: a My Bookings page makes no sense once a calendar
+exists, since the calendar shows bookings anyway.** Checked against the source
+PDF rather than taken on instinct, and it holds — the task list names a
+*calendar view rendering bookings* and *cancellation and blackout handling in
+the UI*. "My Bookings" was this plan's own decomposition, never a mentor
+requirement, so merging tightens the fit with CLAUDE.md §12's rule that the
+roadmap mirrors the work package rather than an invented build order.
+
+**What the merge deliberately did not drop.** Skipping the phase outright would
+have taken four things the calendar does not provide: the booking detail read
+(the calendar needs a click target, and FR-5.2 wants each occurrence
+independently viewable), cancelling a booking (FR-4.4, and a literal task-list
+item), the occurrence-vs-series choice (FR-5.3), and blackout-cancellation
+rendering (decision `0019`). All four survive as steps 4–6. What actually went
+away was the paged row list and its URL filters, and nothing else.
+
+**Two calls settled in the same conversation**, both written up in
+`docs/wp7-plan.md`:
+
+1. **Cancelled and Rejected bookings are not drawn.** Neither holds any time, so
+   neither has a cell to occupy, and `NotificationKind.Cancelled`/`Rejected`/
+   `SeriesCancelled` already tell the member by email. The contract detail that
+   makes this a *rendering* rule rather than a query parameter:
+   `ListBookingsQueryRequest.Status` takes one value, not a set, so the client
+   cannot ask for "everything except cancelled" — it fetches the bounded window
+   and filters. The accepted cost, stated rather than glossed: a cancellation's
+   reason, including decision `0019`'s blackout snapshot, becomes readable only
+   by direct link to `/bookings/:id`.
+2. **The calendar becomes the landing screen** at `/calendar`, with `/home`
+   redirecting and the My Bookings nav item deleted. Home had been a placeholder
+   since WP-6, and a grep confirmed **no work package or PRD section ever
+   assigned it a job** — so nothing was displaced. The one piece of this that is
+   a rewrite rather than a repoint is the unknown-outcome message from Phase 3
+   step 5 ("your booking *may* have been created — go check"): on a list the
+   booking would be at the top, but on a calendar the member has to be told
+   which date to look at.
+
+**Phase 5's number is retired rather than reused.** Renumbering would have
+falsified every existing reference to "Phase 5, the hard problem" — in this
+file, in CLAUDE.md, in the plan's earlier sections and in the commit history —
+for nothing but a tidier sequence.

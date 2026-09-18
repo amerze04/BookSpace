@@ -626,9 +626,11 @@ split into its own reviewable steps. Full narrative:
 - [x] Booking form for one-off and recurring bookings, with clear
       validation feedback. **Done 2026-09-17** (Phase 3).
 - [ ] Calendar view rendering bookings, including recurring series, without
-      choking on volume. **Hard problem, not yet reached.**
+      choking on volume. **Hard problem. In progress as Phase 4** since the
+      2026-09-18 re-plan — step 1 (services) done, the calendar itself next.
 - [ ] Approval queue UI for approvers.
-- [ ] Cancellation and blackout handling in the UI.
+- [ ] Cancellation and blackout handling in the UI. **Phase 4's steps 4–6**,
+      alongside the calendar rather than in a screen of its own.
 - [ ] Wire the full flow end-to-end against the real API.
 
 Acceptance criteria (all four still open):
@@ -689,6 +691,38 @@ now, in case it matters before touching this feature area:
 - `recurrenceUnavailableReason` is an explicit state for a resource with no
   bookable hours configured. It is **not** "fully booked" — that stays the
   server's answer, reported per occurrence (FR-5.4).
+
+**Phase 4 re-planned, 2026-09-18 — My Bookings cancelled, Phases 4 and 5
+merged.** Owner's call, taken after Phase 4's step 1 had already shipped. Full
+reasoning in [`docs/wp7-plan.md`](docs/wp7-plan.md)'s Phase 4 preamble; the
+narrative is in [`docs/roadmap/wp7.md`](docs/roadmap/wp7.md). What is true now,
+before touching this area:
+
+- **There is no My Bookings screen and there will not be one.** A separate list
+  is redundant once a calendar exists, and the source PDF never asked for one —
+  it asks for a calendar and for cancellation handling, both of which Phase 4
+  now carries. `/my-bookings` is **removed**, not repointed.
+- **The calendar is the landing screen**, at `/calendar`, with `/home`
+  redirecting to it. Home had been a placeholder since WP-6 with no job
+  assigned to it anywhere in the PRD or any work package, so nothing was
+  displaced. The nav item is "Calendar"; "My Bookings" is deleted.
+- **Phase 5's number is retired, not reused.** Phases 6 and 7 keep theirs, so
+  every existing reference to "Phase 5, the hard problem" still resolves.
+- **Which statuses the calendar draws is a rendering rule, not a query.**
+  `ListBookingsQueryRequest.Status` takes one value, not a set, so "everything
+  except cancelled" cannot be asked for server-side: the bounded window is
+  fetched unfiltered and filtered in the client. Drawn — `Confirmed`,
+  `Pending` (distinctly, and by more than colour), `Completed`/`NoShow` muted.
+  Not drawn — `Cancelled` and `Rejected`; both hold no time, and
+  `NotificationKind` covers telling the member by email.
+- **The accepted cost, recorded rather than discovered later**: a cancelled
+  booking's *reason* — including decision `0019`'s blackout snapshot — is
+  readable only by direct link to `/bookings/:id`. Owner accepted this on
+  2026-09-18.
+- **Step 1 shipped before the re-plan and survived it untouched.**
+  `BookingsService.list()/getById()/cancel()` and
+  `RecurrenceRulesService.cancel()` exist and are verified against the live API;
+  `list()` is exactly the date-window-bounded fetch the calendar needs.
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across
