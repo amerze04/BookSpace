@@ -183,27 +183,85 @@
     </p>
 
     @if (cancelled()) {
-      <p class="cancel-done" role="status">
+      <p class="cancel-done" role="status" tabindex="-1">
         This booking is cancelled and the time is free again.
       </p>
     }
 
-    @if (canCancel()) {
+    @if (seriesFreedCount(); as freed) {
+      <!--
+        Reported from `cancelledBookingIds`, not as a bare success — the
+        endpoint returns ids rather than a count precisely so a client can say
+        exactly what it freed.
+      -->
+      <p class="cancel-done" role="status" tabindex="-1">
+        The series is cancelled. {{ freed }} upcoming
+        {{ freed === 1 ? 'occurrence was' : 'occurrences were' }} freed; any that had already
+        finished are unchanged.
+      </p>
+    } @else if (seriesFreedCount() === 0) {
+      <!--
+        A legitimate outcome rather than a failure: the rule was still Active
+        but every occurrence had already finished, so there was nothing left
+        holding time.
+      -->
+      <p class="cancel-done" role="status" tabindex="-1">
+        The series is cancelled. It had no upcoming occurrences left, so no time was freed.
+      </p>
+    }
+
+    @if (canCancel() || canCancelSeries()) {
       <section class="cancel-box">
-        @if (!confirming()) {
-          <button type="button" class="danger-button" (click)="startConfirming()">
-            {{ cancelActionLabel() }}
-          </button>
+        @if (confirmMode() === null) {
+          <div class="cancel-choices">
+            @if (canCancel()) {
+              <button type="button" class="danger-button" (click)="startConfirming('occurrence')">
+                {{ cancelActionLabel() }}
+              </button>
+            }
+            @if (canCancelSeries()) {
+              <!--
+                Offered independently of the occurrence's own button: a series
+                is cancellable while its rule is Active, which has no time
+                component, so this shows even on a past or already-cancelled
+                occurrence of a live series.
+              -->
+              <button type="button" class="danger-outline-button" (click)="startConfirming('series')">
+                Cancel the whole remaining series
+              </button>
+            }
+          </div>
         } @else {
           <!--
             An inline expanding panel rather than a dialog: this app has no
             modal primitive, and a focus-trapped one is a real component with
             real accessibility obligations that nothing else here needs.
           -->
-          <h3 class="card-title">{{ cancelActionLabel() }}?</h3>
-          <p class="confirm-lead">
-            The time is released immediately and anyone can book it. This cannot be undone.
-          </p>
+          <!--
+            tabindex="-1" so focus can be moved here when the panel opens: it is
+            the line that says which cancellation is about to happen, and a
+            keyboard user left on the trigger would hear nothing about it.
+          -->
+          <h3 class="card-title confirm-heading" tabindex="-1">{{ confirmHeading() }}</h3>
+          @if (confirmMode() === 'series') {
+            <!--
+              **What "remaining" means, said before confirming rather than
+              explained afterwards** (FR-5.3). The server cancels occurrences
+              with EndsAtUtc in the future and leaves finished ones alone, and a
+              member who learns that only from the result has already committed.
+            -->
+            <p class="confirm-lead">
+              Every occurrence still to come is cancelled and its time released. Occurrences that
+              have already finished are left as they are. This cannot be undone.
+            </p>
+          } @else {
+            <p class="confirm-lead">
+              The time is released immediately and anyone can book it. This cannot be undone.
+              @if (isRecurring()) {
+                The rest of the series is unaffected.
+              }
+            </p>
+          }
 
           <label class="reason-label" for="cancel-reason">Reason <span class="muted">(optional)</span></label>
           <textarea
@@ -243,7 +301,7 @@
               [disabled]="cancelling() || reasonError() !== null"
               (click)="confirmCancel()"
             >
-              {{ cancelling() ? 'Cancelling…' : 'Yes, cancel it' }}
+              {{ cancelling() ? 'Cancelling…' : confirmActionLabel() }}
             </button>
             <button type="button" class="secondary-button" [disabled]="cancelling()" (click)="stopConfirming()">
               Keep it

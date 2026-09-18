@@ -621,6 +621,377 @@ describe('BookingDetailComponent', () => {
     });
   });
 
+  // Step 6. FR-5.3: both cancellations reachable, neither implied by the other.
+  describe('cancelling a whole series', () => {
+    function future() {
+      const start = new Date(Date.now() + 86_400_000);
+      return {
+        startsAtUtc: start.toISOString(),
+        endsAtUtc: new Date(start.getTime() + 3_600_000).toISOString(),
+      };
+    }
+
+    function past() {
+      const start = new Date(Date.now() - 86_400_000);
+      return {
+        startsAtUtc: start.toISOString(),
+        endsAtUtc: new Date(start.getTime() + 3_600_000).toISOString(),
+      };
+    }
+
+    function buttons(): HTMLButtonElement[] {
+      return Array.from(root().querySelectorAll('.cancel-box button'));
+    }
+
+    function clickByText(fragment: string) {
+      buttons().find((b) => b.textContent?.includes(fragment))!.click();
+      fixture.detectChanges();
+    }
+
+    function seriesResponse(cancelledBookingIds: string[]) {
+      return {
+        recurrenceRuleId: 'rr1',
+        cancelledByUserId: 'u1',
+        cancelledAtUtc: localInstant(2026, 8, 20, 11, 0),
+        cancelledBookingIds,
+      };
+    }
+
+    // The ambiguous single button FR-5.3 rules out — never present, in either
+    // direction.
+    it('offers no series option on a one-off booking', () => {
+      createFixture();
+      load({ status: 'Confirmed', recurrenceRuleId: null, ...future() });
+
+      expect(buttons().map((b) => b.textContent?.trim())).toEqual(['Cancel booking']);
+    });
+
+    it('offers both, named unambiguously, on a series occurrence', () => {
+      createFixture();
+      load({ status: 'Confirmed', recurrenceRuleId: 'rr1', ...future() });
+
+      expect(buttons().map((b) => b.textContent?.trim())).toEqual([
+        'Cancel this occurrence',
+        'Cancel the whole remaining series',
+      ]);
+    });
+
+    // **The two rules are different and the client can only check one.**
+    // `RecurrenceRule.CanBeCancelled()` is `Status == Active` with no time
+    // component, so a live series stays cancellable from an occurrence that is
+    // itself past or already cancelled.
+    it('still offers the series option from a past occurrence', () => {
+      createFixture();
+      load({ status: 'Confirmed', recurrenceRuleId: 'rr1', ...past() });
+
+      expect(buttons().map((b) => b.textContent?.trim())).toEqual([
+        'Cancel the whole remaining series',
+      ]);
+    });
+
+    it('still offers the series option from an already-cancelled occurrence', () => {
+      createFixture();
+      load({
+        status: 'Cancelled',
+        recurrenceRuleId: 'rr1',
+        cancelledByUserId: 'u1',
+        cancelledAtUtc: localInstant(2026, 8, 20, 11, 0),
+        ...future(),
+      });
+
+      expect(buttons().map((b) => b.textContent?.trim())).toEqual([
+        'Cancel the whole remaining series',
+      ]);
+    });
+
+    // Stated *before* confirming, not explained afterwards — a member who
+    // learns the reach from the result has already committed.
+    it('says what "remaining" means before the member confirms', () => {
+      createFixture();
+      load({ status: 'Confirmed', recurrenceRuleId: 'rr1', ...future() });
+
+      clickByText('Cancel the whole remaining series');
+
+      const lead = root().querySelector('.confirm-lead')?.textContent ?? '';
+      expect(lead).toContain('Every occurrence still to come is cancelled');
+      expect(lead).toContain('already finished are left as they are');
+      httpMock.expectNone(`${API}/recurrence-rules/rr1/cancel`);
+    });
+
+    it('says the opposite for the single-occurrence confirmation', () => {
+      createFixture();
+      load({ status: 'Confirmed', recurrenceRuleId: 'rr1', ...future() });
+
+      clickByText('Cancel this occurrence');
+
+      expect(root().querySelector('.confirm-lead')?.textContent).toContain(
+        'The rest of the series is unaffected',
+      );
+    });
+
+    it('posts to the series endpoint with the reason', () => {
+      createFixture();
+      load({ status: 'Confirmed', recurrenceRuleId: 'rr1', ...future() });
+
+      clickByText('Cancel the whole remaining series');
+      const box = root().querySelector('.reason-input') as HTMLTextAreaElement;
+      box.value = 'Project finished';
+      box.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+      clickByText('Yes, cancel the series');
+
+      const req = httpMock.expectOne(`${API}/recurrence-rules/rr1/cancel`);
+      expect(req.request.method).toBe('POST');
+      expect(req.request.body).toEqual({ reason: 'Project finished' });
+      req.flush(seriesResponse(['b1', 'b2', 'b3']));
+    });
+
+    // Reported from the ids, not as a bare success — which is why the endpoint
+    // returns ids rather than a count.
+    it('reports how many occurrences were actually freed', () => {
+      createFixture();
+      load({ status: 'Confirmed', recurrenceRuleId: 'rr1', ...future() });
+
+      clickByText('Cancel the whole remaining series');
+      clickByText('Yes, cancel the series');
+      httpMock
+        .expectOne(`${API}/recurrence-rules/rr1/cancel`)
+        .flush(seriesResponse(['b1', 'b2', 'b3']));
+      fixture.detectChanges();
+
+      expect(text()).toContain('3 upcoming occurrences were freed');
+    });
+
+    it('uses the singular for a series with one occurrence left', () => {
+      createFixture();
+      load({ status: 'Confirmed', recurrenceRuleId: 'rr1', ...future() });
+
+      clickByText('Cancel the whole remaining series');
+      clickByText('Yes, cancel the series');
+      httpMock.expectOne(`${API}/recurrence-rules/rr1/cancel`).flush(seriesResponse(['b1']));
+      fixture.detectChanges();
+
+      expect(text()).toContain('1 upcoming occurrence was freed');
+    });
+
+    // A legitimate outcome, not a failure: the rule was still Active but every
+    // occurrence had already finished.
+    it('says plainly when the series had nothing left to free', () => {
+      createFixture();
+      load({ status: 'Confirmed', recurrenceRuleId: 'rr1', ...past() });
+
+      clickByText('Cancel the whole remaining series');
+      clickByText('Yes, cancel the series');
+      httpMock.expectOne(`${API}/recurrence-rules/rr1/cancel`).flush(seriesResponse([]));
+      fixture.detectChanges();
+
+      expect(text()).toContain('no upcoming occurrences left, so no time was freed');
+    });
+
+    it('marks this booking cancelled when the response says it was one of them', () => {
+      createFixture();
+      load({ status: 'Confirmed', userId: 'u1', recurrenceRuleId: 'rr1', ...future() });
+
+      clickByText('Cancel the whole remaining series');
+      clickByText('Yes, cancel the series');
+      httpMock.expectOne(`${API}/recurrence-rules/rr1/cancel`).flush(seriesResponse(['b1', 'b2']));
+      fixture.detectChanges();
+
+      expect(root().querySelector('.cancel-lead')?.textContent).toContain('You cancelled this booking');
+    });
+
+    // **The case that would read as a bug if it were got wrong.** A finished
+    // occurrence survives a series cancel, so crossing it out anyway would be
+    // the screen contradicting the server.
+    it('leaves this booking alone when it was not among the cancelled', () => {
+      createFixture();
+      load({ status: 'Confirmed', recurrenceRuleId: 'rr1', ...past() });
+
+      clickByText('Cancel the whole remaining series');
+      clickByText('Yes, cancel the series');
+      httpMock
+        .expectOne(`${API}/recurrence-rules/rr1/cancel`)
+        .flush(seriesResponse(['other-1', 'other-2']));
+      fixture.detectChanges();
+
+      expect(root().querySelector('.card--cancelled')).toBeNull();
+      expect(text()).toContain('2 upcoming occurrences were freed');
+    });
+
+    // The series dialect, not the booking one: `RecurrenceRule.CanBeCancelled`
+    // has no time component, so this means exactly one thing and says so.
+    it('renders a series refusal in the series vocabulary', () => {
+      createFixture();
+      load({ status: 'Confirmed', recurrenceRuleId: 'rr1', ...future() });
+
+      clickByText('Cancel the whole remaining series');
+      clickByText('Yes, cancel the series');
+      httpMock.expectOne(`${API}/recurrence-rules/rr1/cancel`).flush(
+        { status: 422, title: 'Refused.', reasonCode: 'RecurrenceRuleNotCancellable' },
+        { status: 422, statusText: 'Unprocessable Content' },
+      );
+      fixture.detectChanges();
+
+      expect(root().querySelector('.cancel-error')?.textContent).toContain(
+        'This series has already been cancelled',
+      );
+    });
+
+    it('offers no retry on an unknown series outcome either', () => {
+      createFixture();
+      load({ status: 'Confirmed', recurrenceRuleId: 'rr1', ...future() });
+
+      clickByText('Cancel the whole remaining series');
+      clickByText('Yes, cancel the series');
+      httpMock.expectOne(`${API}/recurrence-rules/rr1/cancel`).error(new ProgressEvent('error'));
+      fixture.detectChanges();
+
+      const error = root().querySelector('.cancel-error');
+      expect(error?.textContent).toContain('may or may not have gone through');
+      expect(error?.querySelector('button')?.textContent).toContain('Reload');
+    });
+
+    it('backs out of the series confirmation without sending anything', () => {
+      createFixture();
+      load({ status: 'Confirmed', recurrenceRuleId: 'rr1', ...future() });
+
+      clickByText('Cancel the whole remaining series');
+      clickByText('Keep it');
+
+      expect(buttons().map((b) => b.textContent?.trim())).toEqual([
+        'Cancel this occurrence',
+        'Cancel the whole remaining series',
+      ]);
+      httpMock.expectNone(`${API}/recurrence-rules/rr1/cancel`);
+    });
+  });
+
+  // Step 7's sweep. "Focus handled on the confirm affordance" is the item the
+  // phase plan names, and it is the one thing on this screen a mouse user never
+  // notices being wrong.
+  describe('keyboard and screen-reader handling', () => {
+    function future() {
+      const start = new Date(Date.now() + 86_400_000);
+      return {
+        startsAtUtc: start.toISOString(),
+        endsAtUtc: new Date(start.getTime() + 3_600_000).toISOString(),
+      };
+    }
+
+    function click(fragment: string) {
+      (Array.from(root().querySelectorAll('.cancel-box button')) as HTMLButtonElement[])
+        .find((b) => b.textContent?.includes(fragment))!
+        .click();
+      fixture.detectChanges();
+    }
+
+    // afterNextRender runs as a microtask after the render, so these await it.
+    async function settle() {
+      await fixture.whenStable();
+      fixture.detectChanges();
+    }
+
+    it('moves focus onto the heading that says which cancellation it is', async () => {
+      createFixture();
+      load({ status: 'Confirmed', recurrenceRuleId: 'rr1', ...future() });
+
+      click('Cancel the whole remaining series');
+      await settle();
+
+      const heading = root().querySelector('.confirm-heading');
+      expect(document.activeElement).toBe(heading);
+      expect(heading?.textContent).toContain('Cancel the whole remaining series?');
+    });
+
+    // Backing out must not drop focus on <body>, which sends a keyboard user
+    // back to the top of the page.
+    it('returns focus to the button it came from when backing out', async () => {
+      createFixture();
+      load({ status: 'Confirmed', recurrenceRuleId: 'rr1', ...future() });
+
+      click('Cancel the whole remaining series');
+      await settle();
+      click('Keep it');
+      await settle();
+
+      expect((document.activeElement as HTMLElement)?.textContent).toContain(
+        'Cancel the whole remaining series',
+      );
+    });
+
+    it('returns focus to the occurrence button for the occurrence confirmation', async () => {
+      createFixture();
+      load({ status: 'Confirmed', recurrenceRuleId: 'rr1', ...future() });
+
+      click('Cancel this occurrence');
+      await settle();
+      click('Keep it');
+      await settle();
+
+      expect((document.activeElement as HTMLElement)?.textContent).toContain(
+        'Cancel this occurrence',
+      );
+    });
+
+    // The panel the member was standing in is replaced by the outcome, so focus
+    // moves to what replaced it.
+    it('moves focus to the outcome once the cancellation succeeds', async () => {
+      createFixture();
+      load({ status: 'Confirmed', userId: 'u1', ...future() });
+
+      click('Cancel booking');
+      await settle();
+      click('Yes, cancel it');
+      httpMock.expectOne(`${API}/bookings/b1/cancel`).flush(cancelResponse({ cancelledByUserId: 'u1' }));
+      await settle();
+
+      expect(document.activeElement).toBe(root().querySelector('.cancel-done'));
+    });
+
+    it('announces the outcome and the failure to assistive technology', () => {
+      createFixture();
+      load({ status: 'Confirmed', userId: 'u1', ...future() });
+
+      click('Cancel booking');
+      click('Yes, cancel it');
+      httpMock.expectOne(`${API}/bookings/b1/cancel`).flush(cancelResponse({ cancelledByUserId: 'u1' }));
+      fixture.detectChanges();
+
+      expect(root().querySelector('.cancel-done')?.getAttribute('role')).toBe('status');
+    });
+
+    it('marks the reason box invalid and points at its message', () => {
+      createFixture();
+      load({ status: 'Confirmed', ...future() });
+
+      click('Cancel booking');
+      const box = root().querySelector('.reason-input') as HTMLTextAreaElement;
+      box.value = 'x'.repeat(301);
+      box.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      expect(box.getAttribute('aria-invalid')).toBe('true');
+      expect(box.getAttribute('aria-describedby')).toBe('cancel-reason-error');
+      expect(root().querySelector('#cancel-reason-error')).not.toBeNull();
+    });
+
+    // Status is carried by the word, not the colour — the rule the whole phase
+    // follows, checked here at the badge as well as at the chips.
+    it('names the status in text rather than only colouring it', () => {
+      createFixture();
+      load({ status: 'Pending', ...future() });
+
+      expect(root().querySelector('.badge')?.textContent?.trim()).toBe('Pending');
+    });
+
+    it('spells out NoShow rather than showing the enum name', () => {
+      createFixture();
+      load({ status: 'NoShow', ...future() });
+
+      expect(root().querySelector('.badge')?.textContent?.trim()).toBe('No-show');
+    });
+  });
+
   describe('the approval section', () => {
     it('is absent when the resource never required approval', () => {
       createFixture();

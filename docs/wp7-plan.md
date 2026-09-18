@@ -9,7 +9,7 @@ is a gap to flag rather than something to add on judgment (CLAUDE.md §11).
 
 ## Status
 
-**In progress — three of six phases done**, and the fourth re-planned on
+**In progress — four of six phases done**, and the fourth re-planned on
 2026-09-18 after its first step had shipped (Phases 4 and 5 merged; see the
 table below). Plan approved by the repo owner
 2026-09-15, before any code was written, the same process WP-3 through WP-6
@@ -23,7 +23,7 @@ into its own smaller steps once it is about to start, not all up front.
 | 2 — Availability view | **Done** 2026-09-16 (7 steps) | 199 |
 | 3 — Booking form (one-off + recurring) | **Done** 2026-09-17 (8 steps) | 462 |
 | — Recurring-booking hardening pass | **Done** 2026-09-17 (7 findings) | 556 |
-| 4 — Calendar, booking detail & cancellation (the hard problem) | **In progress** — re-planned 2026-09-18; steps 1–5 of 7 done | 724 |
+| 4 — Calendar, booking detail & cancellation (the hard problem) | **Done** 2026-09-18 (7 steps, re-planned mid-phase) | 754 |
 | ~~5 — Calendar~~ | **Absorbed into Phase 4**, 2026-09-18 — number retired, not reused | — |
 | 6 — Approval queue | Not started | — |
 | 7 — End-to-end wiring + AC sweep | Not started | — |
@@ -1993,7 +1993,7 @@ becoming the landing screen at `/calendar`** with `/my-bookings` removed.
    re-fetches its window — so the chip disappears for free. No cross-screen
    state sync was built, because none is needed.
 
-6. **The series choice.** A booking carrying a `recurrenceRuleId` offers an
+6. **The series choice — done, 2026-09-18.** A booking carrying a `recurrenceRuleId` offers an
    explicit two-way choice — *this occurrence* or *the whole remaining series* —
    never one button that is ambiguous about which it means. The copy states what
    "remaining" means (`EndsAtUtc > now`; past occurrences survive) **before** the
@@ -2002,12 +2002,111 @@ becoming the landing screen at `/calendar`** with `/my-bookings` removed.
    ids are also exactly what the calendar removes from view, which is why the
    endpoint returns them rather than a count.
 
-7. **Sweep.** DOM assertions for every state, not signal-level ones — Phase 3's
+   **Delivered.** 21 new vitest tests (745 total, 0 failed), build clean.
+
+   **The two actions are gated by different rules, and the client can only check
+   one of them.** `Booking.CanBeCancelled` is *not terminal* **and**
+   `EndsAtUtc > now`; `RecurrenceRule.CanBeCancelled()` is `Status == Active`
+   and **nothing else — no time component at all**. So a live series stays
+   cancellable from an occurrence that is itself already past or already
+   cancelled, and the two buttons appear independently rather than one implying
+   the other.
+
+   **A contract gap this exposed, handled rather than papered over.**
+   `GetBookingQueryResponse` carries `recurrenceRuleId` but not the rule's
+   status, and there is no `GET /recurrence-rules/{id}` to ask — so the client
+   *cannot know* whether a series is still Active. The screen therefore offers
+   the action optimistically and lets `422 RecurrenceRuleNotCancellable` say
+   "this series has already been cancelled". That is the same "server is the
+   authority" trade `canCancel` makes about a stale clock, for a stronger
+   reason: here there is no way to check at all. Worth a read endpoint in a
+   future backend package — the same note this plan already carries about the
+   idempotency-key question — but not a reason to hide a working action.
+
+   **Two dialects in one file, not four files.** `cancel-rejection.ts` exports
+   `describeCancelRejection` and `describeSeriesCancelRejection`: one
+   member-facing action reached from one screen, whose copy has to stay
+   parallel. They are genuinely separate maps rather than one merged one
+   because the codes they *share* — `ConcurrencyConflict`, `ValidationFailed` —
+   need different words, and "this booking" and "this series" are not
+   interchangeable to the person reading them. The series'
+   `RecurrenceRuleNotCancellable` copy says plainly that the series is already
+   cancelled, where the booking's has to hedge between its rule's two halves.
+
+   **This booking is only crossed out if the response says it was.** A series
+   cancel reaches occurrences with `EndsAtUtc > now` and leaves finished ones
+   alone, so a member looking at a completed occurrence when they cancel the
+   series watches the rest go while this one stays — correct, and it would read
+   as a bug if the screen crossed it out anyway.
+
+   **Verified end to end against the running API** with a real four-occurrence
+   weekly series:
+   - cancelling **one** occurrence answered 200 and left the series alone;
+   - cancelling the **series** then answered 200 with **3 of 4** ids — the
+     already-cancelled occurrence is **excluded** from `cancelledBookingIds`,
+     so the reported count is genuinely what this action freed rather than the
+     series' length. That is exactly what the panel claims, and what the "only
+     mark this booking cancelled if it is in the list" merge depends on;
+   - a second series cancel answered **422 `RecurrenceRuleNotCancellable`**.
+   Every occurrence created for the probe is cancelled; the owner's live
+   bookings were not touched.
+
+7. **Sweep — done, 2026-09-18.** DOM assertions for every state, not signal-level ones — Phase 3's
    own lesson, and both of its bugs were things a member could see.
    Accessibility: status conveyed by more than colour (which the `Pending`
    distinction depends on), focus handled on the confirm affordance, 400px
    width. Then the live walkthrough in the Demo line below, and the
    roadmap/CLAUDE.md updates at close.
+
+   **Delivered.** 9 new vitest tests (754 total, 0 failed), build clean.
+
+   **Focus now follows the confirm disclosure in both directions**, which is the
+   accessibility item this step names and the one thing on that screen a mouse
+   user never notices being wrong. Opening a confirmation moves focus onto the
+   heading — the line that says *which* cancellation is about to happen, which a
+   keyboard user left standing on the trigger would never hear. Backing out
+   returns focus to the button they came from rather than dropping it on
+   `<body>`, and a successful cancellation moves it to the outcome that replaced
+   the panel. All three go through `afterNextRender`, since the target does not
+   exist until the template has reacted to the signal.
+
+   **The overflow control was the one genuinely unusable thing left.** "+2 more"
+   told a screen-reader user neither what it belonged to nor that it was a
+   disclosure — and a month can carry 35 of them. It now has `aria-expanded` and
+   a spelled-out label ("Show 8 more on Thursday, September 24").
+
+   **400px**: the booking detail's label column was the only fixed measure on
+   the screen, so rows stack rather than wrapping mid-value, and the cancel
+   actions go full width. The calendar keeps its seven-column shape and scrolls
+   sideways inside its own box — the exception CLAUDE.md's responsive rule
+   already allows for grids.
+
+   **The full flow was walked against the running API**: browse → resource →
+   availability → book (`201 Confirmed`) → the calendar's own bounded window
+   request (the booking drawn) → booking detail → cancel (200) → the same window
+   again, now drawing **zero** chips. That last step is the direct evidence for
+   step 5's claim that the chip disappears without any cross-screen state sync:
+   returning to the calendar is an ordinary navigation that re-fetches.
+
+   **The browser click-through is still not done and is not claimed.** No
+   automation exists in this environment, in this phase or any before it. What
+   is verified is every request/response pair plus the rendered DOM in vitest.
+   The owner's own clicking found five bugs across this package that the suite
+   did not, so this remains a real gap rather than a formality — see
+   `docs/STATE-OF-THE-APP.md` §2.
+
+#### Phase 4 closed — 2026-09-18
+
+All seven steps done. **745 → 754 vitest tests**, production build clean.
+Delivered: the calendar (month and week, bounded fetch, status-aware chips,
+overflow) as the app's landing screen; the booking detail screen; and both
+cancellations with their reason-code vocabularies. Three of the phase's four
+acceptance criteria are met or met-pending-a-visual-check; the fourth (an
+approver actioning requests) is Phase 6's.
+
+A current snapshot of the whole application — what works, what is verified,
+what is deliberately absent and what is left — is in
+[`docs/STATE-OF-THE-APP.md`](STATE-OF-THE-APP.md).
 
 #### Flagged before starting
 

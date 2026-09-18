@@ -87,3 +87,57 @@ const CANCEL_DIALECT: RejectionDialect = {
 export function describeCancelRejection(error: unknown): BookingRejection {
   return describeRejection(error, CANCEL_DIALECT);
 }
+
+// ---------------------------------------------------------------------------
+// Cancelling a whole series (FR-5.3)
+// ---------------------------------------------------------------------------
+
+// `POST /recurrence-rules/{id}/cancel`'s own vocabulary. A second dialect in
+// this same file rather than a fourth file, because the two are one
+// member-facing action reached from one screen — their copy has to stay
+// parallel, and splitting them across files is how it would quietly stop being.
+//
+// They are genuinely separate dialects and not one merged map because the codes
+// they share — `ConcurrencyConflict`, `ValidationFailed` — need different
+// words: "this booking" and "this series" are not interchangeable to the person
+// reading them.
+const SERIES_CANCEL_COPY: Record<string, RejectionCopy> = {
+  // `RecurrenceRule.CanBeCancelled()` is `Status == Active` and nothing else —
+  // **no time component at all**, unlike the single-booking rule. So this means
+  // exactly one thing: the series has already been cancelled. Worth stating
+  // plainly rather than hedging the way the per-booking message has to.
+  RecurrenceRuleNotCancellable: {
+    message: 'This series has already been cancelled. Reload to see where it stands.',
+  },
+
+  RecurrenceRuleNotFound: {
+    message: "This series is no longer available to you, so it couldn't be cancelled.",
+  },
+
+  ConcurrencyConflict: {
+    message:
+      'Someone else changed this series at the same moment. Reload to see its current state.',
+  },
+};
+
+const SERIES_CANCEL_DIALECT: RejectionDialect = {
+  copy: SERIES_CANCEL_COPY,
+  backendFields: CANCEL_BACKEND_FIELDS,
+
+  unmappedField: {
+    message: "This series couldn't be cancelled — the request wasn't valid.",
+    recheckAvailability: false,
+  },
+
+  genericMessage: 'This series could not be cancelled.',
+
+  // Cancelling a series is no more repeatable than cancelling one booking: it
+  // writes an actor and a time onto every occurrence it touches.
+  unknownOutcomeMessage:
+    'Your cancellation may or may not have gone through — we could not confirm it. Reload this '
+    + 'booking to see where the series stands rather than trying again.',
+};
+
+export function describeSeriesCancelRejection(error: unknown): BookingRejection {
+  return describeRejection(error, SERIES_CANCEL_DIALECT);
+}

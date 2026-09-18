@@ -669,6 +669,26 @@ describe('CalendarComponent', () => {
       expect(cellOf().querySelectorAll('.chip')).toHaveLength(2);
     });
 
+    // Step 7's sweep. "+2 more" alone tells a screen-reader user neither what
+    // it belongs to nor that it is a disclosure — and there can be 35 of them
+    // on one month, which is exactly when an unlabelled control stops being
+    // navigable.
+    it('labels the overflow control with its day and its state', () => {
+      createFixture({ view: 'month', date: '2026-09-18' });
+      expectWindowRequest().flush(page(manyOn([2026, 8, 24], 10)));
+
+      const more = root().querySelector('.more-button') as HTMLButtonElement;
+      expect(more.getAttribute('aria-expanded')).toBe('false');
+      expect(more.getAttribute('aria-label')).toBe('Show 8 more on Thursday, September 24');
+
+      more.click();
+      fixture.detectChanges();
+
+      const less = root().querySelector('.more-button') as HTMLButtonElement;
+      expect(less.getAttribute('aria-expanded')).toBe('true');
+      expect(less.getAttribute('aria-label')).toBe('Show fewer on Thursday, September 24');
+    });
+
     it('collapses expanded days when the window changes', () => {
       createFixture({ view: 'month', date: '2026-09-18' });
       expectWindowRequest().flush(page(manyOn([2026, 8, 24], 10)));

@@ -324,3 +324,68 @@
   cursor: default;
   opacity: 0.6;
 }
+
+.cancel-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+// The series cancel reaches further than the occurrence one, so it is the
+// quieter of the two buttons rather than the louder: the destructive colour
+// without the filled weight, so the narrower action stays the obvious default.
+.danger-outline-button {
+  align-self: flex-start;
+  background: #ffffff;
+  border: 1px solid #d63c3c;
+  border-radius: 10px;
+  color: #d63c3c;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  padding: 9px 16px;
+
+  &:hover:not(:disabled) {
+    background: #fdf4f4;
+  }
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+}
+
+// Programmatic focus targets: they are not tab stops, but when focus is moved
+// here deliberately it has to be visible, or a keyboard user is moved somewhere
+// with no indication of where.
+.confirm-heading:focus-visible,
+.cancel-done:focus-visible {
+  outline: 2px solid #6b1835;
+  outline-offset: 3px;
+}
+
+// 400px. The label column is the only fixed measure on this screen, and at
+// phone width it leaves too little for the value beside it — so the rows stack
+// instead of wrapping awkwardly mid-value.
+@media (max-width: 460px) {
+  .row {
+    flex-direction: column;
+    gap: 2px;
+
+    dt {
+      width: auto;
+    }
+  }
+
+  .cancel-choices,
+  .confirm-actions,
+  .detail-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .danger-button,
+  .danger-outline-button {
+    align-self: stretch;
+  }
+}

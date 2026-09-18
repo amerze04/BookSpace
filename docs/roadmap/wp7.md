@@ -904,6 +904,85 @@ calendar is an ordinary navigation that recreates the component and re-fetches
 its window — so the chip disappears for free, and no cross-screen state sync was
 built because none is needed.
 
+### Step 6 — the series choice (2026-09-18)
+
+FR-5.3's two-way choice on the detail screen: *this occurrence* or *the whole
+remaining series*, never one button ambiguous about which it means. 21 new
+vitest tests (745 total, 0 failed), build clean.
+
+**The two actions are gated by different rules, and the client can only check
+one.** `Booking.CanBeCancelled` is not terminal **and** `EndsAtUtc > now`;
+`RecurrenceRule.CanBeCancelled()` is `Status == Active` and **nothing else — no
+time component**. A live series therefore stays cancellable from an occurrence
+that is itself past or already cancelled, so the two buttons appear
+independently rather than one implying the other. That asymmetry is easy to miss
+from the API shape alone and was read off the domain entities before anything
+was built.
+
+**A contract gap this exposed, handled rather than papered over.**
+`GetBookingQueryResponse` carries `recurrenceRuleId` but not the rule's status,
+and there is no `GET /recurrence-rules/{id}` to ask — so the client cannot know
+whether a series is still Active. The screen offers the action optimistically
+and lets `422 RecurrenceRuleNotCancellable` say the series is already cancelled.
+Same "server is the authority" trade `canCancel` makes about a stale clock, for
+a stronger reason: here there is no way to check at all. Worth a read endpoint
+in a future backend package, not a reason to hide a working action.
+
+**Two dialects in one file.** `cancel-rejection.ts` exports both
+`describeCancelRejection` and `describeSeriesCancelRejection` — one
+member-facing action from one screen, whose copy must stay parallel. Separate
+maps rather than one merged one because the codes they *share*
+(`ConcurrencyConflict`, `ValidationFailed`) need different words: "this booking"
+and "this series" are not interchangeable to the person reading them.
+
+**This booking is only crossed out if the response says it was.** A series
+cancel reaches occurrences with `EndsAtUtc > now` and leaves finished ones
+alone, so a member on a completed occurrence watches the rest go while this one
+stays — correct, and it would read as a bug if the screen crossed it out anyway.
+
+**Verified end to end with a real four-occurrence weekly series.** Cancelling
+one occurrence answered 200 and left the series alone. Cancelling the series
+then answered 200 with **3 of 4** ids — **the already-cancelled occurrence is
+excluded from `cancelledBookingIds`**, so the reported count is genuinely what
+this action freed rather than the series' length. That is both what the panel
+claims and what the merge depends on, and it was worth proving rather than
+assuming. A second series cancel answered `422 RecurrenceRuleNotCancellable`.
+
+### Step 7 — the sweep, and Phase 4 closed (2026-09-18)
+
+9 new vitest tests (754 total, 0 failed), build clean.
+
+**Focus now follows the confirm disclosure in both directions** — the
+accessibility item the step names, and the one thing on that screen a mouse user
+never notices being wrong. Opening a confirmation moves focus onto the heading
+that says *which* cancellation is about to happen; backing out returns it to the
+button it came from rather than dropping it on `<body>`; a success moves it to
+the outcome that replaced the panel. All three via `afterNextRender`, since the
+target does not exist until the template has reacted to the signal.
+
+**The overflow control was the last genuinely unusable thing.** "+2 more" said
+neither what it belonged to nor that it was a disclosure, and a month can carry
+35 of them. Now `aria-expanded` plus a spelled-out label.
+
+**400px**: the booking detail's label column was the only fixed measure on the
+screen, so rows stack rather than wrapping mid-value and the cancel actions go
+full width.
+
+**The full flow was walked against the running API** — browse → resource →
+availability → book (`201 Confirmed`) → the calendar's bounded window request
+(booking drawn) → detail → cancel (200) → the same window again, drawing
+**zero** chips. That last step is the direct evidence for step 5's claim that
+the chip disappears with no cross-screen state sync.
+
+**The browser click-through remains not done and is not claimed**, in this phase
+or any before it — no automation exists here. Five bugs in this package were
+found by the owner clicking and none by the suite, so it stays a real gap.
+
+**Phase 4 is closed.** Seven steps, re-planned mid-phase after step 1 shipped.
+A full current snapshot of the application now lives in
+[`docs/STATE-OF-THE-APP.md`](../STATE-OF-THE-APP.md) — what works, what is
+verified, what is deliberately absent, and what is left.
+
 ### Frontend restructure — 2026-09-18
 
 Not a step: the owner paused between steps 4 and 5 to reorganise the frontend.

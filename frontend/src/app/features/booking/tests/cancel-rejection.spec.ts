@@ -1,5 +1,8 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { describeCancelRejection } from '../rejection/cancel-rejection';
+import {
+  describeCancelRejection,
+  describeSeriesCancelRejection,
+} from '../rejection/cancel-rejection';
 
 // `isProblemDetails` requires `title` as well as `reasonCode`, so a body
 // missing it falls through to the generic message — which is what a real
@@ -83,5 +86,49 @@ describe('describeCancelRejection', () => {
     const rejection = describeCancelRejection(problem(422, 'SomethingNewEntirely'));
 
     expect(rejection.formMessage).toBe('This booking could not be cancelled.');
+  });
+});
+
+describe('describeSeriesCancelRejection', () => {
+  // **`RecurrenceRule.CanBeCancelled()` is `Status == Active` and nothing
+  // else** — no time component, unlike the per-booking rule. So this code means
+  // exactly one thing and the copy says it, where the booking message has to
+  // hedge between "already ended" and "already cancelled".
+  it('states plainly that the series is already cancelled', () => {
+    const rejection = describeSeriesCancelRejection(problem(422, 'RecurrenceRuleNotCancellable'));
+
+    expect(rejection.formMessage).toContain('already been cancelled');
+    expect(rejection.formMessage).not.toContain('already ended');
+  });
+
+  it('explains a 404 in series terms', () => {
+    const rejection = describeSeriesCancelRejection(problem(404, 'RecurrenceRuleNotFound'));
+
+    expect(rejection.formMessage).toContain('This series is no longer available');
+  });
+
+  // The reason the two dialects are separate rather than one merged map: they
+  // share this code and it has to read differently.
+  it('says "series" where the booking dialect says "booking", on a shared code', () => {
+    const series = describeSeriesCancelRejection(problem(409, 'ConcurrencyConflict'));
+    const booking = describeCancelRejection(problem(409, 'ConcurrencyConflict'));
+
+    expect(series.formMessage).toContain('this series');
+    expect(booking.formMessage).toContain('this booking');
+  });
+
+  it('puts an over-long reason on the same reason control', () => {
+    const rejection = describeSeriesCancelRejection(
+      problem(400, 'ValidationFailed', { Reason: ['Too long.'] }),
+    );
+
+    expect(rejection.fieldMessages.reason).toBe('Too long.');
+  });
+
+  it.each([0, 500])('reports status %i as an unknown outcome, never a retry', (status) => {
+    const rejection = describeSeriesCancelRejection(problem(status));
+
+    expect(rejection.outcomeUnknown).toBe(true);
+    expect(rejection.formMessage).toContain('rather than trying again');
   });
 });

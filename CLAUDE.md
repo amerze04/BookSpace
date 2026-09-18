@@ -19,6 +19,10 @@ Authoritative specs live in `/docs`:
   work packages over time; each new one lands in `/docs` alongside this one
   and gets its own subsection in §12 below.
 - `bookspace-schema-v2.sql` — the database, source of truth
+- [`STATE-OF-THE-APP.md`](docs/STATE-OF-THE-APP.md) — **a current snapshot of
+  what works, what is verified, what is deliberately absent, and what is left.**
+  Start there when picking this up cold or preparing a demo; updated at the
+  close of each phase.
 - `decisions/000N-*.md` — every open decision from PRD §13, plus ones raised
   during schema/ERD review, resolved and written up individually with the
   reasoning behind each. See §9 below for the index. Check here before
@@ -661,23 +665,30 @@ split into its own reviewable steps. Full narrative:
       (Phase 2).
 - [x] Booking form for one-off and recurring bookings, with clear
       validation feedback. **Done 2026-09-17** (Phase 3).
-- [ ] Calendar view rendering bookings, including recurring series, without
-      choking on volume. **Hard problem. In progress as Phase 4** since the
-      2026-09-18 re-plan — step 1 (services) done, the calendar itself next.
-- [ ] Approval queue UI for approvers.
-- [ ] Cancellation and blackout handling in the UI. **Phase 4's steps 4–6**,
-      alongside the calendar rather than in a screen of its own.
-- [ ] Wire the full flow end-to-end against the real API.
+- [x] Calendar view rendering bookings, including recurring series, without
+      choking on volume. **Done 2026-09-18** (Phase 4) — the hard problem.
+- [ ] Approval queue UI for approvers. **Phase 6, the last unbuilt screen.**
+- [x] Cancellation and blackout handling in the UI. **Done 2026-09-18**
+      (Phase 4) — occurrence and whole-series cancellation, and the three
+      cancellation readings including a blackout's null actor.
+- [ ] Wire the full flow end-to-end against the real API. **Phase 7.** The
+      whole path is verified at the API level; the browser click-through is
+      what remains.
 
-Acceptance criteria (all four still open):
+Acceptance criteria (two met, two open):
 - [ ] A member completes browse → book → confirm entirely through the UI.
-      Every screen on that path exists as of Phase 3 and every request it
-      makes is verified against the running API — what is missing is the
+      Every screen on that path exists, and as of 2026-09-18 the **whole path
+      is verified end to end against the running API** (browse → availability
+      → book → calendar → detail → cancel → calendar). What is missing is the
       click-through itself, which no tool here can perform. Phase 7's sweep
       is where it gets ticked.
-- [ ] Recurring bookings render correctly in the calendar.
-- [ ] The calendar stays responsive under realistic data volume.
-- [ ] An approver can action pending requests from the UI.
+- [x] Recurring bookings render correctly in the calendar. **Done 2026-09-18** —
+      occurrences carry a recurrence marker; verified against a real series.
+- [x] The calendar stays responsive under realistic data volume. **Done
+      2026-09-18**, and measured rather than asserted: DOM is bounded by the
+      chip cap, not by the data — 50 → 1000 bookings holds at 56 chips. A
+      browser-level measurement has not been taken (jsdom figures only).
+- [ ] An approver can action pending requests from the UI. **Phase 6.**
 
 Notes: Phase 1 deliberately does not render the admin resource CRUD actions
 the provided designs show — flagged rather than silently dropped. No
@@ -766,7 +777,7 @@ before touching this area:
   (`MaxPageSize` is 100 and rejects anything larger rather than clamping); a
   window is never "everything, filtered in the browser", and **there is no
   client-side recurrence expansion anywhere in this feature** — decision `0007`
-  already made every occurrence its own row. 724 vitest tests.
+  already made every occurrence its own row. 754 vitest tests.
 - **Step 4 is done (2026-09-18)**: `features/booking/detail/` on
   `/bookings/:id`, reached by clicking a chip. It **must keep rendering a
   cancelled booking correctly** even though the calendar no longer draws one —
@@ -774,6 +785,19 @@ before touching this area:
   message all still resolve there, and that is when someone most wants to know
   what happened. The three cancellation readings (self / administrator / null
   actor = blackout) are the point of the screen, not decoration.
+- **Steps 5–6 (cancelling) are done (2026-09-18).** Two facts worth holding on
+  to before touching that area: the occurrence rule and the series rule are
+  **different** — `Booking.CanBeCancelled` is not-terminal **and**
+  `EndsAtUtc > now`, while `RecurrenceRule.CanBeCancelled()` is `Status ==
+  Active` with **no time component** — so a live series stays cancellable from a
+  past or already-cancelled occurrence. And **the client cannot check the second
+  rule at all**: no response carries the rule's status and there is no
+  `GET /recurrence-rules/{id}`, so the action is offered optimistically and the
+  422 explains it. A read endpoint would close that; it belongs to a future
+  backend package alongside `POST /bookings`' missing idempotency key.
+- **Neither cancel is idempotent, so nothing on either path ever offers a
+  retry** — a repeat rewrites who called the meeting off. The only action on
+  failure is "Reload this booking".
 - **The week view makes two assumptions that are easy to undo by accident.**
   Overlapping bookings are packed into side-by-side columns (`layOutDay`) rather
   than every chip spanning the width — a member with two bookings at once is

@@ -132,12 +132,29 @@
                   }
                 </a>
               }
+              <!--
+                `aria-expanded` and a spelled-out label: "+2 more" alone tells a
+                screen-reader user neither what it belongs to nor that it is a
+                disclosure, and there are up to 35 of these on a month.
+              -->
               @if (chips.hiddenCount > 0) {
-                <button type="button" class="more-button" (click)="toggleDay(cell.date)">
+                <button
+                  type="button"
+                  class="more-button"
+                  aria-expanded="false"
+                  [attr.aria-label]="'Show ' + chips.hiddenCount + ' more on ' + fullDateLabel(cell.date)"
+                  (click)="toggleDay(cell.date)"
+                >
                   +{{ chips.hiddenCount }} more
                 </button>
               } @else if (isExpanded(cell.date)) {
-                <button type="button" class="more-button" (click)="toggleDay(cell.date)">
+                <button
+                  type="button"
+                  class="more-button"
+                  aria-expanded="true"
+                  [attr.aria-label]="'Show fewer on ' + fullDateLabel(cell.date)"
+                  (click)="toggleDay(cell.date)"
+                >
                   Show less
                 </button>
               }

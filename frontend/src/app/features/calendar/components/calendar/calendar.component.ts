@@ -326,6 +326,18 @@ export class CalendarComponent {
     return formatMinutesOfDay(hour * 60);
   }
 
+  // "Thursday, September 24" — spelled out for the overflow button's own label,
+  // where "+2 more" on its own says neither what it belongs to nor that it is a
+  // disclosure.
+  protected fullDateLabel(date: LocalDateString): string {
+    return new Intl.DateTimeFormat('en-US', {
+      weekday: 'long',
+      month: 'long',
+      day: 'numeric',
+      timeZone: 'UTC',
+    }).format(new Date(`${date}T00:00:00Z`));
+  }
+
   // Positioned through the same function the chips use, rather than by a grid
   // row of its own — so a label and a chip starting at that hour land on
   // exactly the same line by construction, not by two calculations agreeing.

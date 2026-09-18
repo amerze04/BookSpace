@@ -1,4 +1,13 @@
-import { Component, DestroyRef, computed, inject, signal } from '@angular/core';
+import {
+  Component,
+  DestroyRef,
+  ElementRef,
+  Injector,
+  afterNextRender,
+  computed,
+  inject,
+  signal,
+} from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { HttpErrorResponse } from '@angular/common/http';
 import { ActivatedRoute, RouterLink } from '@angular/router';
@@ -15,14 +24,21 @@ import {
   spanLabels,
 } from '../../../availability/date/local-date';
 import { BookingsService } from '../../services/bookings.service';
+import { RecurrenceRulesService } from '../../services/recurrence-rules.service';
 import {
   BookingDetail,
   BookingStatus,
-  CancelBookingResponse,
   MAX_CANCELLATION_REASON_LENGTH,
 } from '../../models/booking.models';
 import { BookingRejection } from '../../rejection/booking-rejection';
-import { describeCancelRejection } from '../../rejection/cancel-rejection';
+import {
+  describeCancelRejection,
+  describeSeriesCancelRejection,
+} from '../../rejection/cancel-rejection';
+
+// Which of the two cancellations a confirmation is about. FR-5.3 requires both
+// to be reachable and neither to be implied by the other.
+type CancelMode = 'occurrence' | 'series';
 
 type BookingLoadResult =
   | { kind: 'success'; booking: BookingDetail }
@@ -60,9 +76,12 @@ function spanOf(booking: BookingDetail): { startUtc: string; endUtc: string } {
 export class BookingDetailComponent {
   private readonly route = inject(ActivatedRoute);
   private readonly bookingsService = inject(BookingsService);
+  private readonly recurrenceRulesService = inject(RecurrenceRulesService);
   private readonly resourcesService = inject(ResourcesService);
   private readonly breadcrumbService = inject(BreadcrumbService);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly injector = inject(Injector);
+  private readonly host = inject(ElementRef<HTMLElement>);
 
   protected readonly booking = signal<BookingDetail | null>(null);
   protected readonly loading = signal(true);
@@ -159,11 +178,19 @@ export class BookingDetailComponent {
 
   // ---- Step 5: cancelling ----
 
-  protected readonly confirming = signal(false);
+  // Which confirmation is open, if any. A mode rather than a boolean because
+  // the two cancellations are genuinely different acts with different reach,
+  // and the panel has to say which one it is about to do.
+  protected readonly confirmMode = signal<CancelMode | null>(null);
   protected readonly cancelling = signal(false);
   protected readonly reason = signal('');
   protected readonly cancelRejection = signal<BookingRejection | null>(null);
   protected readonly cancelled = signal(false);
+
+  // How many occurrences the series cancel actually freed — from
+  // `cancelledBookingIds`, which the endpoint returns as ids rather than a count
+  // precisely so a client knows *which*. Null until a series cancel succeeds.
+  protected readonly seriesFreedCount = signal<number | null>(null);
 
   // `Booking.CanBeCancelled` mirrored: not terminal **and** not already ended.
   // The second half is on `EndsAtUtc` rather than `StartsAtUtc` on purpose — a
@@ -189,10 +216,34 @@ export class BookingDetailComponent {
 
   // A series occurrence's button says **which** it cancels, rather than being a
   // single ambiguous "Cancel booking" on a booking that belongs to eleven
-  // others. Step 6 adds the second option beside it; the wording is already
-  // unambiguous on its own so nothing misleading ships in the meantime.
+  // others (FR-5.3).
   protected readonly cancelActionLabel = computed(() =>
     this.isRecurring() ? 'Cancel this occurrence' : 'Cancel booking',
+  );
+
+  // **Offered on a different rule from the occurrence's, and the client cannot
+  // check it.** `RecurrenceRule.CanBeCancelled()` is `Status == Active` and
+  // nothing else — no time component — so a series with future occurrences is
+  // cancellable even when *this* occurrence is in the past or already cancelled.
+  // The two actions therefore appear independently.
+  //
+  // `GetBookingQueryResponse` carries `recurrenceRuleId` but not the rule's
+  // status, and there is no `GET /recurrence-rules/{id}` to ask (wp7-plan.md
+  // notes the same gap for the idempotency-key question). So this offers the
+  // action optimistically and lets `422 RecurrenceRuleNotCancellable` say the
+  // series is already cancelled — the same "server is the authority" trade
+  // `canCancel` makes about a stale clock, for a stronger reason: here the
+  // client has no way to know at all.
+  protected readonly canCancelSeries = computed(
+    () => this.isRecurring() && this.seriesFreedCount() === null,
+  );
+
+  protected readonly confirmHeading = computed(() =>
+    this.confirmMode() === 'series' ? 'Cancel the whole remaining series?' : `${this.cancelActionLabel()}?`,
+  );
+
+  protected readonly confirmActionLabel = computed(() =>
+    this.confirmMode() === 'series' ? 'Yes, cancel the series' : 'Yes, cancel it',
   );
 
   // Mirrors `Bookings.CancellationReason NVARCHAR(300)` so the box bounds the
@@ -249,15 +300,34 @@ export class BookingDetailComponent {
     this.retry$.next();
   }
 
-  protected startConfirming(): void {
-    this.confirming.set(true);
+  // **Focus follows the disclosure, in both directions.** Opening the panel
+  // moves focus onto its heading — which is what says *which* cancellation is
+  // about to happen, and a keyboard or screen-reader user who is left on the
+  // trigger hears nothing about the panel that just appeared. Backing out
+  // returns focus to the button they came from, rather than dropping it on
+  // `<body>` and sending them back to the top of the page.
+  protected startConfirming(mode: CancelMode): void {
+    this.confirmMode.set(mode);
     this.cancelRejection.set(null);
+    this.focusAfterRender('.confirm-heading');
   }
 
   protected stopConfirming(): void {
-    this.confirming.set(false);
+    const mode = this.confirmMode();
+    this.confirmMode.set(null);
     this.reason.set('');
     this.cancelRejection.set(null);
+    this.focusAfterRender(mode === 'series' ? '.danger-outline-button' : '.danger-button');
+  }
+
+  // `afterNextRender`, not an immediate call: the element being focused does
+  // not exist until the template has reacted to the signal that was just
+  // written. Same reasoning the availability screen's scroll-into-view uses.
+  private focusAfterRender(selector: string): void {
+    afterNextRender(
+      () => (this.host.nativeElement.querySelector(selector) as HTMLElement | null)?.focus(),
+      { injector: this.injector },
+    );
   }
 
   protected onReasonInput(event: Event): void {
@@ -282,24 +352,80 @@ export class BookingDetailComponent {
       return;
     }
 
+    const mode = this.confirmMode();
+    if (mode === null) {
+      return;
+    }
+
     this.cancelling.set(true);
     this.cancelRejection.set(null);
 
-    const reason = this.reason().trim();
+    const raw = this.reason().trim();
+    const reason = raw === '' ? null : raw;
+
+    if (mode === 'series') {
+      this.cancelSeries(booking, reason);
+      return;
+    }
 
     this.bookingsService
-      .cancel(booking.id, { reason: reason === '' ? null : reason })
+      .cancel(booking.id, { reason })
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (response) => {
           this.cancelling.set(false);
-          this.confirming.set(false);
+          this.confirmMode.set(null);
           this.cancelled.set(true);
           this.applyCancellation(response);
+          // The panel the member was standing in has just been replaced by the
+          // outcome, so focus moves to what replaced it rather than falling to
+          // <body> and sending them back to the top of the page.
+          this.focusAfterRender('.cancel-done');
         },
         error: (error: unknown) => {
           this.cancelling.set(false);
           this.cancelRejection.set(describeCancelRejection(error));
+        },
+      });
+  }
+
+  private cancelSeries(booking: BookingDetail, reason: string | null): void {
+    // Guarded by the template, but re-checked here for anything reaching this
+    // programmatically — the same discipline `confirmCancel` applies.
+    if (booking.recurrenceRuleId === null) {
+      this.cancelling.set(false);
+      return;
+    }
+
+    this.recurrenceRulesService
+      .cancel(booking.recurrenceRuleId, { reason })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (response) => {
+          this.cancelling.set(false);
+          this.confirmMode.set(null);
+          this.seriesFreedCount.set(response.cancelledBookingIds.length);
+          this.focusAfterRender('.cancel-done');
+
+          // **This booking is only cancelled if the response says it was.** The
+          // series cancel reaches occurrences with `EndsAtUtc > now` and leaves
+          // past ones alone, so a member looking at a finished occurrence when
+          // they cancel the series watches the rest go while this one stays —
+          // which is correct, and would read as a bug if the screen crossed it
+          // out anyway.
+          if (response.cancelledBookingIds.includes(booking.id)) {
+            this.cancelled.set(true);
+            this.applyCancellation({
+              status: 'Cancelled',
+              cancelledByUserId: response.cancelledByUserId,
+              cancelledAtUtc: response.cancelledAtUtc,
+              cancellationReason: reason,
+            });
+          }
+        },
+        error: (error: unknown) => {
+          this.cancelling.set(false);
+          this.cancelRejection.set(describeSeriesCancelRejection(error));
         },
       });
   }
@@ -314,7 +440,12 @@ export class BookingDetailComponent {
   // `Withdrawn` whenever its booking is cancelled — verified against the live
   // API, not assumed — so that transition is mirrored here, the same way
   // `canCancel` mirrors `CanBeCancelled`.
-  private applyCancellation(response: CancelBookingResponse): void {
+  private applyCancellation(response: {
+    status: BookingStatus;
+    cancelledByUserId: string;
+    cancelledAtUtc: string;
+    cancellationReason: string | null;
+  }): void {
     const booking = this.booking();
     if (!booking) {
       return;
