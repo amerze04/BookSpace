@@ -850,3 +850,45 @@ ValidationFailed** rather than 404, because the validator treats `Guid.Empty` as
 a malformed request rather than a lookup that missed — so it lands in the generic
 error state with a retry that cannot help. Reachable only by hand-typing that
 exact id, so it is recorded rather than given a special case.
+
+### Frontend restructure — 2026-09-18
+
+Not a step: the owner paused between steps 4 and 5 to reorganise the frontend.
+98 files moved, no behaviour changed, 695 tests still passing and the build
+clean. The new shape is documented in CLAUDE.md §3 and wp7-plan.md §6;
+**paths quoted anywhere above this point in this file predate it.**
+
+Every feature is now split by what a file *is* — `components/<component>/` (one
+folder per component, its three files and nothing else), `services/`, `models/`,
+helper folders named for what they do (`grid/`, `date/`, `arrival/`,
+`rejection/`, `recurrence/`), and `tests/`. The absolute rule is that **no
+`.spec.ts` sits outside a `tests/` folder**.
+
+**The moves and the import rewrites were computed, not hand-edited.** A script
+built the old→new map, then for every `.ts` file resolved each relative
+specifier against its *old* directory, mapped the target through the move map,
+and re-relativised it against the *new* one — so a file that moved and a file
+that merely imported something that moved were both corrected by the same rule.
+Hand-editing ~100 import paths across two passes is exactly the kind of work
+that produces one silent mistake, and `git mv` kept the history. The only
+verification that matters here is that the build resolves every module and the
+whole suite still passes, which both did on the first run of each pass.
+
+Two things worth knowing afterwards:
+
+- **Vitest needed no config change** — it globs `src/**/*.spec.ts`, so spec
+  location was never part of the contract. That also means the tests-folder rule
+  is a convention this project enforces by review rather than something the
+  build will catch.
+- **`templateUrl`/`styleUrl` never needed touching**, because each component's
+  three files moved together. That is the practical argument for the per-
+  component folder beyond tidiness.
+
+Left alone deliberately: `core/` and `shared/` keep their internal shape (they
+already group by concern) and gained only tests folders, so
+`core/notifications/` is the one place a component still sits beside a service.
+And the cross-feature imports this does *not* fix — `local-date.ts` living in
+`availability/date/` while booking and calendar both use it, `calendar-range.ts`
+imported by the booking screen, `booking-arrival.ts` imported by the
+availability screen — are pre-existing and deliberate ("the consumer owns the
+contract"), not artefacts of the move.

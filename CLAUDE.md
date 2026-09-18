@@ -64,6 +64,42 @@ Dependencies point inward. `Domain` references nothing. `Api` references
 `Application` and `Infrastructure`. Do not reference `Infrastructure` from
 `Domain` or `Application`.
 
+### Frontend folder layout
+
+Restructured 2026-09-18 on the owner's instruction. Every feature is split by
+**what a file is**, not by which screen happens to use it:
+
+```
+frontend/src/app/
+  tests/                       app-level specs
+  core/                        auth/ · http/ · notifications/, each + tests/
+  features/<feature>/
+    components/<component>/    one folder per component: its .ts/.html/.scss
+                               and nothing else
+    services/                  thin API services
+    models/                    wire types mirroring the backend DTOs
+    <purpose>/                 helpers grouped by what they do — e.g.
+                               availability/grid, availability/date,
+                               booking/arrival, booking/rejection,
+                               booking/recurrence, calendar/grid
+    tests/                     every .spec.ts for that feature
+  layout/                      components/shell/ · breadcrumb.service.ts · tests/
+  shared/                      brand-mark/ · resource-type/
+```
+
+Two rules, and the second is not negotiable:
+
+- **A component gets its own folder under `components/`**, named without the
+  `.component` suffix, holding only its three files. They travel together, so
+  `templateUrl`/`styleUrl` stay `./<name>.component.html`.
+- **No `.spec.ts` ever sits outside a `tests/` folder.** A spec should not be
+  visible without opening a tests folder first. Vitest globs
+  `src/**/*.spec.ts`, so location is a convention this file enforces rather
+  than something the build checks — a new spec put beside its subject will
+  still run, and is still wrong.
+
+Paths quoted in `docs/roadmap/wp*.md` before 2026-09-18 predate this move.
+
 ---
 
 ## 4. Hard rules

@@ -2038,30 +2038,61 @@ the path.
 
 ## 6. Folder conventions
 
-Extending WP-6's layout, `features/` grows one subfolder per screen area:
+**Restructured 2026-09-18** (owner's instruction, between Phase 4's steps 4 and
+5). Every feature is now split by *what a file is* rather than holding a flat
+list of them:
 
 ```
 frontend/src/app/
-  core/                      unchanged from WP-6
-  features/
-    auth/                    WP-6
-    placeholder/             WP-6 — shrinks as each nav item gets a real home
-    resources/
-      list/
-      detail/
-    availability/
-    booking/          the booking form (Phase 3) + the booking detail (Phase 4)
-    calendar/         Phase 4 — the landing screen
-    approvals/
-  layout/shell/              unchanged from WP-6
-  shared/                    brand-mark (WP-6) + whatever WP-7 finds worth
-                             extracting on its third use, same rule
+  tests/                     app.routes.spec.ts, app.spec.ts
+  core/                      auth/ · http/ · notifications/, each with tests/
+  features/<feature>/
+    components/
+      <component>/           one folder per component, its three files and
+                             nothing else
+    services/                the thin API services
+    models/                  the wire types
+    <purpose>/               one folder per kind of helper — see below
+    tests/                   every .spec.ts for the feature
+  layout/
+    components/shell/        shell.component.ts|html|scss
+    breadcrumb.service.ts
+    tests/
+  shared/                    brand-mark/ · resource-type/
 ```
+
+A component's folder is named for the component without the `.component`
+suffix — `booking/`, `booking-detail/`, `resource-list/` — so the folder reads
+as the thing and the files inside keep the Angular naming the CLI and every
+convention already expect. Because the three files travel together,
+`templateUrl`/`styleUrl` stay `./<name>.component.html` and never needed
+touching.
+
+The per-feature helper folders, named for what they do rather than for the
+screen that happens to call them:
+
+| Feature | Helper folders |
+|---|---|
+| `availability/` | `grid/` (`availability-grid.ts`), `date/` (`local-date.ts`) |
+| `booking/` | `arrival/` (the slot + mode URL contract), `rejection/` (reason code → message *and* placement, both dialects), `recurrence/` (form guards, request builder, outcome shaping) |
+| `calendar/` | `grid/` (`calendar-range.ts` — URL contract, boundaries, fetch window, layout) |
+
+**Two rules hold everywhere, not just in `features/`:** a component lives in its
+own folder under `components/` with only its own three files, and **no
+`.spec.ts` sits outside a `tests/` folder**. The second is absolute — the
+owner's instruction was that a spec should never be visible without opening a
+tests folder first. `core/` and `shared/` keep their existing internal shape
+(they already group by concern) and gained only the tests folders;
+`core/notifications/` is the one place a component still sits beside a service,
+and extending the rule to it is a two-minute change if wanted.
+
+The vitest config needed no change: it globs `src/**/*.spec.ts`, so where a spec
+lives was never part of the contract.
 
 **`my-bookings/` was in this list and is now gone** — the screen was cancelled
 on 2026-09-18 and the folder was never created, so nothing had to be moved. The
-booking *detail* screen lands in `booking/` beside the form rather than in a
-folder of its own: it reads the same aggregate through the same
+booking *detail* screen lands in `booking/components/` beside the form rather
+than in a folder of its own: it reads the same aggregate through the same
 `BookingsService` and the same `booking.models.ts`, which is where step 1
 already put its types.
 

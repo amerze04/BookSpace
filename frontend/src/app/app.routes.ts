@@ -5,7 +5,7 @@ export const routes: Routes = [
   {
     path: 'login',
     canActivate: [guestOnlyGuard],
-    loadComponent: () => import('./features/auth/login/login.component').then((m) => m.LoginComponent),
+    loadComponent: () => import('./features/auth/components/login/login.component').then((m) => m.LoginComponent),
   },
   {
     path: '',
@@ -17,7 +17,7 @@ export const routes: Routes = [
     // see auth.guard.ts) on every one of those child navigations too.
     canActivate: [authGuard],
     canActivateChild: [authGuard],
-    loadComponent: () => import('./layout/shell/shell.component').then((m) => m.ShellComponent),
+    loadComponent: () => import('./layout/components/shell/shell.component').then((m) => m.ShellComponent),
     children: [
       {
         // WP-7 Phase 4 step 2. The calendar is the landing screen: Home had
@@ -27,7 +27,7 @@ export const routes: Routes = [
         path: 'calendar',
         data: { title: 'Calendar' },
         loadComponent: () =>
-          import('./features/calendar/calendar.component').then((m) => m.CalendarComponent),
+          import('./features/calendar/components/calendar/calendar.component').then((m) => m.CalendarComponent),
       },
       // Kept as a redirect rather than deleted outright: /home was the app's
       // landing route for two work packages, so bookmarks and any link written
@@ -41,13 +41,13 @@ export const routes: Routes = [
             path: '',
             data: { title: 'Resources' },
             loadComponent: () =>
-              import('./features/resources/list/resource-list.component').then((m) => m.ResourceListComponent),
+              import('./features/resources/components/resource-list/resource-list.component').then((m) => m.ResourceListComponent),
           },
           {
             path: ':id',
             data: { title: 'Resource details' },
             loadComponent: () =>
-              import('./features/resources/detail/resource-detail.component').then(
+              import('./features/resources/components/resource-detail/resource-detail.component').then(
                 (m) => m.ResourceDetailComponent,
               ),
           },
@@ -55,7 +55,7 @@ export const routes: Routes = [
             path: ':id/availability',
             data: { title: 'Availability' },
             loadComponent: () =>
-              import('./features/availability/availability.component').then((m) => m.AvailabilityComponent),
+              import('./features/availability/components/availability/availability.component').then((m) => m.AvailabilityComponent),
           },
           {
             // WP-7 Phase 3 step 2: the placeholder this route carried since
@@ -72,7 +72,7 @@ export const routes: Routes = [
             path: ':id/book',
             data: { title: 'Book resource' },
             loadComponent: () =>
-              import('./features/booking/booking.component').then((m) => m.BookingComponent),
+              import('./features/booking/components/booking/booking.component').then((m) => m.BookingComponent),
           },
         ],
       },
@@ -84,7 +84,7 @@ export const routes: Routes = [
         path: 'bookings/:id',
         data: { title: 'Booking' },
         loadComponent: () =>
-          import('./features/booking/detail/booking-detail.component').then(
+          import('./features/booking/components/booking-detail/booking-detail.component').then(
             (m) => m.BookingDetailComponent,
           ),
       },
@@ -97,19 +97,19 @@ export const routes: Routes = [
         data: { title: 'Approvals' },
         canActivate: [approverGuard],
         loadComponent: () =>
-          import('./features/placeholder/placeholder.component').then((m) => m.PlaceholderComponent),
+          import('./features/placeholder/components/placeholder/placeholder.component').then((m) => m.PlaceholderComponent),
       },
       {
         path: 'settings',
         data: { title: 'Settings' },
         loadComponent: () =>
-          import('./features/placeholder/placeholder.component').then((m) => m.PlaceholderComponent),
+          import('./features/placeholder/components/placeholder/placeholder.component').then((m) => m.PlaceholderComponent),
       },
       {
         path: 'help',
         data: { title: 'Help' },
         loadComponent: () =>
-          import('./features/placeholder/placeholder.component').then((m) => m.PlaceholderComponent),
+          import('./features/placeholder/components/placeholder/placeholder.component').then((m) => m.PlaceholderComponent),
       },
       { path: '', pathMatch: 'full', redirectTo: 'calendar' },
     ],
