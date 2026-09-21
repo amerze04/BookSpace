@@ -1,0 +1,318 @@
+@if (loading()) {
+  <p class="state-message" role="status">Loading this booking…</p>
+} @else if (notFound()) {
+  <!--
+    Deliberately does not distinguish "doesn't exist" from "isn't yours" — the
+    API answers 404 identically for another member's booking, another tenant's,
+    and an id that exists nowhere (AC-4 inside one tenant). A retry cannot help
+    the same id, so this offers a way back instead of one.
+  -->
+  <div class="state-message state-message--empty">
+    <p>This booking doesn't exist, or you don't have access to it.</p>
+    <a class="primary-button" routerLink="/calendar">Back to your calendar</a>
+  </div>
+} @else if (loadError()) {
+  <div class="state-message state-message--error" role="alert">
+    <p>We couldn't load this booking.</p>
+    <button type="button" class="retry-button" (click)="retry()">Try again</button>
+  </div>
+} @else if (booking(); as booking) {
+  <article class="detail">
+    <header class="detail-header">
+      <div class="detail-heading">
+        <h2 class="booking-name">{{ booking.title?.trim() || booking.resourceName }}</h2>
+        <div class="badges">
+          <span class="badge" [class.badge--pending]="booking.status === 'Pending'"
+            [class.badge--cancelled]="booking.status === 'Cancelled' || booking.status === 'Rejected'">
+            {{ statusLabel(booking.status) }}
+          </span>
+          @if (isRecurring()) {
+            <span class="badge badge--series">Part of a repeating series</span>
+          }
+        </div>
+      </div>
+
+      @if (booking.status === 'Pending') {
+        <!-- FR-7.1: the member has to know the slot is not theirs yet. -->
+        <p class="lead-note">
+          This request is waiting for approval — the time is <strong>not held for you yet</strong>.
+        </p>
+      }
+    </header>
+
+    <section class="card">
+      <h3 class="card-title">When</h3>
+      <dl class="rows">
+        <div class="row">
+          <dt>Date</dt>
+          <dd>{{ viewerSpan()?.date }}</dd>
+        </div>
+        <div class="row">
+          <dt>Time</dt>
+          <dd>{{ viewerSpan()?.timeRange }}</dd>
+        </div>
+        <div class="row">
+          <dt>Duration</dt>
+          <dd>{{ durationLabel() }}</dd>
+        </div>
+      </dl>
+
+      @if (resourceSpan(); as inResourceZone) {
+        <!--
+          Only when the two zones genuinely differ. Shown second because reading
+          a booking back is the ordinary calendar case — what a person wants is
+          when to turn up — while the resource's own clock is what the
+          availability *question* was asked in (decision 0003).
+        -->
+        <p class="zone-note">
+          In the resource's timezone ({{ resource()?.timeZoneId }}):
+          <strong>{{ inResourceZone.date }}, {{ inResourceZone.timeRange }}</strong>.
+          Times above are your own ({{ viewerTimeZoneId }}).
+        </p>
+      }
+    </section>
+
+    <section class="card">
+      <h3 class="card-title">What</h3>
+      <dl class="rows">
+        <div class="row">
+          <dt>Resource</dt>
+          <dd>
+            <a class="resource-link" [routerLink]="['/resources', booking.resourceId]">
+              @if (resource(); as resource) {
+                <span class="resource-icon"><app-resource-type-icon [type]="resource.resourceType" /></span>
+              }
+              {{ booking.resourceName }}
+            </a>
+            @if (resource(); as resource) {
+              <span class="muted"> · {{ typeLabel(resource) }}</span>
+            }
+          </dd>
+        </div>
+        <div class="row">
+          <dt>Quantity</dt>
+          <dd>{{ booking.quantity }}</dd>
+        </div>
+        @if (booking.title?.trim()) {
+          <div class="row">
+            <dt>Title</dt>
+            <dd>{{ booking.title }}</dd>
+          </div>
+        }
+      </dl>
+    </section>
+
+    @if (booking.approval; as approval) {
+      <section class="card">
+        <h3 class="card-title">Approval</h3>
+        <dl class="rows">
+          <div class="row">
+            <dt>Decision</dt>
+            <dd>
+              {{ approval.decision }}
+              @if (approval.decision === 'Withdrawn') {
+                <!--
+                  Not a person's judgment: the booking stopped existing to
+                  decide on (ApprovalRequest.Withdraw), which is what cancelling
+                  a Pending booking produces.
+                -->
+                <span class="muted"> — the booking was cancelled before it was decided</span>
+              }
+            </dd>
+          </div>
+          <div class="row">
+            <dt>Requested</dt>
+            <dd>{{ approvalRequestedAt() }}</dd>
+          </div>
+          @if (approval.decision === 'Pending') {
+            <div class="row">
+              <dt>Expires</dt>
+              <!-- FR-7.4: a tenant with no configured expiry leaves requests
+                   open indefinitely, which is a real configuration rather than
+                   a missing value. -->
+              <dd>{{ approvalExpiresAt() ?? 'No expiry — this request stays open until it is decided' }}</dd>
+            </div>
+          }
+          @if (approvalDecidedAt(); as decidedAt) {
+            <div class="row">
+              <dt>Decided</dt>
+              <dd>{{ decidedAt }}</dd>
+            </div>
+          }
+          @if (approval.note) {
+            <div class="row">
+              <dt>Note</dt>
+              <dd>{{ approval.note }}</dd>
+            </div>
+          }
+        </dl>
+      </section>
+    }
+
+    @if (cancellation(); as cancellation) {
+      <section class="card card--cancelled">
+        <h3 class="card-title">Cancelled</h3>
+        <p class="cancel-lead">
+          @switch (cancellation.kind) {
+            @case ('self') {
+              You cancelled this booking on {{ cancellation.at }}.
+            }
+            @case ('administrator') {
+              <!-- Decision 0002 records the actor separately from the owner
+                   precisely so this is visible rather than indistinguishable
+                   from the member cancelling it themselves. -->
+              An administrator cancelled this booking on {{ cancellation.at }}.
+            }
+            @case ('blackout') {
+              <!-- Decision 0001 gives a blackout absolute priority, and
+                   Booking.CancelForBlackout leaves no actor because there is no
+                   person behind it. -->
+              This booking was cancelled on {{ cancellation.at }} because the resource was
+              made unavailable.
+            }
+          }
+        </p>
+        @if (cancellation.reason) {
+          <p class="cancel-reason"><span class="muted">Reason:</span> {{ cancellation.reason }}</p>
+        }
+      </section>
+    }
+
+    <p class="audit">
+      Booked {{ createdAt() }}@if (updatedAt() !== createdAt()) {, last updated {{ updatedAt() }}}.
+    </p>
+
+    @if (cancelled()) {
+      <p class="cancel-done" role="status" tabindex="-1">
+        This booking is cancelled and the time is free again.
+      </p>
+    }
+
+    @if (seriesFreedCount(); as freed) {
+      <!--
+        Reported from `cancelledBookingIds`, not as a bare success — the
+        endpoint returns ids rather than a count precisely so a client can say
+        exactly what it freed.
+      -->
+      <p class="cancel-done" role="status" tabindex="-1">
+        The series is cancelled. {{ freed }} upcoming
+        {{ freed === 1 ? 'occurrence was' : 'occurrences were' }} freed; any that had already
+        finished are unchanged.
+      </p>
+    } @else if (seriesFreedCount() === 0) {
+      <!--
+        A legitimate outcome rather than a failure: the rule was still Active
+        but every occurrence had already finished, so there was nothing left
+        holding time.
+      -->
+      <p class="cancel-done" role="status" tabindex="-1">
+        The series is cancelled. It had no upcoming occurrences left, so no time was freed.
+      </p>
+    }
+
+    @if (canCancel() || canCancelSeries()) {
+      <section class="cancel-box">
+        @if (confirmMode() === null) {
+          <div class="cancel-choices">
+            @if (canCancel()) {
+              <button type="button" class="danger-button" (click)="startConfirming('occurrence')">
+                {{ cancelActionLabel() }}
+              </button>
+            }
+            @if (canCancelSeries()) {
+              <!--
+                Offered independently of the occurrence's own button: a series
+                is cancellable while its rule is Active, which has no time
+                component, so this shows even on a past or already-cancelled
+                occurrence of a live series.
+              -->
+              <button type="button" class="danger-outline-button" (click)="startConfirming('series')">
+                Cancel the whole remaining series
+              </button>
+            }
+          </div>
+        } @else {
+          <!--
+            An inline expanding panel rather than a dialog: this app has no
+            modal primitive, and a focus-trapped one is a real component with
+            real accessibility obligations that nothing else here needs.
+          -->
+          <!--
+            tabindex="-1" so focus can be moved here when the panel opens: it is
+            the line that says which cancellation is about to happen, and a
+            keyboard user left on the trigger would hear nothing about it.
+          -->
+          <h3 class="card-title confirm-heading" tabindex="-1">{{ confirmHeading() }}</h3>
+          @if (confirmMode() === 'series') {
+            <!--
+              **What "remaining" means, said before confirming rather than
+              explained afterwards** (FR-5.3). The server cancels occurrences
+              with EndsAtUtc in the future and leaves finished ones alone, and a
+              member who learns that only from the result has already committed.
+            -->
+            <p class="confirm-lead">
+              Every occurrence still to come is cancelled and its time released. Occurrences that
+              have already finished are left as they are. This cannot be undone.
+            </p>
+          } @else {
+            <p class="confirm-lead">
+              The time is released immediately and anyone can book it. This cannot be undone.
+              @if (isRecurring()) {
+                The rest of the series is unaffected.
+              }
+            </p>
+          }
+
+          <label class="reason-label" for="cancel-reason">Reason <span class="muted">(optional)</span></label>
+          <textarea
+            id="cancel-reason"
+            class="reason-input"
+            rows="2"
+            [value]="reason()"
+            [disabled]="cancelling()"
+            [attr.maxlength]="maxReasonLength"
+            [attr.aria-invalid]="reasonError() !== null || null"
+            [attr.aria-describedby]="reasonError() || cancelRejection()?.fieldMessages?.reason ? 'cancel-reason-error' : null"
+            (input)="onReasonInput($event)"
+          ></textarea>
+          @if (reasonError() || cancelRejection()?.fieldMessages?.reason) {
+            <p class="field-error" id="cancel-reason-error">
+              {{ cancelRejection()?.fieldMessages?.reason ?? reasonError() }}
+            </p>
+          }
+
+          @if (cancelRejection()?.formMessage; as message) {
+            <div class="cancel-error" role="alert">
+              <p>{{ message }}</p>
+              <!--
+                No retry button, ever, on this path. `POST .../cancel` is
+                deliberately not idempotent: a repeat either answers 422 or
+                rewrites who called the meeting off. Reloading is the honest
+                way out.
+              -->
+              <button type="button" class="secondary-button" (click)="retry()">Reload this booking</button>
+            </div>
+          }
+
+          <div class="confirm-actions">
+            <button
+              type="button"
+              class="danger-button"
+              [disabled]="cancelling() || reasonError() !== null"
+              (click)="confirmCancel()"
+            >
+              {{ cancelling() ? 'Cancelling…' : confirmActionLabel() }}
+            </button>
+            <button type="button" class="secondary-button" [disabled]="cancelling()" (click)="stopConfirming()">
+              Keep it
+            </button>
+          </div>
+        }
+      </section>
+    }
+
+    <div class="detail-actions">
+      <a class="secondary-button" routerLink="/calendar">Back to your calendar</a>
+    </div>
+  </article>
+}

@@ -1,0 +1,241 @@
+<div class="calendar">
+  <div class="toolbar">
+    <div class="toolbar-nav">
+      <button type="button" class="today-button" (click)="goToToday()">Today</button>
+      <button
+        type="button"
+        class="step-button"
+        [attr.aria-label]="view() === 'month' ? 'Previous month' : 'Previous week'"
+        (click)="step(-1)"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path
+            d="M14.5 6 9 12l5.5 6"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+      <button
+        type="button"
+        class="step-button"
+        [attr.aria-label]="view() === 'month' ? 'Next month' : 'Next week'"
+        (click)="step(1)"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path
+            d="M9.5 6 15 12l-5.5 6"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+      <h2 class="period-label">{{ periodLabel() }}</h2>
+    </div>
+
+    <!--
+      A radiogroup rather than a tablist: these two switch what the same region
+      shows, and `aria-pressed` toggles would not express that exactly one is
+      always chosen. The resource list's own type filter is a plain group of
+      pressed buttons because several of its states are independent; this one is
+      genuinely a single choice.
+    -->
+    <div class="view-toggle" role="radiogroup" aria-label="Calendar view">
+      <button
+        type="button"
+        role="radio"
+        class="view-option"
+        [class.active]="view() === 'month'"
+        [attr.aria-checked]="view() === 'month'"
+        (click)="setView('month')"
+      >
+        Month
+      </button>
+      <button
+        type="button"
+        role="radio"
+        class="view-option"
+        [class.active]="view() === 'week'"
+        [attr.aria-checked]="view() === 'week'"
+        (click)="setView('week')"
+      >
+        Week
+      </button>
+    </div>
+  </div>
+
+  @if (loading()) {
+    <p class="state-message" role="status">Loading your bookings…</p>
+  } @else if (loadFailed()) {
+    <div class="state-message state-message--error" role="alert">
+      <p>We couldn't load your bookings.</p>
+      <button type="button" class="retry-button" (click)="retry()">Try again</button>
+    </div>
+  } @else {
+    @if (isEmpty()) {
+      <!--
+        Stated as "nothing booked in this period", never "you have no bookings":
+        the fetch is deliberately bounded to the visible window, so this screen
+        genuinely does not know whether the member has bookings elsewhere, and
+        saying otherwise would be a claim the data cannot support.
+      -->
+      <p class="state-message">
+        Nothing booked in this {{ view() }}. Browse
+        <a routerLink="/resources" class="inline-link">Resources</a> to book something.
+      </p>
+    }
+
+    @if (view() === 'month') {
+      <div class="grid grid--month">
+        <div class="weekday-header">
+          @for (cell of cells().slice(0, 7); track cell.date) {
+            <div class="weekday-name">{{ weekdayLabel(cell.date) }}</div>
+          }
+        </div>
+
+        <div class="month-cells">
+          @for (cell of cells(); track cell.date) {
+            <div class="day-cell" [class.day-cell--outside]="!cell.inAnchoredMonth">
+              <div class="day-number" [class.day-number--today]="cell.isToday">
+                {{ cell.dayOfMonth }}
+              </div>
+              @let chips = chipsFor(cell);
+              @for (entry of chips.shown; track entry.booking.id) {
+                <a
+                  class="chip"
+                  [routerLink]="['/bookings', entry.booking.id]"
+                  [class.chip--pending]="isPending(entry)"
+                  [class.chip--past]="isPast(entry)"
+                  [attr.aria-label]="entryAriaLabel(entry)"
+                >
+                  <span class="chip-time">{{ entryTime(entry) }}</span>
+                  <span class="chip-label">{{ entryLabel(entry) }}{{ statusSuffix(entry) }}</span>
+                  @if (isRecurring(entry)) {
+                    <span class="chip-recurring" aria-hidden="true">
+                      <svg viewBox="0 0 24 24">
+                        <path
+                          d="M20 11a8 8 0 0 0-14-5M4 13a8 8 0 0 0 14 5"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                        />
+                        <path d="M20 5v6h-6M4 19v-6h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </span>
+                  }
+                </a>
+              }
+              <!--
+                `aria-expanded` and a spelled-out label: "+2 more" alone tells a
+                screen-reader user neither what it belongs to nor that it is a
+                disclosure, and there are up to 35 of these on a month.
+              -->
+              @if (chips.hiddenCount > 0) {
+                <button
+                  type="button"
+                  class="more-button"
+                  aria-expanded="false"
+                  [attr.aria-label]="'Show ' + chips.hiddenCount + ' more on ' + fullDateLabel(cell.date)"
+                  (click)="toggleDay(cell.date)"
+                >
+                  +{{ chips.hiddenCount }} more
+                </button>
+              } @else if (isExpanded(cell.date)) {
+                <button
+                  type="button"
+                  class="more-button"
+                  aria-expanded="true"
+                  [attr.aria-label]="'Show fewer on ' + fullDateLabel(cell.date)"
+                  (click)="toggleDay(cell.date)"
+                >
+                  Show less
+                </button>
+              }
+            </div>
+          }
+        </div>
+      </div>
+    } @else {
+      <div class="grid grid--week">
+        <div class="week-header">
+          <div class="hour-gutter-spacer"></div>
+          @for (cell of cells(); track cell.date) {
+            <div class="week-day-name" [class.week-day-name--today]="cell.isToday">
+              <span class="week-day-weekday">{{ weekdayLabel(cell.date) }}</span>
+              <span class="week-day-date">{{ dayHeaderLabel(cell.date) }}</span>
+            </div>
+          }
+        </div>
+
+        <div class="week-body">
+          <!--
+            The labels are absolutely positioned rather than given a grid row
+            each: a row per label would make this column one hour taller than
+            the window the chip offsets are percentages of, which is exactly
+            what put every chip slightly below its own stated time. Both ends
+            are labelled (08:00 *and* 18:00), so there is one more label than
+            there are rows.
+          -->
+          <div class="hour-gutter">
+            @for (hour of hourTicks(); track hour) {
+              <div class="hour-tick" [style.top]="hourLabelTop(hour)">{{ hourLabel(hour) }}</div>
+            }
+          </div>
+
+          @for (cell of cells(); track cell.date) {
+            <div class="week-column" [class.week-column--today]="cell.isToday">
+              @for (hour of hourRows(); track hour) {
+                <div class="hour-line"></div>
+              }
+              <!--
+                No chip cap here, unlike the month view: a week chip is
+                positioned by time rather than stacked, so the DOM is already
+                bounded by how many bookings can physically fit in a day.
+              -->
+              @for (positioned of positionedEntries(cell); track positioned.entry.booking.id) {
+                @let entry = positioned.entry;
+                @let style = entryStyle(positioned);
+                <a
+                  class="week-chip"
+                  [routerLink]="['/bookings', entry.booking.id]"
+                  [class.chip--pending]="isPending(entry)"
+                  [class.chip--past]="isPast(entry)"
+                  [class.week-chip--compact]="isCompact(entry)"
+                  [style.top]="style['top']"
+                  [style.height]="style['height']"
+                  [style.left]="style['left']"
+                  [style.width]="style['width']"
+                  [attr.aria-label]="entryAriaLabel(entry)"
+                >
+                  <span class="chip-time">{{ entryTimeRange(entry) }}</span>
+                  <span class="chip-label">{{ entryLabel(entry) }}{{ statusSuffix(entry) }}</span>
+                  @if (isRecurring(entry)) {
+                    <span class="chip-recurring" aria-hidden="true">
+                      <svg viewBox="0 0 24 24">
+                        <path
+                          d="M20 11a8 8 0 0 0-14-5M4 13a8 8 0 0 0 14 5"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                        />
+                        <path d="M20 5v6h-6M4 19v-6h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </span>
+                  }
+                </a>
+              }
+            </div>
+          }
+        </div>
+      </div>
+    }
+  }
+</div>

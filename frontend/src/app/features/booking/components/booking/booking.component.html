@@ -1,0 +1,786 @@
+@if (loading()) {
+  <p class="state-message">Loading resource…</p>
+} @else if (notFound()) {
+  <div class="state-message">
+    <p>This resource doesn't exist, or you don't have access to it.</p>
+    <a routerLink="/resources" class="retry-button">Back to Resources</a>
+  </div>
+} @else if (loadError()) {
+  <div class="state-message state-message--error">
+    <p>Couldn't load this resource.</p>
+    <button type="button" class="retry-button" (click)="retry()">Try again</button>
+  </div>
+} @else if (resource(); as resource) {
+  <div class="booking">
+    <!-- The design shows a photo of the room here. No resource carries an
+         image on the API (GetResourceQueryResponse has no such field, and
+         inventing one would be a backend change inside a frontend package),
+         so the type icon every other resource screen already uses stands in
+         its place. -->
+    <section class="summary-card">
+      <span class="resource-icon">
+        <app-resource-type-icon [type]="resource.resourceType" />
+      </span>
+
+      <div class="summary-text">
+        <h2>{{ resource.name }}</h2>
+
+        <p class="chips">
+          <span class="chip">
+            <span class="chip-icon">
+              <app-resource-type-icon [type]="resource.resourceType" />
+            </span>
+            {{ typeLabel(resource.resourceType) }}
+          </span>
+
+          <span class="chip">
+            <svg class="chip-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="9" cy="9" r="3" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path
+                d="M3.5 19a5.5 5.5 0 0 1 11 0M16 7.2a3 3 0 0 1 0 5.6M17.5 19a5.4 5.4 0 0 0-2.2-4.3"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+              />
+            </svg>
+            {{ capacityLabel(resource) }}
+          </span>
+
+          <span class="chip">
+            <svg class="chip-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+            {{ approvalLabel(resource) }}
+          </span>
+        </p>
+
+        @if (resource.description) {
+          <p class="summary-description">{{ resource.description }}</p>
+        }
+      </div>
+
+      <a class="view-details-link" [routerLink]="['/resources', resource.id]">
+        View details
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path
+            d="M9 6l6 6-6 6"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </a>
+    </section>
+
+    @if (isArchived()) {
+      <section class="panel panel--notice">
+        <h2>Archived — not bookable</h2>
+        <p>
+          This resource has been archived, so no new bookings can be made against it. Existing bookings are
+          unaffected.
+        </p>
+        <a class="secondary-button" routerLink="/resources">Browse resources</a>
+      </section>
+    } @else if (seriesOutcome(); as outcome) {
+      <!-- FR-5.4: no conflicting occurrence is dropped silently, so the
+           per-date breakdown *is* the result of a recurring submit — not a
+           detail behind a disclosure. The 201 and the all-refused 422 carry
+           the identical payload, so this renders both; only the framing
+           changes. -->
+      <section class="panel panel--outcome" [class.panel--pending]="seriesCreatedNothing()">
+        <span class="outcome-icon" [class.outcome-icon--pending]="seriesCreatedNothing()" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+            @if (seriesCreatedNothing()) {
+              <path d="M12 7.5v5M12 16h.01" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            } @else {
+              <path
+                d="m8.5 12.3 2.4 2.4 4.6-4.9"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            }
+          </svg>
+        </span>
+
+        <!-- FR-7.1: on an approval-gated resource every created occurrence is
+             Pending, so the series was *submitted*, not booked — the same
+             distinction the one-off panel makes with "Booking requested". -->
+        <h2>{{ seriesOutcomeHeading() }}</h2>
+
+        <p class="outcome-lead">
+          @if (seriesCreatedNothing()) {
+            Every date in this series was skipped or refused, so no booking was made. The reasons are below — adjust
+            the series and try again.
+          } @else {
+            <!-- Described from what was *submitted*, never from the live form:
+                 the two can only ever disagree in the member's disfavour. -->
+            {{ submittedPatternLabel() }} on {{ resource.name }}, {{ submittedTimesLabel() }}.
+            {{ seriesSummaryLine() }}.
+            @if (resource.requiresApproval) {
+              Each date still needs approval before it's confirmed — <strong>these times are not held for you
+              yet</strong>.
+            }
+          }
+        </p>
+
+        <ul class="occurrence-list">
+          @for (occurrence of outcome.occurrences; track occurrence.occurrenceDate) {
+            <li class="occurrence" [class.occurrence--created]="occurrence.status === 'Created'">
+              <span class="occurrence-date">{{ occurrenceDateLabel(occurrence) }}</span>
+              <span class="occurrence-reason">{{ occurrenceLabel(occurrence) }}</span>
+            </li>
+          }
+        </ul>
+
+        <div class="outcome-actions">
+          @if (seriesCreatedNothing()) {
+            <!-- The lead copy says to adjust the series, so there has to be a
+                 way back to it — with every field as it was. -->
+            <button type="button" class="primary-button" (click)="editSeriesAgain()">Adjust the series</button>
+            <a class="secondary-button" [routerLink]="['/resources', resource.id, 'availability']">
+              Check availability
+            </a>
+          } @else {
+            <a class="primary-button" routerLink="/calendar" [queryParams]="checkCalendarParams()">
+              View your calendar
+            </a>
+          }
+        </div>
+      </section>
+    } @else if (created(); as created) {
+      <!-- FR-7.1: the two outcomes are stated distinctly, not as one generic
+           success. A Pending booking holds nothing yet, and saying so here is
+           the whole point of the panel. -->
+      <section class="panel panel--outcome" [class.panel--pending]="isPending()">
+        <span class="outcome-icon" [class.outcome-icon--pending]="isPending()" aria-hidden="true">
+          @if (isPending()) {
+            <svg viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+          } @else {
+            <svg viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path
+                d="m8.5 12.3 2.4 2.4 4.6-4.9"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          }
+        </span>
+
+        <h2>{{ isPending() ? 'Booking requested' : 'Booking confirmed' }}</h2>
+
+        <p class="outcome-lead">
+          @if (isPending()) {
+            Your request for {{ resource.name }} has been sent for approval. The time is
+            <strong>not held for you yet</strong> — you'll be told once it's decided.
+          } @else {
+            {{ resource.name }} is reserved for you.
+          }
+        </p>
+
+        <dl class="outcome-rows">
+          <div class="summary-row">
+            <dt>Date</dt>
+            <dd>{{ createdSpan()?.date }}</dd>
+          </div>
+          <div class="summary-row">
+            <dt>Time</dt>
+            <dd>{{ createdSpan()?.timeRange }} ({{ resource.timeZoneId }})</dd>
+          </div>
+          @if (createdViewerSpan(); as viewerSpan) {
+            <div class="summary-row">
+              <dt>Your time</dt>
+              <dd>{{ viewerSpan.timeRange }} ({{ viewerTimeZoneId }})</dd>
+            </div>
+          }
+          <div class="summary-row">
+            <dt>Duration</dt>
+            <dd>{{ createdDurationLabel() }}</dd>
+          </div>
+          @if (resource.capacity > 1) {
+            <div class="summary-row">
+              <dt>Quantity</dt>
+              <dd>{{ created.quantity }}</dd>
+            </div>
+          }
+          @if (created.title) {
+            <div class="summary-row">
+              <dt>Title</dt>
+              <dd>{{ created.title }}</dd>
+            </div>
+          }
+        </dl>
+
+        @if (isPending()) {
+          <div class="approval-notice">
+            <svg class="notice-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+            <div>
+              <!-- Decision `0018`: a resource's own approvers decide. With
+                   none assigned, a TenantAdmin still can — so the empty case
+                   answers "who decides" rather than leaving it blank. -->
+              <p class="notice-title">
+                @if (approverNames().length > 0) {
+                  Waiting on {{ approverNames().join(', ') }}
+                } @else {
+                  Waiting on a tenant administrator
+                }
+              </p>
+              <!-- FR-7.4: a tenant with no configured expiry leaves requests
+                   pending indefinitely — a real configuration, not a gap. -->
+              <p class="notice-text">
+                @if (approvalExpiryLabel(); as expiry) {
+                  This request expires on {{ expiry }} ({{ viewerTimeZoneId }}) if it hasn't been decided by then.
+                } @else {
+                  This request doesn't expire — it stays pending until it's decided.
+                }
+              </p>
+            </div>
+          </div>
+        }
+
+        <div class="outcome-actions">
+          <!-- Points at the week the booking actually lands in, not just at
+               the calendar: a list had a top, a calendar does not. -->
+          <a class="primary-button" routerLink="/calendar" [queryParams]="checkCalendarParams()">
+            View your calendar
+          </a>
+          <a class="secondary-button" [routerLink]="['/resources', resource.id, 'availability']">Book another time</a>
+        </div>
+      </section>
+    } @else {
+      <!-- The form renders for a recurring booking whether or not a slot was
+           picked: a series names its own schedule and uses none of the slot's
+           instants, so requiring one made the availability screen a toll booth
+           (owner's call, 2026-09-17). The one-off half still needs one, and
+           says so inline rather than replacing the whole screen — otherwise
+           the toggle out of that state wouldn't be reachable. -->
+      <div class="booking-layout">
+        <section class="panel">
+          <h2>Booking details</h2>
+
+          <!-- One screen, two form groups (not two routes): the resource, the
+               slot, the quantity and the title are shared, and only the *when*
+               differs between them. -->
+          <!-- Disabled while a request is in flight, like every other control
+               that feeds it: switching mode mid-submit would leave the screen
+               describing a request it is no longer showing the form for. -->
+          <div class="mode-toggle" role="group" aria-label="Booking type">
+            <button
+              type="button"
+              [class.active]="mode() === 'oneOff'"
+              [attr.aria-pressed]="mode() === 'oneOff'"
+              [disabled]="submitting()"
+              (click)="setMode('oneOff')"
+            >
+              One-time
+            </button>
+            <button
+              type="button"
+              [class.active]="mode() === 'recurring'"
+              [attr.aria-pressed]="mode() === 'recurring'"
+              [disabled]="submitting()"
+              (click)="setMode('recurring')"
+            >
+              Recurring
+            </button>
+          </div>
+
+          <!-- Read-only: the slot was chosen on the availability screen and is
+               changed by going back there (the bar below), never re-typed
+               here — a hand-entered local time would need a local->UTC
+               inversion this client deliberately does not own (CLAUDE.md
+               §4.3). -->
+          <!-- Hidden in recurring mode rather than left on screen: the series
+               names its own start date and times below, and showing the single
+               slot's here as well would be the same information twice, free to
+               disagree the moment either is edited. -->
+          @if (mode() === 'oneOff' && selection() === null) {
+            <!-- The one-off half is pre-fill only (wp7-plan.md Phase 3), so
+                 without a picked slot there is nothing to book — but the
+                 toggle above still is, which is why this replaces the fields
+                 rather than the screen. -->
+            <div class="pick-first" role="note">
+              <p>Pick a time on the availability calendar to book a one-time slot.</p>
+              <a class="secondary-button" [routerLink]="['/resources', resource.id, 'availability']">
+                Go to availability
+              </a>
+              <p class="field-hint">Or switch to Recurring to set up a repeating booking from here.</p>
+            </div>
+          }
+
+          @if (mode() === 'oneOff' && selection() !== null) {
+          <div class="field-row">
+            <div class="readonly-field">
+              <span class="field-label">Date</span>
+              <div class="readonly-value">
+                <svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.6" />
+                  <path d="M4 10h16M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                </svg>
+                {{ resourceZoneSpan()?.date }}
+              </div>
+            </div>
+
+            <div class="readonly-field">
+              <span class="field-label">Time</span>
+              <div class="readonly-value">
+                <svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+                  <path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                </svg>
+                {{ resourceZoneSpan()?.timeRange }}
+              </div>
+            </div>
+
+            <div class="readonly-field">
+              <span class="field-label">Duration</span>
+              <div class="readonly-value">
+                <svg class="field-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="13" r="7.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+                  <path d="M12 9.5V13h3M9.5 3h5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                </svg>
+                {{ durationLabel() }}
+              </div>
+            </div>
+          </div>
+
+          <p class="timezone-note">
+            Times shown in the resource's timezone ({{ resource.timeZoneId }}).
+            @if (viewerZoneSpan(); as viewerSpan) {
+              In your own timezone ({{ viewerTimeZoneId }}) that's {{ viewerSpan.date }},
+              {{ viewerSpan.timeRange }}.
+            }
+          </p>
+
+          @if (durationError(); as durationMessage) {
+            <p class="field-error" role="alert">{{ durationMessage }}</p>
+          }
+          }
+
+          @if (showQuantityStepper()) {
+            <div class="quantity-field">
+              <span class="field-label" id="booking-quantity-label">Quantity</span>
+              <div class="stepper" role="group" aria-labelledby="booking-quantity-label">
+                <button
+                  type="button"
+                  (click)="decrementQuantity()"
+                  [disabled]="submitting() || quantity() <= 1"
+                  aria-label="Decrease quantity"
+                >
+                  −
+                </button>
+                <span class="stepper-value">{{ quantity() }}</span>
+                <button
+                  type="button"
+                  (click)="incrementQuantity()"
+                  [disabled]="submitting() || quantity() >= resource.capacity"
+                  aria-label="Increase quantity"
+                >
+                  +
+                </button>
+              </div>
+              @if (quantityError(); as quantityMessage) {
+                <p class="field-error" role="alert">{{ quantityMessage }}</p>
+              } @else if (quantityRaisedAboveChecked()) {
+                <p class="field-hint">
+                  Availability was checked for {{ selection()?.quantity }}
+                  {{ selection()?.quantity === 1 ? 'unit' : 'units' }}, so a larger quantity may not be free.
+                </p>
+              }
+            </div>
+          }
+
+          <div class="title-field">
+            <label class="field-label" for="booking-title">Title</label>
+            <p class="field-hint" id="booking-title-hint">A short title to help identify this booking.</p>
+            <input
+              id="booking-title"
+              type="text"
+              [value]="title()"
+              (input)="onTitleInput($event)"
+              [disabled]="submitting()"
+              [attr.maxlength]="maxTitleLength"
+              [attr.aria-invalid]="titleError() !== null"
+              aria-describedby="booking-title-hint"
+              placeholder="Team planning meeting"
+            />
+            @if (titleError(); as titleMessage) {
+              <p class="field-error" role="alert">{{ titleMessage }}</p>
+            }
+          </div>
+
+          @if (mode() === 'recurring' && recurrenceUnavailableMessage(); as unavailableMessage) {
+            <!-- A resource with no bookable hours at all. Not a validation
+                 error: no value in this form would fix it, and the form itself
+                 would only ever produce occurrences refused with
+                 OutsideAvailability — so the fields are replaced rather than
+                 shown with a message under them, and the submit is off.
+                 Deliberately *not* the same thing as "fully booked", which is
+                 the server's answer to a real request, not a reason to refuse
+                 to make one. -->
+            <div class="recurrence-unavailable" role="note">
+              <p class="notice-title">Recurring bookings aren't available for this resource</p>
+              <p>{{ unavailableMessage }}</p>
+              <a class="secondary-button" [routerLink]="['/resources', resource.id]">View resource details</a>
+            </div>
+          } @else if (mode() === 'recurring') {
+            <!-- The recurring group, under the title (the owner's own
+                 placement). Every field here is resource-local wall clock, not
+                 an instant: POST /recurrence-rules takes the schedule and
+                 resolves each occurrence's instant itself, per decision `0003`
+                 — which is why these are freely editable where the one-off
+                 half's are read-only.
+                 Every control is disabled while a submit is in flight: the
+                 request body is fixed the moment it goes out, so a field the
+                 member can still edit is one the screen would go on to
+                 describe wrongly. -->
+            <fieldset class="recurrence" [disabled]="submitting()">
+              <legend>Repeat</legend>
+
+              <div class="field-row">
+                <label class="field-label" for="recurrence-frequency">
+                  Frequency
+                  <select id="recurrence-frequency" (change)="setFrequency($event)">
+                    @for (frequency of frequencies; track frequency) {
+                      <option [value]="frequency" [selected]="recurrence().frequency === frequency">
+                        {{ frequency }}
+                      </option>
+                    }
+                  </select>
+                </label>
+
+                <label class="field-label" for="recurrence-interval">
+                  Repeat every
+                  <input
+                    id="recurrence-interval"
+                    type="number"
+                    min="1"
+                    step="1"
+                    [value]="recurrence().intervalValue"
+                    [attr.aria-invalid]="recurrenceIntervalError() !== null"
+                    (input)="setIntervalValue($event)"
+                  />
+                </label>
+
+                <label class="field-label" for="recurrence-start-date">
+                  Starting on
+                  <input
+                    id="recurrence-start-date"
+                    type="date"
+                    [value]="recurrence().startDate"
+                    [attr.aria-invalid]="recurrenceStartDateError() !== null"
+                    (change)="setStartDate($event)"
+                  />
+                </label>
+              </div>
+
+              @if (recurrenceStartDateError(); as startDateMessage) {
+                <p class="field-error" role="alert">{{ startDateMessage }}</p>
+              }
+              @if (recurrenceIntervalError(); as intervalMessage) {
+                <p class="field-error" role="alert">{{ intervalMessage }}</p>
+              }
+
+              <!-- A real misreading this heads off: Weekly has no weekday
+                   picker because the weekday *is* the start date's own
+                   (RecurrenceExpansion steps from StartDate), so without this
+                   line a member would look for a control that does not exist. -->
+              @if (recurrence().frequency === 'Weekly') {
+                <p class="field-hint">Repeats on the same weekday as the start date.</p>
+              } @else if (recurrence().frequency === 'Monthly') {
+                <p class="field-hint">Repeats on the same day of the month as the start date.</p>
+              }
+
+              <div class="field-row">
+                <label class="field-label" for="recurrence-start-time">
+                  From
+                  <input
+                    id="recurrence-start-time"
+                    type="time"
+                    [value]="recurrence().localStartTime"
+                    (change)="setLocalStartTime($event)"
+                  />
+                </label>
+
+                <label class="field-label" for="recurrence-end-time">
+                  To
+                  <input
+                    id="recurrence-end-time"
+                    type="time"
+                    [value]="recurrence().localEndTime"
+                    (change)="setLocalEndTime($event)"
+                  />
+                </label>
+              </div>
+
+              <p class="field-hint">Times are in the resource's timezone ({{ resource.timeZoneId }}).</p>
+
+              <!-- Server first, then the client's own guard, for both of these
+                   — the same precedence titleError and quantityError already
+                   apply. The duration one matters most: every occurrence
+                   shares the series' nominal length, so the handler answers
+                   BookingDurationOutOfRange for the series as a whole, and
+                   before this pass that message had nowhere on this half of
+                   the form to land. -->
+              @if (recurrenceTimesError(); as timesMessage) {
+                <p class="field-error" role="alert">{{ timesMessage }}</p>
+              }
+              @if (recurrenceDurationError(); as durationMessage) {
+                <p class="field-error" role="alert">{{ durationMessage }}</p>
+              }
+
+              <!-- Exactly one of the two, never both and never neither
+                   (CK_RecurrenceRules_EndCondition) — a radio rather than two
+                   independently fillable boxes, so the invalid combinations
+                   cannot be expressed rather than merely being rejected. -->
+              <div class="end-condition" role="radiogroup" aria-label="Ends">
+                <span class="field-label">Ends</span>
+
+                <label class="radio-row">
+                  <input
+                    type="radio"
+                    name="end-condition"
+                    [checked]="recurrence().endCondition === 'occurrenceCount'"
+                    (change)="setEndCondition('occurrenceCount')"
+                  />
+                  After
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    aria-label="Number of occurrences"
+                    [value]="recurrence().occurrenceCount"
+                    [disabled]="recurrence().endCondition !== 'occurrenceCount'"
+                    (input)="setOccurrenceCount($event)"
+                  />
+                  occurrences
+                </label>
+
+                <label class="radio-row">
+                  <input
+                    type="radio"
+                    name="end-condition"
+                    [checked]="recurrence().endCondition === 'endDate'"
+                    (change)="setEndCondition('endDate')"
+                  />
+                  On
+                  <input
+                    type="date"
+                    aria-label="End date"
+                    [value]="recurrence().endDate"
+                    [disabled]="recurrence().endCondition !== 'endDate'"
+                    (change)="setEndDate($event)"
+                  />
+                </label>
+              </div>
+
+              @if (recurrenceOccurrenceCountError(); as occurrenceMessage) {
+                <p class="field-error" role="alert">{{ occurrenceMessage }}</p>
+              }
+              @if (recurrenceEndDateError(); as endDateMessage) {
+                <p class="field-error" role="alert">{{ endDateMessage }}</p>
+              }
+            </fieldset>
+          }
+        </section>
+
+        <aside class="panel summary-panel">
+          <h2>Booking summary</h2>
+
+          <div class="summary-resource">
+            <span class="resource-icon resource-icon--small">
+              <app-resource-type-icon [type]="resource.resourceType" />
+            </span>
+            <div>
+              <p class="summary-resource-name">{{ resource.name }}</p>
+              <p class="chips">
+                <span class="chip">{{ typeLabel(resource.resourceType) }}</span>
+                <span class="chip">{{ capacityLabel(resource) }}</span>
+                <span class="chip">{{ approvalLabel(resource) }}</span>
+              </p>
+            </div>
+          </div>
+
+          <dl class="summary-rows">
+            @if (mode() === 'recurring') {
+              <div class="summary-row">
+                <dt>Repeats</dt>
+                <dd>{{ recurrencePatternLabel() }}</dd>
+              </div>
+              <div class="summary-row">
+                <dt>From</dt>
+                <dd>{{ recurrence().localStartTime }} – {{ recurrence().localEndTime }}</dd>
+              </div>
+              <div class="summary-row">
+                <dt>Starting</dt>
+                <dd>{{ recurrence().startDate }}</dd>
+              </div>
+              <div class="summary-row">
+                <dt>Ends</dt>
+                <dd>{{ recurrenceEndsLabel() }}</dd>
+              </div>
+            } @else {
+              <div class="summary-row">
+                <dt>Date</dt>
+                <dd>{{ resourceZoneSpan()?.date }}</dd>
+              </div>
+              <div class="summary-row">
+                <dt>Time</dt>
+                <dd>{{ resourceZoneSpan()?.timeRange }}</dd>
+              </div>
+              <div class="summary-row">
+                <dt>Duration</dt>
+                <dd>{{ durationLabel() }}</dd>
+              </div>
+            }
+            @if (showQuantityStepper()) {
+              <div class="summary-row">
+                <dt>Quantity</dt>
+                <dd>{{ quantity() }}</dd>
+              </div>
+            }
+            @if (title().trim().length > 0) {
+              <div class="summary-row">
+                <dt>Title</dt>
+                <dd>{{ title() }}</dd>
+              </div>
+            }
+          </dl>
+
+          @if (resource.requiresApproval) {
+            <!-- FR-7.1: a booking on an approval-gated resource is created
+                 Pending, not Confirmed. Said before the member commits, not
+                 only in the outcome panel afterwards. -->
+            <div class="approval-notice">
+              <svg class="notice-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+                <path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              </svg>
+              <div>
+                <p class="notice-title">Approval required</p>
+                <p class="notice-text">
+                  This booking will be submitted for approval. You'll see its status on your calendar.
+                </p>
+              </div>
+            </div>
+          }
+
+          <!-- Step 5: the reason the last submit was refused, already resolved
+               into message and placement by booking-rejection.ts. Field-level
+               messages render against their own controls (see durationError /
+               titleError / quantityError above); what lands here is everything
+               with no control to blame. -->
+          @if (topOfFormMessage(); as message) {
+            <div class="submit-error" role="alert">
+              <p>{{ message }}</p>
+
+              @if (topOfFormRecheck()) {
+                <!-- Only when looking again could genuinely change the
+                     answer — a rule refusal offers nothing, so it suggests
+                     nothing. For a quantity the resource can't satisfy it is
+                     the only way out, since an exclusive resource has no
+                     stepper to correct it with. -->
+                <a class="secondary-button" [routerLink]="['/resources', resource.id, 'availability']">
+                  Check availability
+                </a>
+              }
+
+              @if (rejection()?.outcomeUnknown) {
+                @if (canRetrySeries()) {
+                  <!-- The recurring endpoint *does* carry an idempotency key,
+                       so finishing an attempt whose outcome was never observed
+                       resolves to the same series rather than creating a
+                       second one. Saying why, not just offering the button. -->
+                  <!-- The limit is stated, not implied: the key lives in this
+                       page, so a reload or a change to the form takes the
+                       guarantee with it. -->
+                  <p class="field-hint">
+                    Trying again is safe — this request carries a key that resolves to the same series. That holds
+                    while this page stays open and the form is unchanged; if you reload or edit it, check your
+                    calendar instead.
+                  </p>
+                  <button type="button" class="secondary-button" (click)="confirmBooking()">Try again</button>
+                } @else {
+                  <!-- Never a retry button here. For a one-off booking because
+                       POST /bookings has no idempotency key at all (wp7-plan.md
+                       §7); for a series because the key that made a retry safe
+                       belonged to a request this form no longer builds — the
+                       page was reloaded, or a field was edited — so repeating
+                       now would be a *new* attempt that could double the
+                       first. -->
+                  <!-- Deep-linked to the date in question, and that is the
+                       whole point: "check My Bookings" worked when a new
+                       booking would be at the top of a list, but a calendar
+                       has no top, so the member has to be told which day to
+                       look at. checkCalendarParams() names the week for a
+                       one-off and the month for a series. -->
+                  <a
+                    class="secondary-button"
+                    routerLink="/calendar"
+                    [queryParams]="checkCalendarParams()"
+                  >
+                    Check your calendar
+                  </a>
+                }
+              }
+            </div>
+          }
+
+          <button type="button" class="primary-button confirm-button" [disabled]="!canSubmit()" (click)="confirmBooking()">
+            @if (submitting()) {
+              Booking…
+            } @else if (mode() === 'recurring') {
+              Confirm series
+            } @else {
+              Confirm booking
+            }
+          </button>
+
+          <!-- Only when there *are* fields to fix: a resource with no bookable
+               hours has its own explanation above, and telling the member to
+               fix a field would send them looking for one that isn't there. -->
+          @if (mode() === 'recurring' && !recurrenceIsValid() && recurrenceUnavailable() === null) {
+            <p class="field-hint">Fix the highlighted fields above to complete the series.</p>
+          }
+        </aside>
+      </div>
+    }
+
+    <!-- Only while there is still something to change: once the booking
+         exists, "go back and pick a different time" is the wrong advice, and
+         in recurring mode the series names its own times anyway. -->
+    @if (!isArchived() && selection() && !created() && mode() === 'oneOff') {
+      <section class="change-bar">
+        <svg class="change-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+          <path d="M12 11v5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+          <circle cx="12" cy="8" r="0.9" fill="currentColor" />
+        </svg>
+
+        <div class="change-text">
+          <p class="change-title">Need to make a change?</p>
+          <p class="change-hint">To choose a different date or time, go back to the availability calendar.</p>
+        </div>
+
+        <a class="secondary-button" [routerLink]="['/resources', resource.id, 'availability']">Back to availability</a>
+      </section>
+    }
+  </div>
+}

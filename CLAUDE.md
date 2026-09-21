@@ -19,6 +19,10 @@ Authoritative specs live in `/docs`:
   work packages over time; each new one lands in `/docs` alongside this one
   and gets its own subsection in §12 below.
 - `bookspace-schema-v2.sql` — the database, source of truth
+- [`STATE-OF-THE-APP.md`](docs/STATE-OF-THE-APP.md) — **a current snapshot of
+  what works, what is verified, what is deliberately absent, and what is left.**
+  Start there when picking this up cold or preparing a demo; updated at the
+  close of each phase.
 - `decisions/000N-*.md` — every open decision from PRD §13, plus ones raised
   during schema/ERD review, resolved and written up individually with the
   reasoning behind each. See §9 below for the index. Check here before
@@ -63,6 +67,42 @@ docs/                          PRD, work packages, schema, decision records
 Dependencies point inward. `Domain` references nothing. `Api` references
 `Application` and `Infrastructure`. Do not reference `Infrastructure` from
 `Domain` or `Application`.
+
+### Frontend folder layout
+
+Restructured 2026-09-18 on the owner's instruction. Every feature is split by
+**what a file is**, not by which screen happens to use it:
+
+```
+frontend/src/app/
+  tests/                       app-level specs
+  core/                        auth/ · http/ · notifications/, each + tests/
+  features/<feature>/
+    components/<component>/    one folder per component: its .ts/.html/.scss
+                               and nothing else
+    services/                  thin API services
+    models/                    wire types mirroring the backend DTOs
+    <purpose>/                 helpers grouped by what they do — e.g.
+                               availability/grid, availability/date,
+                               booking/arrival, booking/rejection,
+                               booking/recurrence, calendar/grid
+    tests/                     every .spec.ts for that feature
+  layout/                      components/shell/ · breadcrumb.service.ts · tests/
+  shared/                      brand-mark/ · resource-type/
+```
+
+Two rules, and the second is not negotiable:
+
+- **A component gets its own folder under `components/`**, named without the
+  `.component` suffix, holding only its three files. They travel together, so
+  `templateUrl`/`styleUrl` stay `./<name>.component.html`.
+- **No `.spec.ts` ever sits outside a `tests/` folder.** A spec should not be
+  visible without opening a tests folder first. Vitest globs
+  `src/**/*.spec.ts`, so location is a convention this file enforces rather
+  than something the build checks — a new spec put beside its subject will
+  still run, and is still wrong.
+
+Paths quoted in `docs/roadmap/wp*.md` before 2026-09-18 predate this move.
 
 ---
 
@@ -625,21 +665,30 @@ split into its own reviewable steps. Full narrative:
       (Phase 2).
 - [x] Booking form for one-off and recurring bookings, with clear
       validation feedback. **Done 2026-09-17** (Phase 3).
-- [ ] Calendar view rendering bookings, including recurring series, without
-      choking on volume. **Hard problem, not yet reached.**
-- [ ] Approval queue UI for approvers.
-- [ ] Cancellation and blackout handling in the UI.
-- [ ] Wire the full flow end-to-end against the real API.
+- [x] Calendar view rendering bookings, including recurring series, without
+      choking on volume. **Done 2026-09-18** (Phase 4) — the hard problem.
+- [ ] Approval queue UI for approvers. **Phase 6, the last unbuilt screen.**
+- [x] Cancellation and blackout handling in the UI. **Done 2026-09-18**
+      (Phase 4) — occurrence and whole-series cancellation, and the three
+      cancellation readings including a blackout's null actor.
+- [ ] Wire the full flow end-to-end against the real API. **Phase 7.** The
+      whole path is verified at the API level; the browser click-through is
+      what remains.
 
-Acceptance criteria (all four still open):
+Acceptance criteria (two met, two open):
 - [ ] A member completes browse → book → confirm entirely through the UI.
-      Every screen on that path exists as of Phase 3 and every request it
-      makes is verified against the running API — what is missing is the
+      Every screen on that path exists, and as of 2026-09-18 the **whole path
+      is verified end to end against the running API** (browse → availability
+      → book → calendar → detail → cancel → calendar). What is missing is the
       click-through itself, which no tool here can perform. Phase 7's sweep
       is where it gets ticked.
-- [ ] Recurring bookings render correctly in the calendar.
-- [ ] The calendar stays responsive under realistic data volume.
-- [ ] An approver can action pending requests from the UI.
+- [x] Recurring bookings render correctly in the calendar. **Done 2026-09-18** —
+      occurrences carry a recurrence marker; verified against a real series.
+- [x] The calendar stays responsive under realistic data volume. **Done
+      2026-09-18**, and measured rather than asserted: DOM is bounded by the
+      chip cap, not by the data — 50 → 1000 bookings holds at 56 chips. A
+      browser-level measurement has not been taken (jsdom figures only).
+- [ ] An approver can action pending requests from the UI. **Phase 6.**
 
 Notes: Phase 1 deliberately does not render the admin resource CRUD actions
 the provided designs show — flagged rather than silently dropped. No
@@ -689,6 +738,91 @@ now, in case it matters before touching this feature area:
 - `recurrenceUnavailableReason` is an explicit state for a resource with no
   bookable hours configured. It is **not** "fully booked" — that stays the
   server's answer, reported per occurrence (FR-5.4).
+
+**Phase 4 re-planned, 2026-09-18 — My Bookings cancelled, Phases 4 and 5
+merged.** Owner's call, taken after Phase 4's step 1 had already shipped. Full
+reasoning in [`docs/wp7-plan.md`](docs/wp7-plan.md)'s Phase 4 preamble; the
+narrative is in [`docs/roadmap/wp7.md`](docs/roadmap/wp7.md). What is true now,
+before touching this area:
+
+- **There is no My Bookings screen and there will not be one.** A separate list
+  is redundant once a calendar exists, and the source PDF never asked for one —
+  it asks for a calendar and for cancellation handling, both of which Phase 4
+  now carries. `/my-bookings` is **removed**, not repointed.
+- **The calendar is the landing screen**, at `/calendar`, with `/home`
+  redirecting to it. Home had been a placeholder since WP-6 with no job
+  assigned to it anywhere in the PRD or any work package, so nothing was
+  displaced. The nav item is "Calendar"; "My Bookings" is deleted.
+- **Phase 5's number is retired, not reused.** Phases 6 and 7 keep theirs, so
+  every existing reference to "Phase 5, the hard problem" still resolves.
+- **Which statuses the calendar draws is a rendering rule, not a query.**
+  `ListBookingsQueryRequest.Status` takes one value, not a set, so "everything
+  except cancelled" cannot be asked for server-side: the bounded window is
+  fetched unfiltered and filtered in the client. Drawn — `Confirmed`,
+  `Pending` (distinctly, and by more than colour), `Completed`/`NoShow` muted.
+  Not drawn — `Cancelled` and `Rejected`; both hold no time, and
+  `NotificationKind` covers telling the member by email.
+- **The accepted cost, recorded rather than discovered later**: a cancelled
+  booking's *reason* — including decision `0019`'s blackout snapshot — is
+  readable only by direct link to `/bookings/:id`. Owner accepted this on
+  2026-09-18.
+- **Step 1 shipped before the re-plan and survived it untouched.**
+  `BookingsService.list()/getById()/cancel()` and
+  `RecurrenceRulesService.cancel()` exist and are verified against the live API;
+  `list()` is exactly the date-window-bounded fetch the calendar needs.
+- **Step 2 is done (2026-09-18)**: `features/calendar/` — `calendar-range.ts`
+  (URL contract, week/month boundaries, the UTC fetch window, day-cell layout,
+  the week hour axis) plus the component, built against both provided designs.
+  The fetch is bounded to the visible window and **walked across pages**
+  (`MaxPageSize` is 100 and rejects anything larger rather than clamping); a
+  window is never "everything, filtered in the browser", and **there is no
+  client-side recurrence expansion anywhere in this feature** — decision `0007`
+  already made every occurrence its own row. 754 vitest tests.
+- **Step 4 is done (2026-09-18)**: `features/booking/detail/` on
+  `/bookings/:id`, reached by clicking a chip. It **must keep rendering a
+  cancelled booking correctly** even though the calendar no longer draws one —
+  a direct link, a bookmark and the booking screen's "check your calendar"
+  message all still resolve there, and that is when someone most wants to know
+  what happened. The three cancellation readings (self / administrator / null
+  actor = blackout) are the point of the screen, not decoration.
+- **Steps 5–6 (cancelling) are done (2026-09-18).** Two facts worth holding on
+  to before touching that area: the occurrence rule and the series rule are
+  **different** — `Booking.CanBeCancelled` is not-terminal **and**
+  `EndsAtUtc > now`, while `RecurrenceRule.CanBeCancelled()` is `Status ==
+  Active` with **no time component** — so a live series stays cancellable from a
+  past or already-cancelled occurrence. And **the client cannot check the second
+  rule at all**: no response carries the rule's status and there is no
+  `GET /recurrence-rules/{id}`, so the action is offered optimistically and the
+  422 explains it. A read endpoint would close that; it belongs to a future
+  backend package alongside `POST /bookings`' missing idempotency key.
+- **Neither cancel is idempotent, so nothing on either path ever offers a
+  retry** — a repeat rewrites who called the meeting off. The only action on
+  failure is "Reload this booking".
+- **The week view makes two assumptions that are easy to undo by accident.**
+  Overlapping bookings are packed into side-by-side columns (`layOutDay`) rather
+  than every chip spanning the width — a member with two bookings at once is
+  ordinary, and full-width chips painted over each other. And a booking under 45
+  minutes gets a one-line chip (`isCompactChip`): the chip is `overflow: hidden`
+  and a row is a fixed 56px per hour, so the two-line shape silently swallowed
+  the names of short bookings.
+- **The week grid's geometry has one source and must keep it**:
+  `minuteOffsetPercent` is the only place a time becomes a vertical position,
+  and both the hour labels and the chips resolve through it. The grid draws one
+  row per hour *span* (`hourRows()`), deliberately one fewer than the labels
+  (`hourTicks()`, which marks both ends). Giving labels a grid row each is what
+  made every chip sit an hour-fraction low on 2026-09-18 — and no percentage
+  assertion can catch that, since jsdom does no layout and the emitted string is
+  identical either way.
+- **Test gotcha this step surfaced, worth knowing before editing route specs**:
+  a spec that navigates to `/home` now lands on the calendar, which fetches
+  immediately — leaving an open request whose `httpMock.verify()` failure
+  **corrupts the shared TestBed for every spec file after it**, showing up as
+  unrelated failures that vary run to run. Route specs use placeholder routes
+  (`/settings`, `/help`) unless they are specifically about the calendar.
+- **Timezone discipline in frontend tests**: the calendar reads instants in the
+  viewer's zone, CI runs in UTC and local development here is CET, so specs
+  build instants from local components (`new Date(2026, 8, 24, 9, 0)`) rather
+  than from `"...Z"` literals, which would be silently environment-dependent.
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across

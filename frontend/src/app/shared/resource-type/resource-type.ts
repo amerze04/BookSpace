@@ -1,4 +1,4 @@
-import { ResourceDetail, ResourceSummary, ResourceType } from '../../features/resources/resources.models';
+import { ResourceDetail, ResourceSummary, ResourceType } from '../../features/resources/models/resources.models';
 
 // Extracted 2026-09-16 (WP-7 Phase 2, availability screen) — the third place
 // needing the type label and capacity label, after ResourceListComponent and

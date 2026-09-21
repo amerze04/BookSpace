@@ -1,0 +1,527 @@
+// Only the grid scrolls; the toolbar stays put. A *definite*-height chain via
+// flexbox at every link (`flex: 1; min-height: 0`), never percentage heights —
+// the availability screen took three attempts to learn that a `height: 100%`
+// chain silently does nothing when any link in it sizes to its own content.
+// See docs/roadmap/wp7.md's own note on that detour.
+:host {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.calendar {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 16px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  background: #ffffff;
+  border: 1px solid #e5d8dd;
+  border-radius: 12px;
+  padding: 12px 16px;
+}
+
+.toolbar-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.period-label {
+  margin: 0 0 0 8px;
+  font-size: 1.35rem;
+  font-weight: 600;
+  color: #1d171a;
+}
+
+.today-button,
+.step-button,
+.retry-button {
+  background: #ffffff;
+  border: 1px solid #e5d8dd;
+  border-radius: 10px;
+  color: #1d171a;
+  cursor: pointer;
+  font: inherit;
+  padding: 8px 14px;
+
+  &:hover {
+    border-color: #b07a8d;
+  }
+}
+
+.step-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+
+  svg {
+    width: 18px;
+    height: 18px;
+  }
+}
+
+.view-toggle {
+  display: inline-flex;
+  background: #ffffff;
+  border: 1px solid #e5d8dd;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.view-option {
+  background: transparent;
+  border: 0;
+  color: #6a6065;
+  cursor: pointer;
+  font: inherit;
+  padding: 8px 22px;
+
+  &.active {
+    background: #6b1835;
+    color: #ffffff;
+    font-weight: 600;
+  }
+}
+
+.state-message {
+  background: #ffffff;
+  border: 1px solid #e5d8dd;
+  border-radius: 12px;
+  color: #6a6065;
+  margin: 0;
+  padding: 24px;
+  text-align: center;
+
+  &--error {
+    border-color: #d63c3c;
+    color: #d63c3c;
+
+    p {
+      margin: 0 0 12px;
+    }
+  }
+}
+
+.inline-link {
+  color: #6b1835;
+  font-weight: 600;
+}
+
+// **One scroll container per view, with the day header sticky inside it** — not
+// a fixed header beside a separately-scrolling body.
+//
+// Two grids that must agree on column widths cannot both be right when only one
+// of them scrolls: the scrollbar is laid out *inside* the scrolling box, so the
+// body's seven columns each came out a couple of pixels narrower than the
+// header's and the drift accumulated across the week (~17px by Sunday). Sharing
+// one scrolling box makes the two grids the same width by construction rather
+// than by compensating for a scrollbar whose width is neither known nor
+// constant across platforms.
+//
+// It also fixes horizontal scrolling on a narrow screen, where the header and
+// body would otherwise have to be kept in sync manually.
+.grid {
+  background: #ffffff;
+  border: 1px solid #e5d8dd;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+// Opaque and raised, so rows scroll underneath rather than through it. Both
+// carry a background already; without one a sticky header shows the rows
+// travelling through it.
+.weekday-header,
+.week-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+// `flex: none` on every direct child, and it is load-bearing rather than
+// defensive: a flex item shrinks to fit by default, so the grids would compress
+// themselves into the visible height and `.grid` would have nothing to scroll.
+// Keeping their natural heights is what produces the overflow in the first
+// place.
+.weekday-header,
+.month-cells,
+.week-header,
+.week-body {
+  flex: none;
+}
+
+// ---------------------------------------------------------------------------
+// Month
+// ---------------------------------------------------------------------------
+
+.weekday-header,
+.month-cells {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.weekday-header {
+  background: #faf6f7;
+  border-bottom: 1px solid #e5d8dd;
+}
+
+.weekday-name {
+  color: #6a6065;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 12px 8px;
+  text-align: center;
+}
+
+.month-cells {
+  // Rows grow to fit their chips rather than being squeezed by the viewport, so
+  // a busy day is never silently clipped. The scrolling happens on `.grid`
+  // above, not here — see its comment for why there is only one scroll box.
+  grid-auto-rows: minmax(120px, auto);
+}
+
+.day-cell {
+  border-right: 1px solid #f0e6ea;
+  border-bottom: 1px solid #f0e6ea;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px;
+
+  &:nth-child(7n) {
+    border-right: 0;
+  }
+
+  &--outside {
+    background: #fcfafb;
+
+    .day-number {
+      color: #b8adb2;
+    }
+  }
+}
+
+.day-number {
+  align-items: center;
+  border-radius: 999px;
+  color: #1d171a;
+  display: inline-flex;
+  font-size: 0.9rem;
+  height: 26px;
+  justify-content: center;
+  min-width: 26px;
+  padding: 0 6px;
+
+  &--today {
+    background: #6b1835;
+    color: #ffffff;
+    font-weight: 600;
+  }
+}
+
+// A real anchor since step 4 — every chip opens its own booking. Kept looking
+// like a chip rather than a link: the whole surface is the target, so
+// underlining the text would say something false about where the click lands.
+.chip,
+.week-chip {
+  color: inherit;
+  cursor: pointer;
+  text-decoration: none;
+
+  &:hover {
+    outline: 1px solid #b07a8d;
+  }
+
+  &:focus-visible {
+    outline: 2px solid #6b1835;
+    outline-offset: 1px;
+  }
+}
+
+.chip {
+  align-items: center;
+  background: #f4e9ed;
+  // A transparent border on the base chip, so the pending variant swapping it
+  // for a dashed one does not change the chip's size and shift the stack.
+  border: 1px dashed transparent;
+  border-radius: 8px;
+  color: #1d171a;
+  display: flex;
+  font-size: 0.8rem;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 7px;
+}
+
+// **Pending: not holding the slot yet (FR-7.1).** Carried by the dashed outline
+// *and* by the "(Pending)" the label itself gains — never by colour alone, so
+// it survives greyscale, a colour-blind reader and a screen reader.
+.chip--pending,
+.week-chip.chip--pending {
+  background: #fffdfd;
+  border-color: #b07a8d;
+}
+
+// Completed and NoShow: honest history, receded rather than removed.
+.chip--past,
+.week-chip.chip--past {
+  background: #f1eeef;
+  color: #6a6065;
+
+  .chip-time {
+    color: #6a6065;
+  }
+}
+
+.chip-recurring {
+  color: #6b1835;
+  display: inline-flex;
+  flex: none;
+  margin-left: auto;
+
+  svg {
+    height: 13px;
+    width: 13px;
+  }
+}
+
+// The overflow affordance. A real button rather than a label: it expands the
+// day in place, which is what makes the capped chips reachable at all — there
+// is no day view to send anyone to.
+.more-button {
+  align-self: flex-start;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  color: #6b1835;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 2px 4px;
+  text-align: left;
+
+  &:hover {
+    background: #f4e9ed;
+  }
+}
+
+.chip-time {
+  color: #6b1835;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// ---------------------------------------------------------------------------
+// Week
+// ---------------------------------------------------------------------------
+
+$hour-gutter: 64px;
+
+.week-header,
+.week-body {
+  display: grid;
+  grid-template-columns: $hour-gutter repeat(7, minmax(0, 1fr));
+}
+
+.week-header {
+  background: #faf6f7;
+  border-bottom: 1px solid #e5d8dd;
+}
+
+.week-day-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 8px;
+  text-align: center;
+
+  &--today {
+    background: #f4e9ed;
+
+    .week-day-weekday,
+    .week-day-date {
+      color: #6b1835;
+      font-weight: 700;
+    }
+  }
+}
+
+.week-day-weekday {
+  color: #6a6065;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.week-day-date {
+  color: #1d171a;
+  font-size: 0.85rem;
+}
+
+.week-body {
+  position: relative;
+  // Room for the opening and closing labels, each centred on an edge of the
+  // grid and so half outside it. Without the top half, 08:00 was cut in two by
+  // the scroll box and could not be brought into view at any scroll position.
+  //
+  // Container padding sits outside the grid area, so this buys the space
+  // without changing the row heights the chip offsets are percentages of.
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+// One row per hour *span* — so the column's height is exactly the hour window
+// times the row height, which is the basis the chips' percentage offsets are
+// resolved against. A row per *label* would be one hour too tall and every chip
+// would sit progressively below its stated time.
+.week-column {
+  display: grid;
+  grid-auto-rows: 56px;
+}
+
+// No rows of its own: it stretches to the row height the columns establish, and
+// each label is placed by the same percentage a chip starting at that hour
+// gets. That is what keeps the label, the line and the chip on one line.
+.hour-gutter {
+  border-right: 1px solid #e5d8dd;
+  position: relative;
+}
+
+.hour-tick {
+  color: #6a6065;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  padding-right: 8px;
+  position: absolute;
+  right: 0;
+  text-align: right;
+  // Centred on its own line rather than hanging below it, so the label reads as
+  // marking the boundary it actually sits on.
+  transform: translateY(-50%);
+  white-space: nowrap;
+}
+
+.week-column {
+  border-right: 1px solid #f0e6ea;
+  min-width: 0;
+  position: relative;
+
+  &:last-child {
+    border-right: 0;
+  }
+
+  &--today {
+    background: #fdf9fa;
+  }
+}
+
+// border-**top**: the line belongs at its row's start, where that hour's label
+// is. As a border-bottom each line sat an hour below its own label, which
+// compounded the offset the percentage basis was already introducing.
+.hour-line {
+  border-top: 1px solid #f4eef1;
+}
+
+// `left` and `width` are set inline per chip, from the overlap layout — two
+// bookings at the same time share the column rather than being drawn on top of
+// each other.
+.week-chip {
+  background: #f4e9ed;
+  border: 1px dashed transparent;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  font-size: 0.78rem;
+  gap: 2px;
+  overflow: hidden;
+  padding: 4px 6px;
+  position: absolute;
+
+  // The marker sits top-right of a stacked chip rather than after the label,
+  // matching the design.
+  .chip-recurring {
+    position: absolute;
+    right: 6px;
+    top: 5px;
+  }
+
+  // Enough for one line plus padding and border. A 15-minute booking is only
+  // 14px of grid, and a chip that short can show nothing at all.
+  min-height: 26px;
+}
+
+// **A booking too short for two lines gets one, rather than losing its name.**
+// The chip is `overflow: hidden`, so the old fixed two-line shape simply
+// swallowed the label on anything under about three quarters of an hour —
+// which is what cut "Another test" off in the owner's screenshot.
+.week-chip--compact {
+  align-items: baseline;
+  flex-direction: row;
+  gap: 6px;
+  padding: 2px 6px;
+
+  .chip-time {
+    flex: none;
+  }
+
+  .chip-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  // Nowhere to put it on one line without stealing the label's room; the chip's
+  // aria-label still says the booking repeats.
+  .chip-recurring {
+    display: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .toolbar {
+    justify-content: flex-start;
+  }
+
+  .period-label {
+    font-size: 1.1rem;
+    margin-left: 0;
+    width: 100%;
+  }
+
+  // Seven columns cannot honestly fit a phone. Both grids keep their shape (a
+  // week *is* a seven-column thing) and scroll sideways in their own container
+  // rather than the page body — the one exception CLAUDE.md's responsive rule
+  // already allows for grids. `.grid` already scrolls on both axes, so the
+  // header travels with the columns instead of having to be kept in sync.
+  .grid--month .weekday-header,
+  .grid--month .month-cells,
+  .week-header,
+  .week-body {
+    min-width: 640px;
+  }
+}

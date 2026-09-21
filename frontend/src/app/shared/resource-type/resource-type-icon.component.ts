@@ -1,5 +1,5 @@
 import { Component, input } from '@angular/core';
-import { ResourceType } from '../../features/resources/resources.models';
+import { ResourceType } from '../../features/resources/models/resources.models';
 
 // The per-ResourceType glyph, extracted 2026-09-16 (WP-7 Phase 2) from the
 // identical @switch duplicated in ResourceListComponent and
