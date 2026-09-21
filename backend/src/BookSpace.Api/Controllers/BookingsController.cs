@@ -113,9 +113,24 @@ public sealed class BookingsController : ControllerBase
     // Enum.TryParse would otherwise let through as an undefined value matching
     // no row (see ListBookingsQueryRequestValidator).
     //
-    // UserId and Scope are TenantAdmin-only (decision 0002); a plain member
-    // sending either gets 400 ValidationFailed naming the field, not a quietly
-    // narrowed 200.
+    // UserId and Scope are both restricted, but **not to the same role**, and
+    // the difference is load-bearing rather than incidental:
+    //
+    //   - UserId is TenantAdmin-only (decision 0002).
+    //   - Scope also admits an **Approver** — widened in WP-5 Phase 3 for
+    //     decision 0018's approver queue, which is the caller that needs
+    //     `?scope=tenant`. The rows are then narrowed server-side by
+    //     ApprovalReach: unrestricted for a TenantAdmin, assigned-resources-only
+    //     for an Approver.
+    //
+    // Either one sent by a caller who may not send it is 400 ValidationFailed
+    // naming the field, not a quietly narrowed 200. Sending both together is
+    // refused outright rather than given a precedence rule.
+    //
+    // (This block said "UserId and Scope are TenantAdmin-only" until 2026-09-21.
+    // It had been half wrong since WP-5 Phase 3 and was caught building WP-7
+    // Phase 6 against it. ListBookingsQueryRequestValidator is what is actually
+    // enforced; this comment is now what it says.)
     public sealed record ListBookingsRequest(
         DateTime? From = null,
         DateTime? To = null,

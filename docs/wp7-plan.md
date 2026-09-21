@@ -2332,18 +2332,59 @@ nothing real by reading the booking's own stamp.
    through this same method and `scope=own` in its URL would be this client
    restating a default the server owns.
 
-3. **The queue screen.** `/approvals` replaces WP-6's placeholder.
-   `features/approvals/components/approval-queue/`, specs in
+3. **The queue screen — done, 2026-09-21.** `/approvals` replaces WP-6's
+   placeholder. `features/approvals/components/approval-queue/`, specs in
    `features/approvals/tests/`, reading through `booking/`'s `BookingsService`
    and models — the same cross-feature shape the calendar already uses, for the
    same stated reason (the contract belongs with the aggregate, not with
-   whichever screen renders it). Rows carry resource, requester, span,
-   quantity, requested-at and the recurrence marker, and each links to
-   `/bookings/:id` for the full read. Oldest-first (`?sort=createdAtUtc`), real
-   pagination off `PagedResult`'s own fields, and the loading / empty / error
-   states landing here rather than being retrofitted. **Empty is the ordinary
-   case for this screen**, not an edge — an approver with nothing waiting is a
-   healthy Tuesday — so it gets real copy rather than a shrug.
+   whichever screen renders it). Rows carry resource, requester, span, quantity,
+   requested-at and the recurrence marker, and each links to `/bookings/:id` for
+   the full read. Oldest-first (`?sort=createdAtUtc`), real pagination off
+   `PagedResult`'s own fields, and the loading / empty / error states landing
+   here rather than being retrofitted. **Empty is the ordinary case for this
+   screen**, not an edge — an approver with nothing waiting is a healthy
+   Tuesday — so it gets real copy rather than a shrug.
+
+   **Delivered. 21 new vitest tests (783 total, 0 failed)**, `npx ng build`
+   clean, and the exact request the component makes was fired against the
+   running API. Five things worth recording:
+
+   - **The formatting lives in `queue/approval-queue.ts`, not the component** —
+     `toQueueRow` and `waitingLabel` are pure functions with their own spec, the
+     same split `calendar-range.ts` and `availability-grid.ts` already keep. The
+     component is left with the fetch, the three states and the paging.
+   - **The span reads in the viewer's zone, not the resource's** — the opposite
+     of the booking *form* and the same as the booking *detail*. Decision `0003`
+     governs availability ("Monday 9am" is what the room's clock says) because
+     that is the reading the member chose against; an approver is not choosing a
+     slot, they are judging one against their own day. The resource's zone is one
+     click away on `/bookings/:id`.
+   - **Requested-at renders twice, deliberately**: `Waiting 4 days` beside the
+     absolute stamp. A relative label alone cannot be checked against anything;
+     an absolute one alone makes the reader do the subtraction. A stamp *ahead*
+     of the browser clock reads `Just now` rather than negative time — the
+     server's clock and the browser's are not the same clock, and
+     "Waiting -1 minutes" is the kind of visible nonsense that makes a reader
+     distrust the rest of the row.
+   - **No role branch anywhere in the component, and a comment saying so.** An
+     Approver and a TenantAdmin send byte-identical requests; `ApprovalReach`
+     narrows the rows server-side. A client-side branch would be a second copy of
+     an authorization rule that cannot see what the server sees — which resources
+     an approver gates is not in the token. There is a test asserting the request
+     carries no role-dependent parameter at all.
+   - **The DOM is what the tests assert**, per this package's own lesson: the
+     series badge is checked as a rendered element on one card and absent on
+     another, the detail link as a real `href`, the empty state as its own
+     sentence. A signal-level assertion would have passed on every one of the
+     five bugs the owner found by clicking.
+
+   **Flagged, not fixed:** the two seeded Pending requests are for slots on
+   2026-09-17 and 2026-09-18 — already in the past — because nothing expires them
+   (the stale-approval-expiry job is specified but not running, per
+   `STATE-OF-THE-APP.md` §1). The queue therefore shows requests whose slot has
+   already gone, with no marker saying so. Whether a past request should be
+   labelled, sorted differently or hidden is a product question the work package
+   does not answer, so it is raised rather than decided (CLAUDE.md §11).
 
 4. **Approve and reject, with a note.** The decision controls, inheriting the
    three rules the 2026-09-17 hardening pass settled and this phase does not

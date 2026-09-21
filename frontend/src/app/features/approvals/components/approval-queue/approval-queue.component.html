@@ -1,0 +1,107 @@
+<div class="approval-queue">
+  <p class="intro">Booking requests waiting on a decision, longest-waiting first.</p>
+
+  @if (loading()) {
+    <p class="state-message">Loading requests…</p>
+  } @else if (loadError()) {
+    <div class="state-message state-message--error">
+      <p>Couldn't load the approval queue.</p>
+      <button type="button" class="retry-button" (click)="retry()">Try again</button>
+    </div>
+  } @else if (rows().length === 0) {
+    <!-- Empty is the ordinary case here, not an edge: an approver with nothing
+         waiting is a healthy Tuesday. So it gets a real sentence rather than the
+         shrug a list's empty state usually carries. -->
+    <div class="state-message state-message--empty">
+      <p class="empty-title">Nothing is waiting for you.</p>
+      <p class="empty-detail">
+        Requests appear here as soon as someone books a resource that needs approval.
+      </p>
+    </div>
+  } @else {
+    <ul class="queue-list">
+      @for (row of rows(); track row.id) {
+        <li class="queue-card">
+          <div class="card-main">
+            <div class="card-heading">
+              <h3 class="resource-name">{{ row.resourceName }}</h3>
+              @if (row.isRecurring) {
+                <!-- Every occurrence of a series is its own booking row
+                     (decision 0007) and is decided on its own, so this marker is
+                     what tells an approver that the same room five Mondays
+                     running is one member's series rather than five separate
+                     asks. -->
+                <span class="recurring-badge">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M4 9a6 6 0 0 1 10-3l2 2M20 15a6 6 0 0 1-10 3l-2-2M16 4v4h-4M8 20v-4h4"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                  Part of a series
+                </span>
+              }
+            </div>
+
+            <p class="requester">Requested by {{ row.requesterName }}</p>
+
+            <dl class="card-facts">
+              <div class="fact">
+                <dt>When</dt>
+                <dd>{{ row.span.date }}, {{ row.span.timeRange }}</dd>
+              </div>
+              <div class="fact">
+                <dt>Quantity</dt>
+                <dd>{{ row.quantityLabel }}</dd>
+              </div>
+              <div class="fact">
+                <dt>Requested</dt>
+                <!-- Both readings, deliberately: the relative one answers the
+                     question at a glance, the absolute one is the one a reader
+                     can actually check. -->
+                <dd>
+                  <span class="waiting">{{ row.waitingLabel }}</span>
+                  <span class="requested-at">{{ row.requestedAtLabel }}</span>
+                </dd>
+              </div>
+            </dl>
+          </div>
+
+          <div class="card-actions">
+            <a class="detail-link" [routerLink]="['/bookings', row.id]">
+              View booking
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M5 12h14M13 6l6 6-6 6"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </a>
+          </div>
+        </li>
+      }
+    </ul>
+
+    @if (totalPages() > 1) {
+      <nav class="pagination" aria-label="Approval queue pages">
+        <button type="button" class="pagination-button" [disabled]="!hasPreviousPage()" (click)="goToPreviousPage()">
+          Previous
+        </button>
+        <span class="pagination-status">
+          Page {{ page() }} of {{ totalPages() }} ({{ totalCount() }} waiting)
+        </span>
+        <button type="button" class="pagination-button" [disabled]="!hasNextPage()" (click)="goToNextPage()">
+          Next
+        </button>
+      </nav>
+    }
+  }
+</div>

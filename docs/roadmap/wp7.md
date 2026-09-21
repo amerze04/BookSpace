@@ -1148,3 +1148,77 @@ calendar reads through this same `list()`, and `scope=own` appearing in its URL
 would be this client restating a default the server already owns (decision
 `0015`), which is the exact shape every other parameter in `buildListParams`
 avoids.
+
+### Step 3 — the queue screen (2026-09-21)
+
+`/approvals` is a real screen. **783 vitest tests, 0 failed** (was 762),
+`npx ng build` clean, and the exact request the component makes was fired
+against the running API before the screen was called done.
+
+**The request is the design decision, and it is one request rather than two.**
+`GET /bookings?scope=tenant&status=Pending&sort=createdAtUtc`. An Approver and a
+TenantAdmin send byte-identical bytes; the server narrows the rows itself
+through `ApprovalReach` — unrestricted for an admin, assigned-resources-only for
+an approver (decision `0018`). The component therefore does not branch on role
+and there is a test asserting it sends no role-dependent parameter at all. A
+client-side branch would be a second copy of an authorization rule sitting beside
+the real one, and a copy that *cannot* agree with it: which resources an approver
+gates is not in the token. `approverGuard` already keeps the route and its nav
+item away from anyone who cannot approve, so "you have no reach here" is not a
+state this screen has to render — which matters, because it would be
+indistinguishable from an empty queue.
+
+**Oldest first, which is what step 1 was for.** A queue's default order is the
+order people have been waiting in, and that is the only ordering the requested-at
+column can justify. The endpoint accepted `sort=createdAtUtc` long before it
+returned the field; the two halves now work together, and the live probe
+confirmed both in one request.
+
+**The formatting is a pure module, not component methods.**
+`queue/approval-queue.ts` holds `toQueueRow` and `waitingLabel` with their own
+spec, the same split `calendar-range.ts` and `availability-grid.ts` already keep.
+Two calls inside it are worth knowing before editing:
+
+- **The span reads in the viewer's zone, not the resource's** — the opposite
+  emphasis from the booking form, and the same as the booking detail. Decision
+  `0003` governs *availability*, because "Monday 9am" is the reading a member
+  chose against when picking a slot. An approver is not choosing a slot; they are
+  judging one against their own day. The resource's zone is one click away on
+  `/bookings/:id`, which is where an approver who needs it is already going.
+- **Requested-at renders twice on purpose**: `Waiting 4 days` beside the absolute
+  stamp. A relative label alone cannot be checked against anything; an absolute
+  one alone makes the reader do the subtraction. And a stamp *ahead* of the
+  browser's clock reads `Just now` rather than negative time — the server's clock
+  and the browser's are not the same clock, so a request created seconds ago can
+  arrive stamped a moment in the future, and "Waiting -1 minutes" is the kind of
+  visible nonsense that makes a reader distrust the rest of the row.
+
+**The tests assert the DOM, per this package's own lesson.** The series badge is
+checked as a rendered element present on one card and absent on another, the
+detail link as a real `href`, the empty state as its own sentence, the pager as
+two buttons whose disabled state and resulting `page` parameter both hold. Five
+bugs in WP-7 were found by the owner clicking and none by the suite, and every
+one of them would have passed a signal-level assertion.
+
+**Empty got real copy rather than a shrug**, because for this screen empty is the
+ordinary case: an approver with nothing waiting is a healthy Tuesday, not a
+failure to find anything. "Nothing is waiting for you", plus a line saying when
+requests will appear.
+
+#### Raised, not decided: the queue shows requests whose slot has already passed
+
+Both seeded Pending requests are for slots on 2026-09-17 and 2026-09-18, and
+today is 2026-09-21. They are still Pending because **nothing expires them** —
+the stale-approval-expiry job is specified, its `ExpiresAtUtc` column exists and
+`ApprovalDecision.Expired` is in the enum, but no worker runs today
+(`STATE-OF-THE-APP.md` §1: "not exercised in anger yet"). So the queue honestly
+renders what the API returns, which includes requests it is now too late to act
+on usefully.
+
+Three things could be true and the work package settles none of them: a past
+request could carry a marker, sort separately, or not appear at all. Deciding
+silently would be inventing a requirement (CLAUDE.md §11), so it is raised here
+and in the plan. Worth noting the backend does not refuse the decision either —
+`dbo.ApproveBooking` re-checks capacity, blackouts and archival, none of which a
+past slot violates — so an approver *can* approve a booking that has already
+ended. That is a backend question, not a screen one.
