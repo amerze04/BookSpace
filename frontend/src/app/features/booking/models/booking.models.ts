@@ -125,6 +125,22 @@ export type BookingSortField = (typeof BOOKING_SORT_FIELDS)[number];
 // version, so a typo is a compile error here rather than a 400 at runtime.
 export type BookingSort = BookingSortField | `-${BookingSortField}`;
 
+// BookSpace.Application.Features.Bookings.BookingScope, spelled the way the
+// query string carries it. ASP.NET Core binds an enum query value with
+// Enum.TryParse, which is case-insensitive, so lowercase is what goes on the
+// wire and lowercase is what this type declares — no casing conversion at the
+// call site, and no second spelling to keep in step.
+//
+// `own` is the endpoint's own default, so a caller wanting it omits the
+// parameter rather than spelling it out — the project's rule that an omitted
+// filter is genuinely absent from the URL rather than sent as a default this
+// client invented (decision 0015). It stays in the type because the enum has
+// it: this mirrors a backend type rather than enumerating only the values one
+// screen happens to need, and a caller that does set it explicitly gets it
+// sent verbatim, like every other parameter here.
+export const BOOKING_SCOPES = ['own', 'tenant'] as const;
+export type BookingScope = (typeof BOOKING_SCOPES)[number];
+
 // GET /bookings query parameters — BookingsController.ListBookingsRequest.
 //
 // **from/to are an overlap filter, not a containment one** (the query record's
@@ -139,13 +155,27 @@ export type BookingSort = BookingSortField | `-${BookingSortField}`;
 // zero-width window overlaps nothing and so could only ever read as "you have
 // no bookings".
 //
-// **userId and scope are deliberately absent.** Both exist on the endpoint and
-// both are admin-only (decision 0002, widened to Approver in WP-5 Phase 3), and
-// Phase 4 is `scope=Own` only — the settled call is that decision 0002's
-// TenantAdmin reach is built once, in Phase 6, with the approval queue that
-// actually needs it. Adding them here for a path nothing exercises would put a
-// parameter in this client that a plain member's token can only ever be 400'd
-// for sending.
+// **`scope` arrives in WP-7 Phase 6; `userId` deliberately does not.** This
+// block used to say both were absent, and half of that is now out of date —
+// the approval queue is the path that exercises `scope`, and it is here.
+//
+// The two are not symmetrical, which is why only one of them landed:
+//
+//   - `scope=tenant` may be sent by a **TenantAdmin or an Approver**
+//     (ListBookingsQueryRequestValidator was widened for exactly this queue in
+//     WP-5 Phase 3, decision 0018). The server then narrows the rows itself
+//     via ApprovalReach — unrestricted for an admin, assigned-resources-only
+//     for an approver, and empty for a plain member, who therefore gets an
+//     empty page rather than a 403. **The client does not branch on role and
+//     must not start**: it asks the same question and the answer is already
+//     correctly scoped.
+//   - `userId` stays TenantAdmin-only and stays out. Nothing in WP-7 filters a
+//     queue by one member, and a parameter a member's token can only ever be
+//     400'd for sending is not surface worth carrying.
+//
+// Sending `userId` together with a non-`Own` scope is refused outright rather
+// than given a precedence rule, so the two could not be combined even if both
+// were here.
 export interface ListBookingsParams {
   from?: string;
   to?: string;
@@ -154,6 +184,7 @@ export interface ListBookingsParams {
   page?: number;
   pageSize?: number;
   sort?: BookingSort;
+  scope?: BookingScope;
 }
 
 // One row of GET /bookings — ListBookingsQueryResponse. A summary, not the
@@ -170,9 +201,18 @@ export interface ListBookingsParams {
 // definition, so ids alone would force a fetch per row to render anything a
 // person could read.
 //
-// userName is mapped but not rendered in this phase — with `scope=Own` every
-// row is the viewer's own, so printing their own name on each is noise. Phase
-// 6's queue is its first real reader.
+// userName is mapped but not rendered on a `scope=own` read — every row there
+// is the viewer's own, so printing their own name on each is noise. **Phase 6's
+// queue is its first real reader**, and the first caller of this endpoint who
+// does not already know whose booking each row is.
+//
+// createdAtUtc is new in WP-7 Phase 6 (added to the backend row on the owner's
+// call, 2026-09-21) and is the queue's requested-at column — "how long has this
+// been waiting", which is what makes a queue a queue rather than a list. It is
+// the booking's own stamp, **not** the approval request's `requestedAtUtc`:
+// that one is on the detail read only, so using it would force a
+// GET /bookings/{id} per visible row. The two are written in the same unit of
+// work, so nothing real is lost.
 //
 // recurrenceRuleId is what makes a row a series occurrence (FR-5.2). It is set
 // on every occurrence of a series and null on a one-off booking; the list uses
@@ -190,6 +230,7 @@ export interface BookingSummary {
   quantity: number;
   title: string | null;
   status: BookingStatus;
+  createdAtUtc: string;
 }
 
 // BookSpace.Domain.Enums.ApprovalDecision, in its own declared order.
@@ -317,4 +358,73 @@ export interface CancelBookingResponse {
   cancelledByUserId: string;
   cancelledAtUtc: string;
   cancellationReason: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 — the approval decisions.
+// ---------------------------------------------------------------------------
+
+// ApprovalRequests.Note NVARCHAR(500), restated from
+// ApproveBookingCommandRequestValidator.MaxNoteLength so the form can bound the
+// input rather than letting a 400 be the first thing that says so.
+//
+// **A different number from the two limits beside it**, and the reason it gets
+// its own constant rather than reusing one that merely looks similar: a
+// cancellation reason is 300 (MAX_CANCELLATION_REASON_LENGTH) and a title is
+// 200 (MAX_BOOKING_TITLE_LENGTH). Reject declares its own copy of the same 500
+// on the backend and the two have never differed, so this is one constant here
+// rather than two.
+export const MAX_DECISION_NOTE_LENGTH = 500;
+
+// POST /bookings/{id}/approve body — BookingsController.ApproveBookingRequest.
+// The body is optional in full server-side (a decision with no note is legal);
+// this client always sends one, with `note: null` when there is nothing to say,
+// so there is a single request shape to test and reason about. Same rule
+// CancelBookingRequest already follows.
+//
+// No actor field, for the same reason cancel has none: who decided comes from
+// the token, so an approver cannot attribute their decision to someone else by
+// editing a body.
+export interface ApproveBookingRequest {
+  note: string | null;
+}
+
+// POST /bookings/{id}/reject body — BookingsController.RejectBookingRequest.
+// Structurally identical to the approve body and deliberately not shared with
+// it, per decision 0015's per-endpoint rule: these are two different decisions
+// with different futures, and the backend keeps them as two records for the
+// same reason.
+export interface RejectBookingRequest {
+  note: string | null;
+}
+
+// POST /bookings/{id}/approve 200 — ApproveBookingCommandResponse.
+//
+// `status` is what makes this more than an echo: an approved booking comes back
+// **Confirmed**, which is the fact the queue acts on to drop the row. It is
+// read from the response rather than assumed, because the approval re-runs the
+// capacity check under dbo.ApproveBooking's lock (AC-5) and a success is
+// therefore a real outcome rather than a formality.
+//
+// decidedByUserId is the caller, always — the endpoint takes no actor. It is on
+// the wire so a screen can render "approved by you" without a second lookup.
+export interface ApproveBookingResponse {
+  id: string;
+  status: BookingStatus;
+  decidedByUserId: string;
+  decidedAtUtc: string;
+}
+
+// POST /bookings/{id}/reject 200 — RejectBookingCommandResponse. Its `status`
+// comes back **Rejected**.
+//
+// Kept separate from ApproveBookingResponse rather than aliased, matching the
+// backend's own split and decision 0015's per-endpoint rule. The two are the
+// same shape today; they are not the same contract, and an approved booking's
+// response is the one that would grow an approval-detail field first.
+export interface RejectBookingResponse {
+  id: string;
+  status: BookingStatus;
+  decidedByUserId: string;
+  decidedAtUtc: string;
 }

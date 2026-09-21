@@ -5,6 +5,8 @@ import { environment } from '../../../../environments/environment';
 import { PagedResult } from '../../../core/http/paged-result';
 import { skipErrorToast } from '../../../core/http/skip-error-toast';
 import {
+  ApproveBookingRequest,
+  ApproveBookingResponse,
   BookingDetail,
   BookingSummary,
   CancelBookingRequest,
@@ -12,6 +14,8 @@ import {
   CreateBookingRequest,
   CreateBookingResponse,
   ListBookingsParams,
+  RejectBookingRequest,
+  RejectBookingResponse,
 } from '../models/booking.models';
 
 // Thin wrapper over POST /bookings — the same "bind and dispatch" thinness
@@ -83,6 +87,41 @@ export class BookingsService {
       { context: skipErrorToast() },
     );
   }
+
+  // FR-7.1–FR-7.5, AC-5. A TenantAdmin may approve any Pending booking in
+  // their tenant; an Approver only one whose resource lists them (decision
+  // 0018). Neither is expressed here — the server resolves the caller's
+  // ApprovalReach from the token, so this client sends the same request
+  // whoever is signed in.
+  //
+  // **Nothing retries this**, the same rule cancel follows and for the same
+  // kind of reason: a decision is deliberately not idempotent, so a second
+  // call answers 422 BookingNotPending. Worse, this one can also fail *after*
+  // deciding nothing at all — dbo.ApproveBooking re-runs the capacity check
+  // under its lock (AC-5), so a 409 here means the slot went while the request
+  // sat in the queue, and a retry would only lose the same race again. An
+  // unknown outcome is reported as unknown and the approver is sent to re-read
+  // the queue.
+  approve(id: string, request: ApproveBookingRequest): Observable<ApproveBookingResponse> {
+    return this.http.post<ApproveBookingResponse>(
+      `${environment.apiBaseUrl}/bookings/${id}/approve`,
+      request,
+      { context: skipErrorToast() },
+    );
+  }
+
+  // Same reach as approve, and the same no-retry rule. **No 409 is possible
+  // here**: rejecting releases a claim rather than making one, so there is
+  // nothing for dbo.ApproveBooking's lock to refuse — which is why the two
+  // decisions do not share a rejection map even though they share an endpoint
+  // shape.
+  reject(id: string, request: RejectBookingRequest): Observable<RejectBookingResponse> {
+    return this.http.post<RejectBookingResponse>(
+      `${environment.apiBaseUrl}/bookings/${id}/reject`,
+      request,
+      { context: skipErrorToast() },
+    );
+  }
 }
 
 // A field is only added when the caller actually set it, so an omitted filter
@@ -118,6 +157,9 @@ function buildListParams(params: ListBookingsParams): HttpParams {
   }
   if (params.sort !== undefined) {
     httpParams = httpParams.set('sort', params.sort);
+  }
+  if (params.scope !== undefined) {
+    httpParams = httpParams.set('scope', params.scope);
   }
 
   return httpParams;

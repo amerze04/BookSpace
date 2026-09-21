@@ -34,6 +34,7 @@ function booking(overrides: Partial<BookingSummary> = {}): BookingSummary {
     quantity: 1,
     title: null,
     status: 'Confirmed',
+    createdAtUtc: '2026-09-20T08:00:00Z',
     ...overrides,
   };
 }

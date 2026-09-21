@@ -4,6 +4,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { firstValueFrom } from 'rxjs';
 import { BookingsService } from '../services/bookings.service';
 import {
+  ApproveBookingResponse,
   BookingDetail,
   BookingSummary,
   CancelBookingResponse,
@@ -196,15 +197,32 @@ describe('BookingsService', () => {
       req.flush(page());
     });
 
-    // Phase 4 is scope=Own only (wp7-plan.md's settled call 3) — and a plain
-    // member's token is 400'd for sending either parameter, so this is not
-    // merely unused surface but surface that would break the screen.
-    it('never sends scope or userId — the widening belongs to Phase 6', () => {
-      firstValueFrom(service.list({ status: 'Pending' }));
+    // **Replaces Phase 4's "never sends scope or userId".** Half of that is
+    // still true and the other half is what Phase 6 is for: the approval queue
+    // is the caller that asks for `scope=tenant`, so the parameter now goes out
+    // when it was set. `userId` stays out of ListBookingsParams entirely — it
+    // is TenantAdmin-only, nothing in WP-7 filters by one member, and sending
+    // it alongside a non-Own scope is refused outright anyway.
+    it('sends scope when the caller asked for it', () => {
+      firstValueFrom(service.list({ scope: 'tenant', status: 'Pending' }));
+
+      const req = httpMock.expectOne((r) => r.url === `${API}/bookings`);
+      expect(req.request.params.get('scope')).toBe('tenant');
+      expect(req.request.params.get('status')).toBe('Pending');
+      expect(req.request.params.has('userId')).toBe(false);
+
+      req.flush(page());
+    });
+
+    // The default still travels as an absence, not as a value. A member's own
+    // calendar reads through this same method, and `scope=own` in its URL would
+    // be this client restating a default the server already owns (decision
+    // 0015) — the exact shape every other parameter here avoids.
+    it('omits scope entirely when it was not set', () => {
+      firstValueFrom(service.list({ status: 'Confirmed' }));
 
       const req = httpMock.expectOne((r) => r.url === `${API}/bookings`);
       expect(req.request.params.has('scope')).toBe(false);
-      expect(req.request.params.has('userId')).toBe(false);
 
       req.flush(page());
     });
@@ -341,7 +359,125 @@ describe('BookingsService', () => {
       });
     });
   });
+
+  describe('approve', () => {
+    it('posts the note to /bookings/{id}/approve and opts out of the global error toast', async () => {
+      const resultPromise = firstValueFrom(
+        service.approve('b1', { note: 'Fine by me — the lab is free that morning.' }),
+      );
+
+      const req = httpMock.expectOne(`${API}/bookings/b1/approve`);
+      expect(req.request.method).toBe('POST');
+      expect(req.request.body).toEqual({ note: 'Fine by me — the lab is free that morning.' });
+      expect(req.request.context.get(SKIP_ERROR_TOAST)).toBe(true);
+
+      const response = decided({ status: 'Confirmed' });
+      req.flush(response);
+
+      expect(await resultPromise).toEqual(response);
+    });
+
+    // The body is optional in full server-side, but this client always sends
+    // one so there is a single request shape to test and reason about — the
+    // same rule cancel() already follows.
+    it('sends an explicit null note rather than an empty body', () => {
+      firstValueFrom(service.approve('b1', { note: null }));
+
+      const req = httpMock.expectOne(`${API}/bookings/b1/approve`);
+      expect(req.request.body).toEqual({ note: null });
+
+      req.flush(decided());
+    });
+
+    // AC-5, and the reason this endpoint is not interchangeable with reject:
+    // dbo.ApproveBooking re-runs the capacity check under its lock, so the slot
+    // can be gone by the time an approver gets to the request. The 409 has to
+    // reach the caller intact — it is a different event from "already decided"
+    // and step 5's dialect renders it as its own outcome.
+    it('surfaces a 409 from the approval-time capacity re-check', async () => {
+      const resultPromise = firstValueFrom(service.approve('b1', { note: null }));
+
+      httpMock
+        .expectOne(`${API}/bookings/b1/approve`)
+        .flush({ reasonCode: 'SlotUnavailable' }, { status: 409, statusText: 'Conflict' });
+
+      await expect(resultPromise).rejects.toMatchObject({
+        status: 409,
+        error: { reasonCode: 'SlotUnavailable' },
+      });
+    });
+
+    // Not idempotent, deliberately: a second decision on the same booking is
+    // 422 BookingNotPending, which is also what the losing approver sees when
+    // two people decide at once. Asserted here so the no-retry rule in the
+    // service's own header has a test behind it rather than only a comment.
+    it('surfaces a 422 when the booking is no longer pending', async () => {
+      const resultPromise = firstValueFrom(service.approve('b1', { note: null }));
+
+      httpMock
+        .expectOne(`${API}/bookings/b1/approve`)
+        .flush(
+          { reasonCode: 'BookingNotPending' },
+          { status: 422, statusText: 'Unprocessable Entity' },
+        );
+
+      await expect(resultPromise).rejects.toMatchObject({
+        status: 422,
+        error: { reasonCode: 'BookingNotPending' },
+      });
+    });
+  });
+
+  describe('reject', () => {
+    it('posts the note to /bookings/{id}/reject and opts out of the global error toast', async () => {
+      const resultPromise = firstValueFrom(
+        service.reject('b1', { note: 'The printer is out for maintenance that week.' }),
+      );
+
+      const req = httpMock.expectOne(`${API}/bookings/b1/reject`);
+      expect(req.request.method).toBe('POST');
+      expect(req.request.body).toEqual({ note: 'The printer is out for maintenance that week.' });
+      expect(req.request.context.get(SKIP_ERROR_TOAST)).toBe(true);
+
+      const response = decided({ status: 'Rejected' });
+      req.flush(response);
+
+      expect(await resultPromise).toEqual(response);
+    });
+
+    it('sends an explicit null note rather than an empty body', () => {
+      firstValueFrom(service.reject('b1', { note: null }));
+
+      const req = httpMock.expectOne(`${API}/bookings/b1/reject`);
+      expect(req.request.body).toEqual({ note: null });
+
+      req.flush(decided({ status: 'Rejected' }));
+    });
+
+    // The two endpoints are not symmetrical and the client must not assume they
+    // are: rejecting releases a claim rather than making one, so there is
+    // nothing for the lock to refuse and no 409 to handle. Asserted as "hits
+    // its own URL" rather than as an absence, since a missing status code
+    // cannot be tested directly — what can be is that reject never goes
+    // anywhere near the approve route.
+    it('uses its own route, not approve with a flag', () => {
+      firstValueFrom(service.reject('b1', { note: null }));
+
+      httpMock.expectNone(`${API}/bookings/b1/approve`);
+      httpMock.expectOne(`${API}/bookings/b1/reject`).flush(decided({ status: 'Rejected' }));
+    });
+  });
 });
+
+function decided(overrides: Partial<ApproveBookingResponse> = {}): ApproveBookingResponse {
+  return {
+    id: 'b1',
+    status: 'Confirmed',
+    decidedByUserId: 'approver-1',
+    decidedAtUtc: '2026-09-21T11:00:00Z',
+    ...overrides,
+  };
+}
 
 function summary(overrides: Partial<BookingSummary> = {}): BookingSummary {
   return {
@@ -356,6 +492,7 @@ function summary(overrides: Partial<BookingSummary> = {}): BookingSummary {
     quantity: 1,
     title: null,
     status: 'Confirmed',
+    createdAtUtc: '2026-09-20T08:00:00Z',
     ...overrides,
   };
 }

@@ -1087,3 +1087,64 @@ would stay green while a browser read every queue row's requested-at as local
 time — §4.3's stated silent failure, and the same class of mistake as this
 package's five owner-found bugs, where the assertion that existed was true but
 was not about what the user saw.
+
+### Step 2 — wire types and the approver contract (2026-09-21)
+
+No screen. `booking.models.ts` and `BookingsService` only, the same
+contract-first shape Phase 4's step 1 took. **762 vitest tests, 0 failed** (was
+754), `npx ng build` clean.
+
+**Every shape was confirmed against the running API, and one of them contradicted
+a comment in the codebase.** `BookingsController.List`'s own header still reads
+"UserId and Scope are TenantAdmin-only (decision 0002); a plain member sending
+either gets 400" — which was true when it was written and has been half wrong
+since WP-5 Phase 3 widened `ListBookingsQueryRequestValidator` so an **Approver**
+may also ask for `scope=tenant`. The validator is what is actually enforced. The
+live probe settled it: the seeded Approver's token gets `200` and two Pending
+rows, not a `400`. Worth knowing before the queue is built on the assumption, and
+worth knowing generally — this is the second time in two steps that the thing
+that was true was the code rather than the prose beside it.
+
+What else the probes established, none of it assumed:
+
+- **A plain member sending `scope=tenant` really is `400 ValidationFailed`**
+  with `errors.Scope`. That is why the parameter stays off the calendar's own
+  calls rather than being sent harmlessly: it would break the landing screen for
+  every member.
+- **`userId` is refused for an Approver too**, `400` with `errors.UserId`, which
+  is why it stays out of `ListBookingsParams` entirely rather than being carried
+  as unused surface.
+- **Step 1's field works end to end**: `?sort=createdAtUtc` orders oldest-first
+  and the row carries the stamp with its `Z`. The two halves of the requested-at
+  column were proven together rather than separately.
+- **Both decision responses are exactly the four fields typed** —
+  `{id, status, decidedByUserId, decidedAtUtc}` — with `status` coming back
+  `Confirmed` from approve and `Rejected` from reject, and a `null` note accepted
+  on both.
+- **Non-idempotence is real rather than merely documented**: a second approve on
+  the same booking answers `422 BookingNotPending`. That is the same answer the
+  losing approver gets when two people decide at once, which is what step 6 will
+  force deliberately.
+- **The note limit is exactly 500 and FluentValidation reports it under `Note`**:
+  501 characters is `400` with `errors.Note` naming both numbers, 500 passes
+  validation and reaches the handler. Step 5's dialect needs that field name to
+  place the message on the right control, so it was read off the wire rather than
+  inferred from the C# property.
+
+**Two probe bookings created, one cancelled, one left Rejected.** Both were on
+the 3D Printer on 2026-11-16; the approved one was cancelled afterwards, and the
+rejected one stays `Rejected` because a terminal booking is not cancellable.
+**The owner's two seeded Pending bookings were deliberately not touched** — step
+6 and the Phase 6 demo both want them — and the tenant-scoped count was re-read
+at 2 afterwards to prove it.
+
+**One stale comment and its matching test were corrected rather than left.**
+`ListBookingsParams`' header said "userId and scope are deliberately absent",
+true for Phase 4 and now half wrong, and the spec
+`never sends scope or userId — the widening belongs to Phase 6` said the same. It
+was replaced by **two** tests rather than deleted: `scope` goes out when asked
+for, and is still absent when not. The second is the one worth having — the
+calendar reads through this same `list()`, and `scope=own` appearing in its URL
+would be this client restating a default the server already owns (decision
+`0015`), which is the exact shape every other parameter in `buildListParams`
+avoids.

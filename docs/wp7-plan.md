@@ -2274,16 +2274,63 @@ nothing real by reading the booking's own stamp.
      the failure that matters: a typed test client deserializes correctly
      either way, and the thing a browser reads is the string.
 
-2. **Wire types and the approver contract.** `booking.models.ts` gains
-   `createdAtUtc` on `BookingSummary`, `scope` on `ListBookingsParams` (with a
-   note on why `userId` still stays out), the approve/reject request and
-   response types, and `MAX_DECISION_NOTE_LENGTH = 500`. `BookingsService`
-   gains `approve()` and `reject()`; the tenant-scoped read is the existing
-   `list()` with `scope` now expressible, not a second method. No screen — a
-   contract step, the shape Phase 4's step 1 proved worth taking on its own.
-   Verified against the running API with **both** an Approver's token and a
-   TenantAdmin's, since those two differ in what the server returns rather than
-   in what the client sends.
+2. **Wire types and the approver contract — done, 2026-09-21.**
+   `booking.models.ts` gains `createdAtUtc` on `BookingSummary`, `scope` on
+   `ListBookingsParams` (with a note on why `userId` still stays out), the
+   approve/reject request and response types, and
+   `MAX_DECISION_NOTE_LENGTH = 500`. `BookingsService` gains `approve()` and
+   `reject()`; the tenant-scoped read is the existing `list()` with `scope` now
+   expressible, not a second method. No screen — a contract step, the shape
+   Phase 4's step 1 proved worth taking on its own. Verified against the running
+   API with **both** an Approver's token and a plain member's, since those two
+   differ in what the server returns rather than in what the client sends.
+
+   **Delivered, with every shape confirmed against the running API rather than
+   read off the C# records alone.** 8 net new vitest tests (**762 total, 0
+   failed**), `npx ng build` clean (the three SCSS budget warnings pre-date this
+   step). What the live probes settled:
+
+   - **An Approver really may send `scope=tenant`** — `200`, two Pending rows on
+     the 3D Printer, each carrying `resourceName`, `userName` and now
+     `createdAtUtc`. This was the assumption most worth checking, because the
+     controller's own header still says "UserId and Scope are TenantAdmin-only";
+     that comment predates WP-5 Phase 3's widening and the validator is the
+     thing that is actually true. **A plain member sending the same parameter is
+     `400 ValidationFailed` with `errors.Scope`**, confirmed, which is why the
+     calendar's own calls must keep leaving it off.
+   - **`userId` stays out, and the refusal is real**: an Approver sending it gets
+     `400` with `errors.UserId` ("Only a TenantAdmin may filter bookings by
+     userId"). Not merely unused surface.
+   - **`sort=createdAtUtc` orders oldest-first as intended**, and step 1's new
+     field is on the wire with its `Z` — the two halves of the requested-at
+     column proven together rather than separately.
+   - **Both decision responses are exactly the four fields typed**, checked by
+     approving and rejecting real Pending bookings: `{id, status,
+     decidedByUserId, decidedAtUtc}`, with `status` coming back `Confirmed` and
+     `Rejected` respectively. A `null` note is accepted on both.
+   - **Non-idempotence is real, not merely documented**: a second approve on the
+     same booking answers `422 BookingNotPending`. That is also what the losing
+     approver sees when two people decide at once, which is step 6's race.
+   - **The note limit is exactly 500 and the field is `Note`**: 501 characters
+     is `400 ValidationFailed` with `errors.Note` naming both numbers; 500 passes
+     validation and reaches the handler. Step 5's dialect needs that field name
+     to place the message on the right control.
+
+   **Cleanup.** Two probe bookings were created on the 3D Printer (2026-11-16)
+   and decided; the approved one was cancelled afterwards, and the rejected one
+   stays `Rejected` because a terminal booking is not cancellable. The owner's
+   two seeded Pending bookings were deliberately left untouched — step 6 and the
+   Phase 6 demo both want them — and `totalCount` was re-checked at 2 afterwards
+   to prove it.
+
+   **One stale comment corrected rather than left**: `ListBookingsParams`'
+   header said "userId and scope are deliberately absent", which was true for
+   Phase 4 and is now half wrong. The matching spec —
+   `never sends scope or userId — the widening belongs to Phase 6` — was
+   replaced by two tests rather than deleted: one that `scope` goes out when
+   asked for, one that it is still absent when not, since the calendar reads
+   through this same method and `scope=own` in its URL would be this client
+   restating a default the server owns.
 
 3. **The queue screen.** `/approvals` replaces WP-6's placeholder.
    `features/approvals/components/approval-queue/`, specs in
