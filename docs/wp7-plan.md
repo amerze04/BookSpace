@@ -25,7 +25,7 @@ into its own smaller steps once it is about to start, not all up front.
 | — Recurring-booking hardening pass | **Done** 2026-09-17 (7 findings) | 556 |
 | 4 — Calendar, booking detail & cancellation (the hard problem) | **Done** 2026-09-18 (7 steps, re-planned mid-phase) | 754 |
 | ~~5 — Calendar~~ | **Absorbed into Phase 4**, 2026-09-18 — number retired, not reused | — |
-| 6 — Approval queue | **Planned** 2026-09-21 (6 steps), build not started | — |
+| 6 — Approval queue | **In progress** — steps 1–5 done 2026-09-21, step 6 (live race) open | 813 |
 | 7 — End-to-end wiring + AC sweep | Not started | — |
 
 **Phase 5's number is retired rather than reused**, and Phases 6 and 7 keep
@@ -2386,28 +2386,88 @@ nothing real by reading the booking's own stamp.
    labelled, sorted differently or hidden is a product question the work package
    does not answer, so it is raised rather than decided (CLAUDE.md §11).
 
-4. **Approve and reject, with a note.** The decision controls, inheriting the
-   three rules the 2026-09-17 hardening pass settled and this phase does not
-   re-litigate: everything feeding a submit is disabled while it is in flight,
-   the outcome renders from a snapshot of what was submitted, and a server
-   field message outranks a client one until its control is edited. **Neither
-   decision is idempotent** — a second call answers `422 BookingNotPending` —
-   so nothing on this path offers a retry, the same rule cancel follows for the
-   same reason. A decided row leaves the queue from the response, not from a
-   blind refetch.
+   **Follow-up the same day — the detail link was broken.** The owner clicked a
+   queue row and got "this booking doesn't exist or you don't have access". Not
+   the screen: `GET /bookings/{id}` answered 404 to an approver reading a booking
+   in their own queue, because `BookingReadRules.ResolveDetailFilter` never got
+   WP-5 Phase 3's approver widening while `ResolveOwnerFilter` did. Closed by
+   decision [`0027`](decisions/0027-approver-booking-detail-reach.md), the
+   owner's call: an approver may read a booking that is **their own or** on a
+   resource they gate. Two things fell out of it that the bug report did not
+   contain — the obvious fix (`AnyOwnerRestrictedToResources`) is an **AND** and
+   would have silently removed an approver's access to their own bookings on
+   ungated resources, invisible in the dev data because the seeded approver owns
+   none; and `FindDetailAsync` had been **silently ignoring** `owner.ResourceIds`
+   since WP-5 Phase 3, a latent fail-open this change would have been the first
+   to trigger. The cancel deliberately did not widen. **1073 unit + 511
+   integration, 0 failed**; the regression guard was proven to fail against the
+   AND-shaped filter before being kept. Narrative in
+   [`docs/roadmap/wp7.md`](roadmap/wp7.md).
 
-5. **The rejection dialect, and AC-5 as its own outcome.**
+   **The step-3 lesson, recorded because it is general**: verifying the request a
+   screen *makes* is not verifying the screen *works*. The queue's list call was
+   checked against the running API; its link target was not.
+
+4. **Approve and reject, with a note — done, 2026-09-21. Scope changed
+   mid-step: the controls are on the queue row *and* the booking detail
+   screen**, not the queue alone as this step originally read. The owner's call,
+   prompted by their own bug report — they went to the *booking* to decide. One
+   shared `DecisionPanelComponent` with two hosts, because building it twice
+   would mean two copies of the AC-5 wording, the in-flight rules and the
+   no-retry rule, and the first to drift would be the one nobody was looking at.
+
+   Inherits the three rules the 2026-09-17 hardening pass settled and does not
+   re-litigate them: everything feeding a submit is disabled while it is in
+   flight, the outcome renders from a snapshot of what was submitted, and a
+   server field message outranks a client one until its control is edited.
+   **Neither decision is idempotent** — a second call answers `422
+   BookingNotPending` — so nothing on this path offers a retry.
+
+   The two hosts differ in what they do afterwards, deliberately: the **queue
+   drops the row from the response** (a list being worked down should not
+   reshuffle), the **detail screen re-reads the booking** (a decision changes
+   more than the response carries — `status` moves *and* the approval section
+   gains its decision, decider, timestamp and note). Full reasoning in
+   [`docs/roadmap/wp7.md`](roadmap/wp7.md).
+
+   **Preceded by a bug fix this step depended on.** The detail screen was built
+   in Phase 4 for one audience and every second-person string on it assumed the
+   reader owned the booking; decision `0027` gave it a second audience the day
+   before. Four things were wrong — the "not held for you yet" note, both "back
+   to your calendar" links, "You cancelled this booking" on a `self`
+   cancellation, and, most seriously, **the cancel action offered to a
+   non-owner**, which would answer 404 every time. One `viewerIsOwner` computed
+   fixes all four, and the screen gained a "Requested by" row for non-owners.
+   Every existing detail spec failed on the first run, which was the fix
+   working.
+
+5. **The decision dialect, and AC-5 as its own outcome — done, 2026-09-21.**
    `approval-rejection.ts`, a fourth dialect on `booking-rejection.ts`'s
-   existing machinery rather than a second mapper — the status-0/5xx
-   unknown-outcome rules and the validation walk are identical for every write
-   this feature makes, and only the words differ. The codes, read off the
-   controller: `BookingNotPending`, `BookingNotFound`, `SlotUnavailable`,
-   `CapacityExceeded`, `BlackoutPeriod`, `ResourceArchived`, and
-   `ValidationFailed` on an over-long note. **`SlotUnavailable` /
-   `CapacityExceeded` must read as their own outcome** — the slot went while
-   the request sat in the queue, which is AC-5's whole point and is not the same
-   event as "already decided". A generic failure here would make the one
-   criterion this phase exists to close unverifiable from the screen itself.
+   machinery rather than a second mapper. Approve and reject share it: a code a
+   reject can never return simply never arrives, and two near-identical maps kept
+   in step would be a likelier source of a wrong message than one map with an
+   unreachable entry. Codes covered: `BookingNotPending`, `BookingNotFound`,
+   `SlotUnavailable`, `CapacityExceeded`, `BlackoutPeriod`, `ResourceArchived`,
+   and `ValidationFailed` on an over-long note (field `Note`, confirmed off the
+   wire in step 2).
+
+   **`SlotUnavailable` / `CapacityExceeded` read as their own outcome** — the
+   slot went while the request sat in the queue, which is AC-5's whole point.
+   A generic failure there would make the one criterion this phase exists to
+   close unverifiable from the screen, and would read to an approver as the
+   system being broken rather than as the capacity re-check doing its job.
+
+   **A fixture mistake worth recording**: the first five refusal tests asserted
+   the wrong message and passed. `isProblemDetails` requires `title` as well as
+   `reasonCode`, so a fixture carrying only a code falls through to the generic
+   message. Caught when the AC-5 assertion was tightened; the fixtures now build
+   a real ProblemDetails.
+
+   **813 vitest tests, 0 failed** (was 783), `npx ng build` clean. Verified live
+   end to end: a fresh Pending request created as a member, read as the approver,
+   approved with a note, re-read showing the full approval section, and a second
+   approve answering 422 — then the probe cancelled and the queue count
+   re-checked at 2, leaving the seeded requests untouched.
 
 6. **Live verification, including the race.** The queue walked against the
    running API end to end, and the concurrent-decision case forced rather than

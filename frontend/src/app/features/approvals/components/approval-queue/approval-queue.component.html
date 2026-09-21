@@ -85,6 +85,18 @@
                 />
               </svg>
             </a>
+
+            <!--
+              Decide here for the quick case; the same panel is on the booking
+              detail screen for the one an approver wants to read first (owner's
+              call, 2026-09-21). One component, so the AC-5 wording and the
+              no-retry rule cannot drift between the two places.
+            -->
+            <app-decision-panel
+              [bookingId]="row.id"
+              [subject]="'the ' + row.resourceName + ' request'"
+              (decided)="onDecided($event)"
+            />
           </div>
         </li>
       }

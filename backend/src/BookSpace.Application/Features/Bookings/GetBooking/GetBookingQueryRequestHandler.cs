@@ -1,6 +1,7 @@
 using BookSpace.Application.Abstractions;
 using BookSpace.Application.Common.Errors;
 using BookSpace.Application.Messaging;
+using BookSpace.Domain.Enums;
 
 namespace BookSpace.Application.Features.Bookings.GetBooking;
 
@@ -43,9 +44,26 @@ public sealed class GetBookingQueryRequestHandler
             ?? throw new InvalidOperationException(
                 "No authenticated user: GET /bookings/{id} answers about a specific member (FR-4.4).");
 
+        var isTenantAdmin = BookingReadRules.CanSeeOtherMembersBookings(_currentUser);
+
+        // WP-7 Phase 6, decision 0027: an Approver may also read a booking on a
+        // resource they gate, not only their own. One repository call, and only
+        // when it could change the answer — a TenantAdmin already sees
+        // everything, and a plain member has no reach to resolve. The same gate
+        // ListBookingsQueryRequestHandler uses, minus the scope test, because a
+        // detail read has no scope to ask about.
+        IReadOnlyCollection<Guid>? approverResourceIds = null;
+        if (!isTenantAdmin && _currentUser.IsInRole(Role.Approver))
+        {
+            approverResourceIds = await _bookings.FindApprovableResourceIdsAsync(
+                callerUserId,
+                cancellationToken);
+        }
+
         var owner = BookingReadRules.ResolveDetailFilter(
             callerUserId,
-            BookingReadRules.CanSeeOtherMembersBookings(_currentUser));
+            isTenantAdmin,
+            approverResourceIds);
 
         var detail = await _bookings.FindDetailAsync(request.BookingId, owner, cancellationToken)
             ?? throw new BookingNotFoundException(request.BookingId);

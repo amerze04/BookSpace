@@ -398,6 +398,7 @@ added, add its one-liner to both places.
 24. [`0024`](docs/decisions/0024-dst-fallback-recurrence-policy.md) — a DST fall-back occurrence resolves to the earlier of its two candidate UTC instants, for both start and end.
 25. [`0025`](docs/decisions/0025-recurrence-rule-tenant-scoping.md) — `RecurrenceRules` gets its own `OrgId` and all three §4.2 mechanisms (a gap found building WP-5 Phase 2).
 26. [`0026`](docs/decisions/0026-notifications-series-anchor.md) — `CK_Notifications_HasContext` now also accepts `RecurrenceRuleId` alone, for the whole-series-cancel notification.
+27. [`0027`](docs/decisions/0027-approver-booking-detail-reach.md) — an Approver may read a booking by id when it is **their own or** on a resource they gate; the union, not the list's intersection.
 
 If a task needs a decision that isn't listed above and isn't in this log,
 **stop and ask** rather than picking silently.

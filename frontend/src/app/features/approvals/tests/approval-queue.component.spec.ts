@@ -248,4 +248,70 @@ describe('ApprovalQueueComponent', () => {
       expect(buttons[1].disabled).toBe(false);
     });
   });
+
+  // ---- Deciding from the queue (step 4) ----------------------------------
+  describe('deciding', () => {
+    function panelButton(card: HTMLElement, fragment: string): HTMLButtonElement {
+      return (Array.from(card.querySelectorAll('app-decision-panel button')) as HTMLButtonElement[])
+        .find((b) => b.textContent?.includes(fragment))!;
+    }
+
+    it('offers a decision on every waiting row', () => {
+      createFixture();
+
+      expectQueueRequest().flush(page([booking({ id: 'b1' }), booking({ id: 'b2' })]));
+
+      expect(root().querySelectorAll('app-decision-panel')).toHaveLength(2);
+    });
+
+    // The decided row leaves from the response rather than from a refetch — a
+    // list being worked down should not reshuffle under the approver.
+    it('drops a decided row without refetching the page', () => {
+      createFixture();
+
+      expectQueueRequest().flush(
+        page([booking({ id: 'b1' }), booking({ id: 'b2' })], { totalCount: 2 }),
+      );
+
+      panelButton(cards()[0], 'Approve').click();
+      fixture.detectChanges();
+      panelButton(cards()[0], 'Yes, approve it').click();
+
+      httpMock.expectOne(`${API}/bookings/b1/approve`).flush({
+        id: 'b1',
+        status: 'Confirmed',
+        decidedByUserId: 'approver-1',
+        decidedAtUtc: '2026-09-21T11:00:00Z',
+      });
+
+      // No second list request: `httpMock.verify()` in afterEach would fail if
+      // one had gone out, and the row is gone regardless.
+      expect(cards()).toHaveLength(1);
+    });
+
+    // A refusal leaves the row where it is — nothing was decided, so nothing
+    // should disappear.
+    it('keeps the row when the decision is refused', () => {
+      createFixture();
+
+      expectQueueRequest().flush(page([booking({ id: 'b1' })]));
+
+      panelButton(cards()[0], 'Approve').click();
+      fixture.detectChanges();
+      panelButton(cards()[0], 'Yes, approve it').click();
+
+      httpMock.expectOne(`${API}/bookings/b1/approve`).flush(
+        {
+          title: 'The request was rejected by a rule.',
+          status: 409,
+          reasonCode: 'SlotUnavailable',
+          correlationId: 'test-correlation-id',
+        },
+        { status: 409, statusText: 'Conflict' },
+      );
+
+      expect(cards()).toHaveLength(1);
+      expect(text()).toContain('taken while the request was waiting');
+    });
+  });
 });

@@ -1222,3 +1222,175 @@ and in the plan. Worth noting the backend does not refuse the decision either �
 `dbo.ApproveBooking` re-checks capacity, blackouts and archival, none of which a
 past slot violates — so an approver *can* approve a booking that has already
 ended. That is a backend question, not a screen one.
+
+#### The detail link was broken, and decision 0027 closed it (2026-09-21)
+
+**Found by the owner clicking a queue row**, immediately after step 3 shipped —
+the sixth bug in this package found that way, and the first in the backend. The
+row linked to `/bookings/:id` and the screen said the booking did not exist.
+
+It was not the screen. `GET /bookings/{id}` answered **404** to an approver
+reading a booking in their own queue, because `BookingReadRules` has two
+methods and only one of them had been widened. WP-5 Phase 3 gave
+`ResolveOwnerFilter` decision `0018`'s resource reach; `ResolveDetailFilter`
+never got it, so an Approver — not being a TenantAdmin — fell through to
+`Owner(callerUserId)`. Three of the four booking endpoints agreed on an
+approver's reach and the fourth did not, and the fourth was the one that answers
+"what am I being asked to approve".
+
+**My step-3 mistake, and worth naming precisely**: I verified the queue's *list*
+request against the running API and did not verify its *link target*. Verifying
+the request a screen makes is not the same as verifying the screen works.
+
+The owner chose the widening (2026-09-21) over the three alternatives; the
+reasoning, including what was accepted in visibility terms, is in
+[`0027`](../decisions/0027-approver-booking-detail-reach.md).
+
+**Two things found while implementing it, neither of which the bug report
+contained:**
+
+- **The obvious fix was wrong, and wrong in a way the dev data hides.**
+  `BookingOwnerFilter` already had a resource restriction, so reusing
+  `AnyOwnerRestrictedToResources` looked like the whole job. It is an **AND** —
+  it drops the owner restriction entirely — which is right for the queue's
+  question ("what is booked on the resources I gate") and wrong for a detail
+  read, where an approver may see a booking because it is theirs *or* because
+  it is on a gated resource. Shipping it would have silently taken away an
+  approver's ability to read their own bookings on resources they do not gate.
+  **The seeded approver owns no bookings**, so no amount of clicking would have
+  surfaced it. The filter gained an explicit `Combination` and an
+  `OwnerOrResources` factory, and the regression test was proven to fail against
+  the AND-shaped version before being kept — a real 404, run, not reasoned about.
+- **A latent fail-open, closed on the way.** `FindDetailAsync` applied
+  `owner.UserId` and **silently ignored `owner.ResourceIds`**, which had been on
+  the filter since WP-5 Phase 3. Nothing had ever passed it one, so nothing
+  leaked — but this decision's implementation would have been the first caller,
+  and it would have got *any* booking in the tenant back. Both reads now go
+  through one `ApplyOwnerFilter` helper so a future field cannot be honoured by
+  one and dropped by the other.
+
+**What deliberately did not widen:** the cancel. `FindForCancelAsync` does not
+use the shared helper and says why — decision `0002` keeps a cancel with the
+owner and the TenantAdmin, and routing it through would have handed an approver
+the ability to cancel any booking on a resource they gate. Verified live: an
+approver cancelling a booking in their own queue still answers 404, and an
+unrelated member reading it still answers 404.
+
+**1073 unit + 511 integration, 0 failed** (was 1066 + 508).
+
+### The detail screen had one audience and now has two (2026-09-21)
+
+**Found by the owner clicking, immediately after `0027` landed** — the seventh
+bug in this package found that way. Opening a queued request showed *"This
+request is waiting for approval — the time is not held for you yet"*, which is
+the sentence written for the member who made the request, shown to the approver
+judging it.
+
+It was not one string. The booking detail screen was built in Phase 4 for
+exactly one audience, and **every second-person string on it assumed the reader
+owned the booking**. Decision `0027` gave it a second audience the day before
+and nothing taught it to tell them apart. Four things were wrong, in increasing
+order of seriousness:
+
+1. *"the time is not held for you yet"* — an approver was told a slot was not
+   held for them, about a booking that was never theirs.
+2. *"Back to your calendar"* — the booking is not on an approver's calendar at
+   all, and the queue is where they came from.
+3. *"You cancelled this booking"* — `cancellation.kind === 'self'` means *the
+   owner cancelled it*, and the template rendered that unconditionally in the
+   second person. Read by anyone else it was simply false.
+4. **The cancel action was offered to a non-owner.** `canCancel` checked status
+   and end-time and never ownership, because until `0027` only the owner or a
+   TenantAdmin could reach the screen and the two questions were the same one.
+   An approver viewing a *future* pending request would be offered a button that
+   answers 404 every time — verified when `0027` landed. Invisible on the seeded
+   data, whose requests are both in the past, so the button is suppressed for an
+   unrelated reason.
+
+The fix is one `viewerIsOwner` computed — `sub` from the token against the
+booking's `userId`, no extra request — and then the template choosing its
+subject from it. **The three cancellation kinds were left alone**: they describe
+the *actor*, which is what decision `0002` records and what the screen needs;
+only the pronoun was wrong, so the fix belongs in the words rather than in the
+computed.
+
+The screen also gained a **"Requested by"** row, shown only to a non-owner. An
+approver needs to know whose request it is and the screen never said; a member
+does not need their own name printed on their own booking, which is the same
+reason the calendar never renders `userName` either.
+
+**Every existing detail spec failed on the first run**, which was the fix
+working: they provided no signed-in user, so `viewerIsOwner` was false and the
+cancel actions vanished. They now install a `FakeAuthService` defaulting to the
+booking's owner — the real one reads from `localStorage`, empty in jsdom, which
+would have made every viewer a stranger silently.
+
+### Step 4 — approve and reject, in both places (2026-09-21)
+
+**The owner moved this from the plan's "queue rows only" to both surfaces**, and
+the reason was the bug report itself: they went to the *booking* to decide.
+Building it twice would mean two copies of the AC-5 wording, the in-flight rules
+and the no-retry rule, and the first to drift would be the one nobody was
+looking at. So there is one `DecisionPanelComponent` with two hosts.
+
+It lives under `approvals/` though `booking/` owns the endpoint, matching how the
+calendar reads through `booking/`'s service: **the contract belongs with the
+aggregate, the screen belongs with the job it does**, and deciding is an
+approver's job wherever it is rendered.
+
+The two hosts handle the outcome differently, on purpose:
+
+- **The queue drops the row from the response** and adjusts its counts, rather
+  than refetching. A list being worked down should not reshuffle under the
+  approver. The counts can drift if someone else decides at the same moment,
+  which is the accepted cost; the next navigation reconciles. The one case that
+  *does* refetch is emptying a page that is not the first, which would otherwise
+  read as a bug ("Page 2 of 2" over an empty list).
+- **The detail screen re-reads the booking.** Verified against the running API
+  rather than assumed: after an approve, the re-read carries `status:
+  "Confirmed"` *and* an approval section with `decision`, `decidedByUserId`,
+  `decidedAtUtc` and the note — none of which the decision response's four
+  fields can supply in the shape that screen renders.
+
+`canDecide` on the detail screen is three conditions: still `Pending`, the viewer
+is **not** the owner, and the viewer holds an approving role. The third is a UI
+convenience and says so — the real reach is resource-scoped and server-side
+(`ApprovalReach`), and the token only carries roles. Where the two disagree the
+server refuses and the dialect explains it, which is the right division rather
+than a gap to paper over with a guess.
+
+### Step 5 — the decision dialect (2026-09-21)
+
+`approval-rejection.ts`, a **fourth** dialect on `booking-rejection.ts`'s
+machinery. Approve and reject share it even though only approve can produce the
+capacity codes: a code a reject never returns simply never arrives, and two
+near-identical maps kept in step would be the likelier source of a wrong message
+than one map with an unreachable entry.
+
+**AC-5 reads as its own outcome**, which is the point of the whole file: *"This
+slot was taken while the request was waiting… Nothing has been decided — the
+request is still pending, and rejecting it is still possible."* An approver shown
+a generic failure here would reasonably conclude the system was broken, rather
+than that `dbo.ApproveBooking`'s capacity re-check had done exactly its job.
+
+`Note` maps onto the existing `reason` field name rather than widening
+`BookingFieldName`: both are "the optional words an actor attaches to a
+decision", they are never on screen together, and a second name for the same kind
+of control would have to be threaded through every consumer of
+`BookingRejection` for no gain.
+
+**A test-fixture mistake worth recording**, because it would have shipped a green
+suite asserting the wrong thing: the first five refusal tests passed the wrong
+message. `isProblemDetails` requires `title` as well as `reasonCode`, so a
+fixture carrying only a reason code falls through to the generic message — and
+the assertions were written loosely enough not to notice until the AC-5 one
+failed. The fixtures now build a real ProblemDetails.
+
+**Verified live, end to end**: a fresh Pending request created as a member, read
+as the approver (200, `0027` working), approved with a note (200, `Confirmed`),
+re-read showing the full approval section, a second approve answering **422
+BookingNotPending** — the concurrent-decision case the demo forces — and the
+probe cancelled afterwards. The owner's two seeded requests were left untouched
+and the queue count re-checked at 2.
+
+**813 vitest tests, 0 failed** (was 783). `npx ng build` clean.

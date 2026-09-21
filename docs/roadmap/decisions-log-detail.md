@@ -253,5 +253,20 @@ feature, the reasoning matters as much as the answer.
     the series, not tied to any single occurrence's date. A strict widening of
     decision `0008`'s original constraint.
 
+27. [`0027`](../decisions/0027-approver-booking-detail-reach.md) — an Approver
+    may read a booking by id when it is **their own *or*** on a resource they
+    are assigned to approve, closing a gap the WP-7 Phase 6 queue screen found
+    by being clicked: three of the four booking endpoints already used decision
+    `0018`'s resource reach, and `GET /bookings/{id}` did not — so an approver
+    could see a request in their queue and decide on it, but not open it. The
+    widening is a **union**, not the list's intersection: reusing
+    `AnyOwnerRestrictedToResources` here would have taken away an approver's
+    ability to read their own bookings on resources they do not gate, so
+    `BookingOwnerFilter` gained an explicit `Combination` and an
+    `OwnerOrResources` factory. The cancel deliberately did **not** widen
+    (decision `0002` keeps it with the owner and the TenantAdmin). Closed a
+    latent fail-open on the way: `FindDetailAsync` had been silently ignoring
+    `owner.ResourceIds` since WP-5 Phase 3.
+
 If a task needs a decision that isn't listed above and isn't in this log,
 **stop and ask** rather than picking silently.

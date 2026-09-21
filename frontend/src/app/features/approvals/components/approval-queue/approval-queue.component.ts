@@ -7,6 +7,7 @@ import {
   ApprovalQueueRow,
   toQueueRow,
 } from '../../queue/approval-queue';
+import { DecisionMade, DecisionPanelComponent } from '../decision-panel/decision-panel.component';
 
 // WP-7 Phase 6 step 3 — the approval queue, FR-7.1–FR-7.5 and WP-7's last
 // unbuilt screen.
@@ -31,11 +32,14 @@ import {
 // column can justify, and the reason step 1 added `createdAtUtc` to the list row
 // — the endpoint accepted the sort long before it returned the field.
 //
-// No decision controls yet; approve and reject are step 4. This step is the
-// read, its three states and its paging.
+// **Decisions are made here and on the booking detail screen** (owner's call,
+// 2026-09-21), through one shared `DecisionPanelComponent` — the queue row for
+// the quick case, the detail screen for the request an approver wants to read
+// properly first. A decided row leaves the list from the response rather than
+// from a refetch; see `onDecided`.
 @Component({
   selector: 'app-approval-queue',
-  imports: [RouterLink],
+  imports: [RouterLink, DecisionPanelComponent],
   templateUrl: './approval-queue.component.html',
   styleUrl: './approval-queue.component.scss',
 })
@@ -84,6 +88,29 @@ export class ApprovalQueueComponent {
 
   protected retry(): void {
     this.load();
+  }
+
+  // A decided request leaves the queue, and it leaves **from the response**
+  // rather than from a blind refetch — the decision already told us the row is
+  // gone, and re-asking the server would both cost a round trip and risk
+  // reshuffling the page under an approver who is working down it.
+  //
+  // The counts are adjusted rather than re-read for the same reason. They can
+  // drift from the server's truth if someone else decides a request at the same
+  // moment, which is a cost worth paying: the alternative is the list jumping
+  // while it is being worked through. The next navigation or reload reconciles.
+  //
+  // **The last row on a page is the one case that does refetch.** Emptying a
+  // page that is not the first would otherwise leave an approver staring at an
+  // empty list with a pager saying "Page 2 of 2", which reads as a bug.
+  protected onDecided(decision: DecisionMade): void {
+    this.bookings.update((rows) => rows.filter((row) => row.id !== decision.bookingId));
+    this.totalCount.update((count) => Math.max(0, count - 1));
+
+    if (this.bookings().length === 0 && this.totalCount() > 0) {
+      this.page.update((p) => Math.max(1, Math.min(p, this.totalPages())));
+      this.load();
+    }
   }
 
   protected goToPreviousPage(): void {

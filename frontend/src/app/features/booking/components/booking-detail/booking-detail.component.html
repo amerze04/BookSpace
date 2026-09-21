@@ -33,10 +33,23 @@
       </div>
 
       @if (booking.status === 'Pending') {
-        <!-- FR-7.1: the member has to know the slot is not theirs yet. -->
-        <p class="lead-note">
-          This request is waiting for approval — the time is <strong>not held for you yet</strong>.
-        </p>
+        <!--
+          FR-7.1: whoever is reading has to know the slot is not held yet — but
+          the two audiences need different sentences, and until 2026-09-21 this
+          screen only had the member's. Decision `0027` made it reachable by an
+          approver reading a request on a resource they gate, who was being told
+          the time was not held for *them*, about someone else's booking.
+        -->
+        @if (viewerIsOwner()) {
+          <p class="lead-note">
+            This request is waiting for approval — the time is <strong>not held for you yet</strong>.
+          </p>
+        } @else {
+          <p class="lead-note">
+            This request is waiting for a decision — the time is
+            <strong>not held yet</strong>.
+          </p>
+        }
       }
     </header>
 
@@ -89,6 +102,19 @@
             }
           </dd>
         </div>
+        @if (!viewerIsOwner()) {
+          <!--
+            Only for a reader who is not the owner — an approver, since decision
+            `0027`. Printing a member their own name on their own booking is
+            noise, which is the same reason the queue's list response carries
+            `userName` but the calendar never renders it. For an approver it is
+            the opposite: whose request this is is half of the decision.
+          -->
+          <div class="row">
+            <dt>Requested by</dt>
+            <dd>{{ booking.userName }}</dd>
+          </div>
+        }
         <div class="row">
           <dt>Quantity</dt>
           <dd>{{ booking.quantity }}</dd>
@@ -149,13 +175,39 @@
       </section>
     }
 
+    @if (canDecide()) {
+      <!--
+        The same panel the queue rows carry (owner's call, 2026-09-21): an
+        approver who opened the booking to read it properly can decide without
+        going back. `canDecide` keeps it off a member's own booking and off a
+        request that has already been decided; the server is still the authority
+        on whether this approver gates this resource, and refuses with a message
+        `approval-rejection.ts` words if not.
+      -->
+      <section class="card card--decide">
+        <h3 class="card-title">Your decision</h3>
+        <app-decision-panel
+          [bookingId]="booking.id"
+          [subject]="'this ' + booking.resourceName + ' request'"
+          (decided)="onDecided()"
+        />
+      </section>
+    }
+
     @if (cancellation(); as cancellation) {
       <section class="card card--cancelled">
         <h3 class="card-title">Cancelled</h3>
         <p class="cancel-lead">
           @switch (cancellation.kind) {
             @case ('self') {
-              You cancelled this booking on {{ cancellation.at }}.
+              @if (viewerIsOwner()) {
+                You cancelled this booking on {{ cancellation.at }}.
+              } @else {
+                <!-- Same kind, different reader: 'self' means the booking's
+                     owner cancelled it, which is "you" only when the owner is
+                     the one looking. -->
+                {{ booking.userName }} cancelled this booking on {{ cancellation.at }}.
+              }
             }
             @case ('administrator') {
               <!-- Decision 0002 records the actor separately from the owner
@@ -311,8 +363,19 @@
       </section>
     }
 
+    <!--
+      Where "back" goes depends on who is reading (decision `0027`). The owner
+      came from their calendar and the booking is on it; an approver came from
+      the queue and this booking is not on their calendar at all, so sending
+      them there would be both wrong and useless. `viewerIsOwner` is false while
+      the booking is still loading, but this block only renders once it has.
+    -->
     <div class="detail-actions">
-      <a class="secondary-button" routerLink="/calendar">Back to your calendar</a>
+      @if (viewerIsOwner()) {
+        <a class="secondary-button" routerLink="/calendar">Back to your calendar</a>
+      } @else {
+        <a class="secondary-button" routerLink="/approvals">Back to approvals</a>
+      }
     </div>
   </article>
 }

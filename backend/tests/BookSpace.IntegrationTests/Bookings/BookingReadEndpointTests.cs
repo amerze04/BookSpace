@@ -360,10 +360,14 @@ public class BookingReadEndpointTests
             await CleanUpAsync(resource);
         }
     }
-
     // An Approver is a non-admin for this purpose: the Approver policy sits
     // between Member and TenantAdmin, so "only an admin may widen" has to mean
     // every non-admin, the same reasoning WP-3's non-admin tests use.
+    //
+    // **Still true after decision 0027's widening**, and it is the test that
+    // pins what the widening is *not*: the resource here has no approvers, so
+    // this Approver does not gate it and the booking stays invisible. The reach
+    // is by resource, never by role alone.
     [Fact]
     public async Task Get_RefusesAnotherMembersBookingToAnApprover()
     {
@@ -382,6 +386,99 @@ public class BookingReadEndpointTests
         finally
         {
             await CleanUpAsync(resource);
+        }
+    }
+
+    // WP-7 Phase 6, decision 0027. The gap the approval queue found by being
+    // clicked: an Approver could see this booking in the queue and was allowed
+    // to decide on it, but opening it answered 404 — ResolveOwnerFilter had been
+    // widened in WP-5 Phase 3 and ResolveDetailFilter had not.
+    [Fact]
+    public async Task Get_LetsAnApproverReadABookingOnAResourceTheyGate()
+    {
+        var gated = await CreateBookableResourceAsync(requiresApproval: true);
+
+        try
+        {
+            var member = await AuthenticatedClientAsync(AcmeMember);
+            var created = await CreateBookingAsync(member, gated, At(9), At(10));
+
+            var approver = await AuthenticatedClientAsync(AcmeApprover);
+            var detail = await GetAsync(approver, created.Id);
+
+            Assert.Equal(created.Id, detail.Id);
+            Assert.Equal(created.UserId, detail.UserId);
+            Assert.Equal(BookingStatus.Pending, detail.Status);
+
+            // The approval section is the reason an approver opens this screen
+            // at all, so it has to survive the widened read rather than the
+            // widening stopping at the booking's own columns.
+            Assert.NotNull(detail.Approval);
+            Assert.Equal(ApprovalDecision.Pending, detail.Approval!.Decision);
+        }
+        finally
+        {
+            await CleanUpAsync(gated);
+        }
+    }
+
+    // **The regression guard for the shape of the widening.** An Approver may
+    // see a booking because it is theirs *or* because it is on a resource they
+    // gate — a union, not an intersection. An AND-shaped filter would have
+    // passed every other test here and silently taken away an Approver's
+    // ability to read their own bookings on resources they do not approve for,
+    // which every plain member can do. The seeded approver owns no bookings, so
+    // clicking the dev data would not have shown it either.
+    [Fact]
+    public async Task Get_StillLetsAnApproverReadTheirOwnBookingOnAResourceTheyDoNotGate()
+    {
+        var gated = await CreateBookableResourceAsync(requiresApproval: true);
+        var ungated = await CreateBookableResourceAsync();
+
+        try
+        {
+            // The gated resource exists only to give this Approver a non-empty
+            // reach; without one the filter collapses to a plain member's and
+            // the test would pass for the wrong reason.
+            var approver = await AuthenticatedClientAsync(AcmeApprover);
+            var own = await CreateBookingAsync(approver, ungated, At(9), At(10));
+
+            var detail = await GetAsync(approver, own.Id);
+
+            Assert.Equal(own.Id, detail.Id);
+        }
+        finally
+        {
+            await CleanUpAsync(ungated);
+            await CleanUpAsync(gated);
+        }
+    }
+
+    // The reach widens what an Approver may read, never what they may cancel —
+    // decision 0002 keeps the cancel with the owner and the TenantAdmin, and
+    // FindForCancelAsync deliberately does not go through the shared owner
+    // filter. Asserted because the two now sit one method apart in the same
+    // repository.
+    [Fact]
+    public async Task Cancel_IsStillRefusedToAnApproverOnAResourceTheyGate()
+    {
+        var gated = await CreateBookableResourceAsync(requiresApproval: true);
+
+        try
+        {
+            var member = await AuthenticatedClientAsync(AcmeMember);
+            var created = await CreateBookingAsync(member, gated, At(9), At(10));
+
+            var approver = await AuthenticatedClientAsync(AcmeApprover);
+            var response = await approver.PostAsJsonAsync(
+                $"/bookings/{created.Id}/cancel",
+                new { reason = (string?)null });
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        }
+        finally
+        {
+            await CleanUpAsync(gated);
         }
     }
 

@@ -1,0 +1,76 @@
+@if (outcome(); as outcome) {
+  <!--
+    Rendered from the response, not from form state (the 2026-09-17 hardening
+    pass's rule). The panel stays on screen afterwards rather than vanishing:
+    an approver who has just decided wants confirmation of what they did, and
+    a control that disappears leaves them unsure it registered.
+  -->
+  <p class="decision-outcome" role="status" tabindex="-1">
+    @if (outcome.decision === 'approve') {
+      <strong>Approved.</strong> The booking is now confirmed and the time is held.
+    } @else {
+      <strong>Rejected.</strong> The requester has been told and the time is free again.
+    }
+  </p>
+} @else {
+  <div class="decision-panel">
+    @if (confirmMode() === null) {
+      <div class="decision-choices">
+        <button type="button" class="approve-button" (click)="startConfirming('approve')">
+          Approve
+        </button>
+        <button type="button" class="reject-button" (click)="startConfirming('reject')">
+          Reject
+        </button>
+      </div>
+    } @else {
+      <div class="decision-confirm">
+        <p class="confirm-heading">{{ confirmHeading() }}</p>
+
+        <label class="note-field">
+          <span class="note-label">{{ noteLabel() }}</span>
+          <textarea
+            class="note-input"
+            rows="3"
+            [value]="note()"
+            [disabled]="submitting()"
+            [attr.maxlength]="maxNoteLength"
+            [attr.aria-invalid]="noteError() !== null"
+            (input)="onNoteInput($event)"
+          ></textarea>
+        </label>
+
+        @if (noteError(); as noteError) {
+          <p class="field-error" role="alert">{{ noteError }}</p>
+        }
+
+        <!--
+          The AC-5 outcome and every other refusal land here, above the buttons
+          and worded by `approval-rejection.ts`. A since-taken slot must read as
+          its own event rather than as a generic failure — it is the arm that
+          proves the approval-time capacity re-check is real.
+        -->
+        @if (rejection(); as rejection) {
+          @if (rejection.formMessage) {
+            <p class="decision-error" role="alert">{{ rejection.formMessage }}</p>
+          }
+        }
+
+        <!--
+          Everything feeding the submit is disabled while it is in flight, and
+          there is deliberately no retry anywhere on this path: a decision is
+          not idempotent, so repeating one either answers 422 or loses the same
+          capacity race again.
+        -->
+        <div class="confirm-actions">
+          <button type="button" class="confirm-button" [disabled]="submitting()" (click)="submit()">
+            {{ submitting() ? 'Saving…' : confirmActionLabel() }}
+          </button>
+          <button type="button" class="back-button" [disabled]="submitting()" (click)="cancelConfirming()">
+            Back
+          </button>
+        </div>
+      </div>
+    }
+  </div>
+}

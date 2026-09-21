@@ -12,10 +12,12 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { HttpErrorResponse } from '@angular/common/http';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { Observable, Subject, catchError, distinctUntilChanged, filter, map, merge, of, switchMap } from 'rxjs';
+import { AuthService } from '../../../../core/auth/auth.service';
 import { BreadcrumbService } from '../../../../layout/breadcrumb.service';
 import { ResourcesService } from '../../../resources/services/resources.service';
 import { ResourceDetail } from '../../../resources/models/resources.models';
 import { ResourceTypeIconComponent } from '../../../../shared/resource-type/resource-type-icon.component';
+import { DecisionPanelComponent } from '../../../approvals/components/decision-panel/decision-panel.component';
 import { resourceTypeLabel } from '../../../../shared/resource-type/resource-type';
 import {
   SpanLabels,
@@ -69,7 +71,7 @@ function spanOf(booking: BookingDetail): { startUtc: string; endUtc: string } {
 // find out what happened.
 @Component({
   selector: 'app-booking-detail',
-  imports: [RouterLink, ResourceTypeIconComponent],
+  imports: [RouterLink, ResourceTypeIconComponent, DecisionPanelComponent],
   templateUrl: './booking-detail.component.html',
   styleUrl: './booking-detail.component.scss',
 })
@@ -79,6 +81,7 @@ export class BookingDetailComponent {
   private readonly recurrenceRulesService = inject(RecurrenceRulesService);
   private readonly resourcesService = inject(ResourcesService);
   private readonly breadcrumbService = inject(BreadcrumbService);
+  private readonly auth = inject(AuthService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly injector = inject(Injector);
   private readonly host = inject(ElementRef<HTMLElement>);
@@ -103,6 +106,28 @@ export class BookingDetailComponent {
   protected readonly resource = signal<ResourceDetail | null>(null);
 
   protected readonly viewerTimeZoneId = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  // **Who is reading this screen**, which it did not have to ask until
+  // 2026-09-21. Phase 4 built this page for exactly one audience — the member
+  // whose booking it is — and every second-person string on it was written in
+  // that voice. Decision `0027` then made the page reachable by a second
+  // audience, an approver reading a request on a resource they gate, and the
+  // page had no way to tell them apart: an approver was told "the time is not
+  // held for *you* yet" about someone else's request, and sent "back to *your*
+  // calendar" for a booking that is not on it.
+  //
+  // `sub` is the caller's user id (decision `0009`'s claim shape), so the
+  // comparison is free and needs no extra request.
+  //
+  // **A UI convenience only.** Every rule this gates is enforced server-side
+  // independently — the cancel answers 404 to a non-owner whatever this says,
+  // which is exactly the behaviour verified when `0027` landed. This makes the
+  // screen honest, it does not make it safe.
+  protected readonly viewerIsOwner = computed(() => {
+    const booking = this.booking();
+    const viewerUserId = this.auth.claims()?.sub;
+    return booking !== null && viewerUserId !== undefined && booking.userId === viewerUserId;
+  });
 
   private bookingId: string;
   private readonly retry$ = new Subject<void>();
@@ -154,6 +179,14 @@ export class BookingDetailComponent {
   // easily mistaken for missing data: `Booking.CancelForBlackout` leaves it null
   // on purpose, because a blackout cascade has no person behind it, and the
   // reason carries decision `0019`'s text snapshot naming the blackout.
+  //
+  // **The three kinds describe the actor, not the reader**, and the template
+  // picks the subject from `viewerIsOwner` — a split that mattered from
+  // 2026-09-21, when decision `0027` gave this screen a second audience.
+  // `'self'` means *the booking's owner cancelled it*, which the template used
+  // to render unconditionally as "You cancelled this booking". Read by an
+  // approver, that sentence was simply false. The kind is right; the pronoun
+  // was the bug, so the fix is in the words rather than in this computed.
   protected readonly cancellation = computed<
     { kind: 'self' | 'administrator' | 'blackout'; reason: string | null; at: string } | null
   >(() => {
@@ -203,14 +236,62 @@ export class BookingDetailComponent {
   // request then answers `422 BookingNotCancellable` and the dialect above
   // explains it. That is the right failure mode — the alternative is a button
   // vanishing under the pointer.
+  //
+  // **Ownership is checked first, and that arm is newer than the rest.** Until
+  // decision `0027` (2026-09-21) only the booking's owner or a TenantAdmin
+  // could reach this screen at all, so "can it be cancelled" and "may *I*
+  // cancel it" were the same question and this computed only asked the first.
+  // An approver can now open a request on a resource they gate — and their
+  // reach widens what they may *read*, never what they may cancel (decision
+  // `0002` keeps that with the owner and the TenantAdmin, and
+  // `FindForCancelAsync` enforces it). Without this arm they would be offered a
+  // "Cancel booking" button that answers 404 every time.
+  //
+  // A TenantAdmin reading someone else's booking is offered nothing here
+  // either, which is a **deliberate under-offer**: they may genuinely cancel it
+  // (decision `0002`), but nothing in WP-7's task list asks for an
+  // administrator's cancellation UI, and inventing one is exactly the kind of
+  // requirement CLAUDE.md §11 says to ask about rather than assume. Flagged in
+  // `docs/wp7-plan.md` rather than silently built.
   protected readonly canCancel = computed(() => {
     const booking = this.booking();
-    if (!booking || this.cancelled()) {
+    if (!booking || this.cancelled() || !this.viewerIsOwner()) {
       return false;
     }
     return (
       (booking.status === 'Pending' || booking.status === 'Confirmed')
       && Date.parse(booking.endsAtUtc) > this.loadedAtMs
+    );
+  });
+
+  // **Whether to offer a decision on this screen** (owner's call, 2026-09-21 —
+  // the queue row was not the only place an approver reaches for it).
+  //
+  // Three conditions, and each rules out a real case rather than being
+  // defensive:
+  //   - the booking is still `Pending`, since a decided one has nothing to
+  //     decide and the server would answer 422 BookingNotPending;
+  //   - the viewer is not the owner, so nobody is offered a decision on their
+  //     own request — an approver booking a resource they gate is ordinary, and
+  //     `ApprovalReach` does not exclude them, but self-approval is not a thing
+  //     this UI should invite;
+  //   - the viewer holds an approving role at all.
+  //
+  // **The last one is a UI convenience and nothing more.** The real reach is
+  // resource-scoped and lives server-side (`ApprovalReach`, decision `0018`);
+  // the token only says which roles the caller holds, not which resources they
+  // gate. So this can offer the panel to an Approver who does *not* gate this
+  // resource — but only if they reached the booking at all, which decision
+  // `0027` makes possible exactly when they do gate it. Where the two disagree
+  // the server refuses and `approval-rejection.ts` explains it; that is the
+  // right division, not a gap to paper over with a guess.
+  protected readonly canDecide = computed(() => {
+    const booking = this.booking();
+    return (
+      booking !== null
+      && booking.status === 'Pending'
+      && !this.viewerIsOwner()
+      && this.auth.canApproveBookings()
     );
   });
 
@@ -234,8 +315,13 @@ export class BookingDetailComponent {
   // series is already cancelled — the same "server is the authority" trade
   // `canCancel` makes about a stale clock, for a stronger reason: here the
   // client has no way to know at all.
+  //
+  // **Ownership gates this too** (decision `0027`, 2026-09-21), for the same
+  // reason `canCancel` gained the same arm: the series cancel is the booking
+  // owner's or a TenantAdmin's, and an approver's read reach does not extend to
+  // it. Offering it to an approver would be a button that cannot work.
   protected readonly canCancelSeries = computed(
-    () => this.isRecurring() && this.seriesFreedCount() === null,
+    () => this.viewerIsOwner() && this.isRecurring() && this.seriesFreedCount() === null,
   );
 
   protected readonly confirmHeading = computed(() =>
@@ -297,6 +383,19 @@ export class BookingDetailComponent {
   }
 
   protected retry(): void {
+    this.retry$.next();
+  }
+
+  // A decision on this screen re-reads the booking rather than patching it from
+  // the response. The queue does the opposite — it drops the row and adjusts its
+  // counts — and the difference is deliberate: a list wants to stay still while
+  // it is worked down, but a *detail* screen exists to show the whole record,
+  // and after a decision that record has genuinely changed in more places than
+  // the decision response carries. `status` moves to Confirmed or Rejected, and
+  // the approval section gains its decision, decider, timestamp and note — none
+  // of which `{id, status, decidedByUserId, decidedAtUtc}` can supply in the
+  // shape the screen renders.
+  protected onDecided(): void {
     this.retry$.next();
   }
 
