@@ -1024,3 +1024,66 @@ And the cross-feature imports this does *not* fix — `local-date.ts` living in
 imported by the booking screen, `booking-arrival.ts` imported by the
 availability screen — are pre-existing and deliberate ("the consumer owns the
 contract"), not artefacts of the move.
+
+---
+
+## Phase 6 — Approval queue UI
+
+Planned 2026-09-21, before any code, the same way every phase since WP-3 has
+been. The step list and the reasoning behind each step live in
+[`docs/wp7-plan.md`](../wp7-plan.md); this file records what actually happened.
+
+### Two calls settled before the phase started (2026-09-21)
+
+**No design is waited for.** The queue is built on the app's existing card
+vocabulary, the same route the booking-detail and cancel screens took — both of
+which also shipped without one. The outstanding design pass over calendar /
+booking detail / cancel now picks the queue up with them rather than the phase
+stalling on an asset that has not been drawn.
+
+**`createdAtUtc` is added to the backend list DTO**, overriding wp7-plan.md
+§7's rule that a frontend work package does not patch the backend. The gap was
+found while checking the contract rather than while building against it:
+`ListBookingsQueryResponse` carries no `CreatedAtUtc`, so the queue's
+**requested-at** column — "how long has this been waiting", which is the column
+that makes a queue a queue — could not be rendered from the list response at
+all. The asymmetry is what made it worth raising: `BookingSortFields` **does**
+whitelist `createdAtUtc`, so the endpoint would happily *order* by a field it
+would not *return*, and a queue sorting oldest-first could sort correctly while
+rendering nothing to justify the order.
+
+Three options were put to the owner — omit the column and sort oldest-first,
+fetch `GET /bookings/{id}` per visible row, or add the field — and the third was
+chosen. The two backend gaps this package has raised have now been answered
+differently, which is the point of asking rather than applying a blanket rule:
+`POST /bookings`' missing idempotency key went to a future package because it
+needs an operation record, a header, a resolution path and a migration; this one
+was granted because it is a single field on a projection that already reads the
+column for its own sort, and needs no migration at all.
+
+### Step 1 — `createdAtUtc` on the list row (2026-09-21)
+
+Two lines of production code: the field on the record, and `b.CreatedAtUtc` on
+the projection. **1066 unit + 508 integration, 0 failed** (integration was 507),
+`dotnet build` clean with 0 warnings.
+
+**The step's own plan was wrong about its blast radius, and that is worth
+recording rather than quietly correcting.** It predicted the three unit-test
+fake builders would need updating. They did not: `BookingFakes`, `ApprovalFakes`
+and `RecurrenceRuleFakes` name `ListBookingsQueryResponse` only as a generic
+argument and answer with `PagedResult<…>.Empty(…)`, so the record is constructed
+in exactly one place in the entire solution — the repository's projection. That
+is a property of the codebase worth knowing: a positional DTO here is cheap to
+widen precisely because nothing else builds one.
+
+**The `Z` assertion is made twice, deliberately.** The new test
+(`List_CarriesTheRequestedAtStampOnEachRow`) asserts the stamp equals the create
+response's and that its `Kind` is `Utc`; `Reads_ReturnInstantsWithAUtcDesignator`
+was then extended to check the **raw JSON of a list row**, not only of a detail
+body. Only the second catches the failure that actually matters. A typed test
+client deserializes an instant correctly whether or not the payload carried its
+designator, so a test that only round-trips through `HttpClient`'s JSON reader
+would stay green while a browser read every queue row's requested-at as local
+time — §4.3's stated silent failure, and the same class of mistake as this
+package's five owner-found bugs, where the assertion that existed was true but
+was not about what the user saw.

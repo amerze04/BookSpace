@@ -824,6 +824,23 @@ before touching this area:
   build instants from local components (`new Date(2026, 8, 24, 9, 0)`) rather
   than from `"...Z"` literals, which would be silently environment-dependent.
 
+**Phase 6 planned 2026-09-21** (six steps, in [`docs/wp7-plan.md`](docs/wp7-plan.md);
+narrative in [`docs/roadmap/wp7.md`](docs/roadmap/wp7.md)). Two things are true
+before touching this area:
+
+- **The queue is built without waiting for a design**, owner's call, on the
+  app's existing card vocabulary — the route booking detail and cancel took.
+- **`GET /bookings` now returns `createdAtUtc` on each row** (step 1, done
+  2026-09-21). This is a deliberate owner override of wp7-plan.md §7's "a
+  frontend package does not patch the backend" rule, not drift. The gap it
+  closes: `BookingSortFields` whitelists `createdAtUtc`, so the endpoint would
+  *order* by a field it would not *return*, and Phase 6's requested-at column —
+  "how long has this been waiting" — had nothing to render. No migration; the
+  column exists and the detail read already projected it. The other backend gap
+  this package raised, `POST /bookings`' missing idempotency key, was answered
+  the other way and still belongs to a future package — the stop-and-ask is the
+  rule, the answer is the owner's, and the two answers differ on cost.
+
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across
 booking concurrency, recurrence idempotency, the frontend auth stack, CI and

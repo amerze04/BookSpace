@@ -384,7 +384,8 @@ internal sealed class BookingRepository : IBookingRepository
                 b.EndsAtUtc,
                 b.Quantity,
                 b.Title,
-                b.Status))
+                b.Status,
+                b.CreatedAtUtc))
             .ToPagedResultAsync(query, cancellationToken);
     }
 

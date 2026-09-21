@@ -718,6 +718,44 @@ public class BookingReadEndpointTests
         }
     }
 
+    // WP-7 Phase 6's requested-at column — "how long has this been waiting",
+    // which is what makes the approver queue a queue rather than a list. Added
+    // to the list row on the owner's call (2026-09-21) rather than deferred to
+    // a backend package, because the asymmetry it closes is real: this endpoint
+    // already accepted `sort=createdAtUtc` (BookingSortFields) and already
+    // returned the stamp on the detail read, so it would order by a field it
+    // would not return, and a queue sorting oldest-first could render nothing
+    // to justify the order.
+    //
+    // Asserted against the create response's own stamp rather than a clock
+    // read here: the two must be the same instant, and a test that compared
+    // against DateTime.UtcNow would pass with a rounded or re-read value.
+    [Fact]
+    public async Task List_CarriesTheRequestedAtStampOnEachRow()
+    {
+        var resource = await CreateBookableResourceAsync();
+
+        try
+        {
+            var member = await AuthenticatedClientAsync(AcmeMember);
+            var created = await CreateBookingAsync(member, resource, At(9), At(10));
+
+            var row = (await ListAsync(member, $"?resourceId={resource}")).Items.Single();
+
+            Assert.Equal(created.CreatedAtUtc, row.CreatedAtUtc);
+
+            // §4.3's second convention, and the one that fails silently: without
+            // the value converter stamping DateTimeKind.Utc back on, datetime2
+            // materializes as Unspecified, the JSON loses its trailing Z, and a
+            // browser reads the instant as local time.
+            Assert.Equal(DateTimeKind.Utc, row.CreatedAtUtc.Kind);
+        }
+        finally
+        {
+            await CleanUpAsync(resource);
+        }
+    }
+
     // ---- The filters -------------------------------------------------------
 
     // Overlap, not containment: a booking that started before the window and
@@ -1041,6 +1079,19 @@ public class BookingReadEndpointTests
             foreach (var field in new[] { "startsAtUtc", "endsAtUtc", "createdAtUtc", "updatedAtUtc" })
             {
                 Assert.EndsWith("Z", body.GetProperty(field).GetString()!, StringComparison.Ordinal);
+            }
+
+            // The list row too, not only the detail — its createdAtUtc is new
+            // in WP-7 Phase 6 and is read by a browser, so it has to carry the
+            // designator on the wire rather than merely deserialize correctly
+            // into a typed test client.
+            var listBody = await (await client.GetAsync($"/bookings?resourceId={resource}"))
+                .Content.ReadFromJsonAsync<JsonElement>();
+            var row = listBody.GetProperty("items")[0];
+
+            foreach (var field in new[] { "startsAtUtc", "endsAtUtc", "createdAtUtc" })
+            {
+                Assert.EndsWith("Z", row.GetProperty(field).GetString()!, StringComparison.Ordinal);
             }
         }
         finally
