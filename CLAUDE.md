@@ -917,6 +917,46 @@ What is true before touching this area:
   happy path — and it found a real bug on its first walk. Re-walk it after any
   change to the booking or approval flows.
 
+### Admin console — tenant administration UI — **Planned** (2026-09-22)
+Plan: [`docs/admin-plan.md`](docs/admin-plan.md). **Owner-initiated, not a
+mentor work package** — the same standing as the hardening pass below and the
+resource-list-filters entry, and deliberately *not* numbered as a WP, because
+§12's rule is that this roadmap mirrors the packages the mentor issues rather
+than an invented build order.
+
+Raised by the owner after WP-7 closed: the remaining work packages barely touch
+the frontend, and **tenant admin CRUD is the largest thing still missing from
+the application** — resource create/edit/archive, availability windows,
+approvers, and blackout periods. It is not new scope; it has been flagged as a
+gap in `docs/wp7-plan.md` §7 and `STATE-OF-THE-APP.md` §4 since WP-7 Phase 1,
+with the buttons left absent rather than shown disabled.
+
+Seven phases, planned but not started. Three things settled before planning:
+
+- **Scope is resources, windows, approvers and blackouts** — what the backend
+  already supports. **User management is out**: there is no users controller at
+  all, so it would be a backend package before any UI.
+- **One backend addition is unavoidable: `GET /users`.** `PUT
+  /resources/{id}/approvers` takes user ids and *nothing in the API lists
+  users*, so an admin can see who is assigned and cannot discover who they could
+  assign. It lands tenant-scoped, TenantAdmin-only, filtered to decision
+  `0018`'s eligible set.
+- **Archive stays irreversible and the UI exposes it anyway**, behind a hard
+  confirmation. There is no unarchive and `ResourcesController` argues in writing
+  against adding one.
+
+Two things worth knowing before touching this area, both audited 2026-09-22
+rather than assumed:
+
+- **The API forces two different interaction models.** Availability windows and
+  approvers are `PUT` replace-the-set; blackout periods are per-row CRUD with a
+  real hard delete (decision `0019`). Making the three screens look alike would
+  misrepresent one of them.
+- **Replace-the-set has no concurrency protection on the wire.** `Resources` has
+  a `RowVersion` (decision `0023`'s amendment) but **no Resources DTO carries
+  it**, so two admins editing one resource's windows silently last-write-wins.
+  Tolerable for a small admin team; closing it is a backend change.
+
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across
 booking concurrency, recurrence idempotency, the frontend auth stack, CI and

@@ -121,7 +121,8 @@ Each of these is a decision with a reason, not an oversight.
 - **Resource administration UI** — create, edit, archive, manage availability
   windows / approvers / blackouts. The backend has supported all of it since
   WP-3 and the provided designs assume it, but WP-7's task list is member-facing
-  only. Buttons are absent rather than shown disabled.
+  only. Buttons are absent rather than shown disabled. **Now planned** —
+  [`docs/admin-plan.md`](admin-plan.md), 2026-09-22.
 - **A "My Bookings" list** — cancelled on 2026-09-18. The calendar answers the
   same question, and the source work package never asked for the screen.
 - **Cancelled and rejected bookings on the calendar** — neither holds any time,
@@ -190,29 +191,31 @@ Each of these is a decision with a reason, not an oversight.
 
 ## 6. What's next
 
-**WP-7 is closed and there is no work package in flight.** What follows is the
-backlog as it stands, in the order it is worth picking up — not a plan anyone
-has approved.
+**WP-7 is closed and no mentor work package is in flight.** What follows is the
+backlog as it stands, in the order it is worth picking up.
 
-1. **The design pass** the owner has flagged — the calendar, the booking detail,
+1. **The admin console** — tenant admin CRUD for resources, availability
+   windows, approvers and blackout periods. **Planned 2026-09-22, not started**:
+   [`docs/admin-plan.md`](admin-plan.md), seven phases. Owner-initiated rather
+   than mentor-issued, and the largest thing still missing from the application —
+   flagged as a gap since WP-7 Phase 1 (§4). Carries the one backend addition the
+   plan could not avoid: **`GET /users`**, without which approvers cannot be
+   assigned from a UI at all, because nothing in the API lists users.
+2. **The design pass** the owner has flagged — the calendar, the booking detail,
    the cancel confirmation, and the approval queue with its decision panel were
    all built without a provided design, to the app's existing card vocabulary.
-   The largest single piece of outstanding work on the frontend.
-2. **A backend package to close the two API gaps WP-7 raised and could not fix**
+   The admin console will add five more screens in the same position, so it is
+   worth deciding whether that console waits for designs or follows suit.
+3. **A backend package to close the two API gaps WP-7 raised and could not fix**
    (§5): an idempotency key on `POST /bookings`, mirroring the one
    `POST /recurrence-rules` already has, and a `GET /recurrence-rules/{id}` so
    the booking screen can stop offering a series cancel optimistically.
-3. **Resource administration UI** — create, edit, archive, and manage
-   availability windows, approvers and blackout periods. The backend has
-   supported all of it since WP-3 and the provided designs assume it; no work
-   package has ever asked for the screens (§4).
 4. **The three background jobs** — reminder dispatch, no-show release, stale
    approval expiry. Specified, with their idempotency constraint in the schema,
    but nothing runs them, which is why the approval queue can show requests whose
    slot has already passed.
 5. **The small open items** in §5 — the booking form's `?mode` write-back and the
    all-zero-GUID 400.
-
 
 ---
 
