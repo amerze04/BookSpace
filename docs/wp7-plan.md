@@ -9,7 +9,9 @@ is a gap to flag rather than something to add on judgment (CLAUDE.md §11).
 
 ## Status
 
-**In progress — four of six phases done**, and the fourth re-planned on
+**Done 2026-09-22.** All six live phases complete and all four acceptance
+criteria met. The package ran from 2026-09-15 to 2026-09-22; Phase 4 was
+re-planned on
 2026-09-18 after its first step had shipped (Phases 4 and 5 merged; see the
 table below). Plan approved by the repo owner
 2026-09-15, before any code was written, the same process WP-3 through WP-6
@@ -25,8 +27,8 @@ into its own smaller steps once it is about to start, not all up front.
 | — Recurring-booking hardening pass | **Done** 2026-09-17 (7 findings) | 556 |
 | 4 — Calendar, booking detail & cancellation (the hard problem) | **Done** 2026-09-18 (7 steps, re-planned mid-phase) | 754 |
 | ~~5 — Calendar~~ | **Absorbed into Phase 4**, 2026-09-18 — number retired, not reused | — |
-| 6 — Approval queue | Not started | — |
-| 7 — End-to-end wiring + AC sweep | Not started | — |
+| 6 — Approval queue | **Done** 2026-09-21 (6 steps) | 813 |
+| 7 — End-to-end wiring + AC sweep | **Done** 2026-09-22 (5 steps; step 4 walked by the owner) | 861 |
 
 **Phase 5's number is retired rather than reused**, and Phases 6 and 7 keep
 theirs. Renumbering would silently falsify every existing reference to "Phase
@@ -2155,7 +2157,12 @@ every existing reference to "Phase 5, the hard problem" — in
 sections, and in the commit history — still resolves to something true. A gap in
 the sequence is cheaper than a renumber that falsifies the documents citing it.
 
+
 ### Phase 6 — Approval queue UI
+
+The last unbuilt screen, and the last open acceptance criterion a screen can
+close ("an approver can action pending requests from the UI"). Planned
+2026-09-21, before any code, the same way every phase since WP-3 has been.
 
 - `BookingsService` gains the tenant-scoped query:
   `GET /bookings?scope=tenant&status=Pending`, `approve()`, `reject()`.
@@ -2167,7 +2174,11 @@ the sequence is cheaper than a renumber that falsifies the documents citing it.
 - Approve/reject with an optional note; a since-taken slot's `409` (AC-5) is
   shown as a specific, distinct outcome from a generic failure.
 
-**Screens needed:** approval queue (to be designed).
+**Screens needed:** none waited for. The owner's call (2026-09-21) is to build
+on the app's existing card vocabulary now rather than hold the phase for a
+design — the same route the booking-detail and cancel screens took. The
+outstanding design pass over calendar / booking detail / cancel picks the queue
+up along with them.
 
 **Demo:** as an approver, action the seeded Pending 3D Printer booking; force
 a second approver/admin to approve the same booking concurrently and confirm
@@ -2176,7 +2187,340 @@ the loser gets a clear "already decided" message, not a silent failure.
 **API:** `GET /bookings`, `POST /bookings/{id}/approve`,
 `POST /bookings/{id}/reject`.
 
+#### The contract this phase actually consumes
+
+Read off the controller, the validator and the repository rather than off this
+plan's own earlier sketch — two of the four points below are not what that
+sketch implied.
+
+- **An Approver may send `scope=tenant`, not only a TenantAdmin.**
+  `ListBookingsQueryRequestValidator` was widened for exactly this queue in
+  WP-5 Phase 3 (decision `0018`). `userId` stays TenantAdmin-only, and sending
+  `userId` *and* a non-`Own` scope together is refused outright rather than
+  given a precedence rule — so the queue sends `scope` and never `userId`.
+- **The row set is scoped server-side by `ApprovalReach`**, not by anything the
+  client asks for: `AnyResource` for a TenantAdmin, the assigned-resource set
+  for an Approver, and an empty set for a plain Member — who therefore gets an
+  empty page rather than a 403. The UI genuinely does not branch on role, and
+  must not start: `approverGuard` already keeps the nav item and the route away
+  from anyone who cannot approve.
+- **Approve can answer `409`; reject cannot.** Approve re-runs the capacity
+  check under `dbo.ApproveBooking`'s lock (AC-5), so `SlotUnavailable` and
+  `CapacityExceeded` are live outcomes, and the same re-check can answer
+  `422 BlackoutPeriod` or `ResourceArchived`. Reject releases a claim rather
+  than making one, so it has neither. Both share `404 BookingNotFound` and
+  `422 BookingNotPending`.
+- **The note is capped at 500** on both endpoints
+  (`ApproveBookingCommandRequestValidator.MaxNoteLength`, and reject's own copy
+  of the same constant). That is a different limit from the cancellation
+  reason's 300 and a title's 200, so it gets its own constant in the models
+  rather than reusing one that merely looks similar.
+
+#### The one contract gap, and the owner's override (2026-09-21)
+
+`ListBookingsQueryResponse` carries no `CreatedAtUtc`, so the queue row's
+**requested-at** — "how long has this been waiting", the column that makes a
+queue a queue rather than a list — cannot be rendered from the list response.
+The asymmetry is sharp enough to be worth naming: `BookingSortFields` **does**
+whitelist `createdAtUtc`, so the endpoint will happily *order* by a field it
+will not *return*, and `GetBookingQueryResponse` has carried it since WP-4.
+
+Three ways out were put to the owner: omit the column and sort oldest-first;
+fetch `GET /bookings/{id}` per visible row; or add the field to the list DTO.
+
+**The owner chose to add the field** (2026-09-21). That is a deliberate
+override of §7's rule that a frontend work package does not patch the backend —
+the same rule that sent `POST /bookings`' missing idempotency key to a future
+package — and it is recorded here as an override rather than left to read as
+drift. The two cases differ in cost, which is what the call turns on: the
+idempotency key needs an operation record, a header, a resolution path and a
+migration, while this is one field on a projection that already reads the
+column for its own sort. **No migration** — `Booking.CreatedAtUtc` exists, is
+already projected by the detail read, and is already a sort key.
+
+**Not `approval.requestedAtUtc`**, which is the more precisely-named field and
+is deliberately not the one being added: it lives on the approval aggregate and
+only a detail read carries it, so using it would reinstate the per-row fetch
+this is avoiding. A booking on an approval-gated resource and its
+`ApprovalRequest` are written in the same unit of work, so the queue loses
+nothing real by reading the booking's own stamp.
+
+#### Steps
+
+1. **Backend: `createdAtUtc` on the list row — done, 2026-09-21.**
+   `ListBookingsQueryResponse` gains the field,
+   `BookingRepository.ListAsync`'s projection supplies it, and
+   `BookingReadEndpointTests` follows. Backend-only and reviewable on its own,
+   before any frontend reads it. The integration assertion worth having is that
+   the value round-trips as UTC carrying its `Z` — §4.3's `DateTimeKind`
+   converter is what makes that true, and it fails silently when it breaks.
+
+   **Delivered. 1066 unit + 508 integration, 0 failed** (integration was 507;
+   the one new test is the round-trip). `dotnet build` clean, 0 warnings. Three
+   things worth recording:
+
+   - **The three fake builders needed no change**, contrary to what this step
+     predicted before it was written. `BookingFakes`, `ApprovalFakes` and
+     `RecurrenceRuleFakes` name the type only as a generic argument and answer
+     with `PagedResult<…>.Empty(…)`; the record is constructed in exactly one
+     place in the whole solution, the repository's projection. A positional
+     record with one construction site is why this was a two-line change rather
+     than a sweep.
+   - **The field is appended after `Status`**, mirroring
+     `GetBookingQueryResponse`'s ordering, where `CreatedAtUtc` is likewise the
+     first of the audit stamps rather than sitting beside the interval.
+   - **The `Z` assertion is made twice, on purpose.** The new test asserts
+     `DateTimeKind.Utc` through the typed client, and
+     `Reads_ReturnInstantsWithAUtcDesignator` was extended to check the raw
+     JSON of a **list row** as well as a detail body. Only the second catches
+     the failure that matters: a typed test client deserializes correctly
+     either way, and the thing a browser reads is the string.
+
+2. **Wire types and the approver contract — done, 2026-09-21.**
+   `booking.models.ts` gains `createdAtUtc` on `BookingSummary`, `scope` on
+   `ListBookingsParams` (with a note on why `userId` still stays out), the
+   approve/reject request and response types, and
+   `MAX_DECISION_NOTE_LENGTH = 500`. `BookingsService` gains `approve()` and
+   `reject()`; the tenant-scoped read is the existing `list()` with `scope` now
+   expressible, not a second method. No screen — a contract step, the shape
+   Phase 4's step 1 proved worth taking on its own. Verified against the running
+   API with **both** an Approver's token and a plain member's, since those two
+   differ in what the server returns rather than in what the client sends.
+
+   **Delivered, with every shape confirmed against the running API rather than
+   read off the C# records alone.** 8 net new vitest tests (**762 total, 0
+   failed**), `npx ng build` clean (the three SCSS budget warnings pre-date this
+   step). What the live probes settled:
+
+   - **An Approver really may send `scope=tenant`** — `200`, two Pending rows on
+     the 3D Printer, each carrying `resourceName`, `userName` and now
+     `createdAtUtc`. This was the assumption most worth checking, because the
+     controller's own header still says "UserId and Scope are TenantAdmin-only";
+     that comment predates WP-5 Phase 3's widening and the validator is the
+     thing that is actually true. **A plain member sending the same parameter is
+     `400 ValidationFailed` with `errors.Scope`**, confirmed, which is why the
+     calendar's own calls must keep leaving it off.
+   - **`userId` stays out, and the refusal is real**: an Approver sending it gets
+     `400` with `errors.UserId` ("Only a TenantAdmin may filter bookings by
+     userId"). Not merely unused surface.
+   - **`sort=createdAtUtc` orders oldest-first as intended**, and step 1's new
+     field is on the wire with its `Z` — the two halves of the requested-at
+     column proven together rather than separately.
+   - **Both decision responses are exactly the four fields typed**, checked by
+     approving and rejecting real Pending bookings: `{id, status,
+     decidedByUserId, decidedAtUtc}`, with `status` coming back `Confirmed` and
+     `Rejected` respectively. A `null` note is accepted on both.
+   - **Non-idempotence is real, not merely documented**: a second approve on the
+     same booking answers `422 BookingNotPending`. That is also what the losing
+     approver sees when two people decide at once, which is step 6's race.
+   - **The note limit is exactly 500 and the field is `Note`**: 501 characters
+     is `400 ValidationFailed` with `errors.Note` naming both numbers; 500 passes
+     validation and reaches the handler. Step 5's dialect needs that field name
+     to place the message on the right control.
+
+   **Cleanup.** Two probe bookings were created on the 3D Printer (2026-11-16)
+   and decided; the approved one was cancelled afterwards, and the rejected one
+   stays `Rejected` because a terminal booking is not cancellable. The owner's
+   two seeded Pending bookings were deliberately left untouched — step 6 and the
+   Phase 6 demo both want them — and `totalCount` was re-checked at 2 afterwards
+   to prove it.
+
+   **One stale comment corrected rather than left**: `ListBookingsParams`'
+   header said "userId and scope are deliberately absent", which was true for
+   Phase 4 and is now half wrong. The matching spec —
+   `never sends scope or userId — the widening belongs to Phase 6` — was
+   replaced by two tests rather than deleted: one that `scope` goes out when
+   asked for, one that it is still absent when not, since the calendar reads
+   through this same method and `scope=own` in its URL would be this client
+   restating a default the server owns.
+
+3. **The queue screen — done, 2026-09-21.** `/approvals` replaces WP-6's
+   placeholder. `features/approvals/components/approval-queue/`, specs in
+   `features/approvals/tests/`, reading through `booking/`'s `BookingsService`
+   and models — the same cross-feature shape the calendar already uses, for the
+   same stated reason (the contract belongs with the aggregate, not with
+   whichever screen renders it). Rows carry resource, requester, span, quantity,
+   requested-at and the recurrence marker, and each links to `/bookings/:id` for
+   the full read. Oldest-first (`?sort=createdAtUtc`), real pagination off
+   `PagedResult`'s own fields, and the loading / empty / error states landing
+   here rather than being retrofitted. **Empty is the ordinary case for this
+   screen**, not an edge — an approver with nothing waiting is a healthy
+   Tuesday — so it gets real copy rather than a shrug.
+
+   **Delivered. 21 new vitest tests (783 total, 0 failed)**, `npx ng build`
+   clean, and the exact request the component makes was fired against the
+   running API. Five things worth recording:
+
+   - **The formatting lives in `queue/approval-queue.ts`, not the component** —
+     `toQueueRow` and `waitingLabel` are pure functions with their own spec, the
+     same split `calendar-range.ts` and `availability-grid.ts` already keep. The
+     component is left with the fetch, the three states and the paging.
+   - **The span reads in the viewer's zone, not the resource's** — the opposite
+     of the booking *form* and the same as the booking *detail*. Decision `0003`
+     governs availability ("Monday 9am" is what the room's clock says) because
+     that is the reading the member chose against; an approver is not choosing a
+     slot, they are judging one against their own day. The resource's zone is one
+     click away on `/bookings/:id`.
+   - **Requested-at renders twice, deliberately**: `Waiting 4 days` beside the
+     absolute stamp. A relative label alone cannot be checked against anything;
+     an absolute one alone makes the reader do the subtraction. A stamp *ahead*
+     of the browser clock reads `Just now` rather than negative time — the
+     server's clock and the browser's are not the same clock, and
+     "Waiting -1 minutes" is the kind of visible nonsense that makes a reader
+     distrust the rest of the row.
+   - **No role branch anywhere in the component, and a comment saying so.** An
+     Approver and a TenantAdmin send byte-identical requests; `ApprovalReach`
+     narrows the rows server-side. A client-side branch would be a second copy of
+     an authorization rule that cannot see what the server sees — which resources
+     an approver gates is not in the token. There is a test asserting the request
+     carries no role-dependent parameter at all.
+   - **The DOM is what the tests assert**, per this package's own lesson: the
+     series badge is checked as a rendered element on one card and absent on
+     another, the detail link as a real `href`, the empty state as its own
+     sentence. A signal-level assertion would have passed on every one of the
+     five bugs the owner found by clicking.
+
+   **Flagged, not fixed:** the two seeded Pending requests are for slots on
+   2026-09-17 and 2026-09-18 — already in the past — because nothing expires them
+   (the stale-approval-expiry job is specified but not running, per
+   `STATE-OF-THE-APP.md` §1). The queue therefore shows requests whose slot has
+   already gone, with no marker saying so. Whether a past request should be
+   labelled, sorted differently or hidden is a product question the work package
+   does not answer, so it is raised rather than decided (CLAUDE.md §11).
+
+   **Follow-up the same day — the detail link was broken.** The owner clicked a
+   queue row and got "this booking doesn't exist or you don't have access". Not
+   the screen: `GET /bookings/{id}` answered 404 to an approver reading a booking
+   in their own queue, because `BookingReadRules.ResolveDetailFilter` never got
+   WP-5 Phase 3's approver widening while `ResolveOwnerFilter` did. Closed by
+   decision [`0027`](decisions/0027-approver-booking-detail-reach.md), the
+   owner's call: an approver may read a booking that is **their own or** on a
+   resource they gate. Two things fell out of it that the bug report did not
+   contain — the obvious fix (`AnyOwnerRestrictedToResources`) is an **AND** and
+   would have silently removed an approver's access to their own bookings on
+   ungated resources, invisible in the dev data because the seeded approver owns
+   none; and `FindDetailAsync` had been **silently ignoring** `owner.ResourceIds`
+   since WP-5 Phase 3, a latent fail-open this change would have been the first
+   to trigger. The cancel deliberately did not widen. **1073 unit + 511
+   integration, 0 failed**; the regression guard was proven to fail against the
+   AND-shaped filter before being kept. Narrative in
+   [`docs/roadmap/wp7.md`](roadmap/wp7.md).
+
+   **The step-3 lesson, recorded because it is general**: verifying the request a
+   screen *makes* is not verifying the screen *works*. The queue's list call was
+   checked against the running API; its link target was not.
+
+4. **Approve and reject, with a note — done, 2026-09-21. Scope changed
+   mid-step: the controls are on the queue row *and* the booking detail
+   screen**, not the queue alone as this step originally read. The owner's call,
+   prompted by their own bug report — they went to the *booking* to decide. One
+   shared `DecisionPanelComponent` with two hosts, because building it twice
+   would mean two copies of the AC-5 wording, the in-flight rules and the
+   no-retry rule, and the first to drift would be the one nobody was looking at.
+
+   Inherits the three rules the 2026-09-17 hardening pass settled and does not
+   re-litigate them: everything feeding a submit is disabled while it is in
+   flight, the outcome renders from a snapshot of what was submitted, and a
+   server field message outranks a client one until its control is edited.
+   **Neither decision is idempotent** — a second call answers `422
+   BookingNotPending` — so nothing on this path offers a retry.
+
+   The two hosts differ in what they do afterwards, deliberately: the **queue
+   drops the row from the response** (a list being worked down should not
+   reshuffle), the **detail screen re-reads the booking** (a decision changes
+   more than the response carries — `status` moves *and* the approval section
+   gains its decision, decider, timestamp and note). Full reasoning in
+   [`docs/roadmap/wp7.md`](roadmap/wp7.md).
+
+   **Preceded by a bug fix this step depended on.** The detail screen was built
+   in Phase 4 for one audience and every second-person string on it assumed the
+   reader owned the booking; decision `0027` gave it a second audience the day
+   before. Four things were wrong — the "not held for you yet" note, both "back
+   to your calendar" links, "You cancelled this booking" on a `self`
+   cancellation, and, most seriously, **the cancel action offered to a
+   non-owner**, which would answer 404 every time. One `viewerIsOwner` computed
+   fixes all four, and the screen gained a "Requested by" row for non-owners.
+   Every existing detail spec failed on the first run, which was the fix
+   working.
+
+5. **The decision dialect, and AC-5 as its own outcome — done, 2026-09-21.**
+   `approval-rejection.ts`, a fourth dialect on `booking-rejection.ts`'s
+   machinery rather than a second mapper. Approve and reject share it: a code a
+   reject can never return simply never arrives, and two near-identical maps kept
+   in step would be a likelier source of a wrong message than one map with an
+   unreachable entry. Codes covered: `BookingNotPending`, `BookingNotFound`,
+   `SlotUnavailable`, `CapacityExceeded`, `BlackoutPeriod`, `ResourceArchived`,
+   and `ValidationFailed` on an over-long note (field `Note`, confirmed off the
+   wire in step 2).
+
+   **`SlotUnavailable` / `CapacityExceeded` read as their own outcome** — the
+   slot went while the request sat in the queue, which is AC-5's whole point.
+   A generic failure there would make the one criterion this phase exists to
+   close unverifiable from the screen, and would read to an approver as the
+   system being broken rather than as the capacity re-check doing its job.
+
+   **A fixture mistake worth recording**: the first five refusal tests asserted
+   the wrong message and passed. `isProblemDetails` requires `title` as well as
+   `reasonCode`, so a fixture carrying only a code falls through to the generic
+   message. Caught when the AC-5 assertion was tightened; the fixtures now build
+   a real ProblemDetails.
+
+   **813 vitest tests, 0 failed** (was 783), `npx ng build` clean. Verified live
+   end to end: a fresh Pending request created as a member, read as the approver,
+   approved with a note, re-read showing the full approval section, and a second
+   approve answering 422 — then the probe cancelled and the queue count
+   re-checked at 2, leaving the seeded requests untouched.
+
+6. **Live verification, including the race — done, 2026-09-21.** The queue
+   walked against the running API end to end, and the concurrent-decision case
+   forced rather than reasoned about: two callers approving the same Pending
+   booking, confirming the loser reads "already decided" and not a silent or
+   generic failure. As everywhere in this package, **no browser click-through is
+   claimed**: no automation for it exists here.
+
+   **The race came out exactly right**: the approver got `200 Confirmed`, the
+   tenant admin `422 BookingNotPending` — with a full ProblemDetails carrying
+   `title` as well as `reasonCode`, which is what decides whether the screen
+   says "already been decided" or falls back to the generic message. Reach does
+   not win a race; arrival does.
+
+   **The since-taken-slot 409 could not be provoked, and this step was wrong to
+   assume it could.** Two live attempts established why: a second overlapping
+   request is refused at creation (a Pending booking reserves its units in full,
+   decision `0005`), and shrinking capacity under a pending request is refused
+   at the resource-edit boundary (`CapacityBelowExistingBookings` counts Pending
+   bookings). `ApproveBookingProcedureTests`' own header said so back in WP-5 —
+   the re-check "by construction, almost never has anything to refuse through
+   legitimate application paths", and the test builds the over-capacity state
+   with raw SQL the application cannot reach.
+
+   So **AC-5's refusal is proven at two layers and is unreachable at the third**:
+   at `dbo.ApproveBooking` (raw-SQL fixture, both arms, WP-5) and in the decision
+   panel (vitest against a real 409 ProblemDetails, step 5), but not end to end
+   over HTTP — because nothing legitimate can produce it. That is defence in
+   depth working, not a gap; the UI arm still has to exist, because "unreachable
+   today" is a property of the current write paths rather than of the
+   procedure's contract.
+
+   **Nothing was left behind**: the race booking cancelled, the capacity probe's
+   booking cancelled and its resource archived, the stray request cancelled. The
+   owner's two seeded Pending requests were untouched throughout and the queue
+   count re-checked at 2 afterwards.
+
+   **Accepted as-is, not fixed (owner, 2026-09-21)**: the queue shows an
+   approver's *own* pending requests with decision controls on them, while the
+   booking detail screen refuses to offer a decision on the viewer's own booking.
+   The list filter widens by resource and drops the owner restriction entirely,
+   and the queue row renders the panel unconditionally. Two open questions behind
+   it — whether the queue should hide or merely disable those rows, and whether
+   self-approval is refused anywhere at all (`ApprovalReach` does not exclude the
+   caller, and `dbo.ApproveBooking` has not been read for a guard). Recorded in
+   [`docs/roadmap/wp7.md`](roadmap/wp7.md) rather than left implicit.
+
 ### Phase 7 — End-to-end wiring, tests, AC sweep
+
+The last phase of WP-7. Steps written 2026-09-22, before any code, the same way
+every phase since WP-3 has been.
 
 - No new screens. Confirms every prior phase's screen is reachable through
   real navigation (resource → availability → book → **calendar** → booking
@@ -2195,6 +2539,132 @@ the loser gets a clear "already decided" message, not a silent failure.
 
 **Demo:** the four ACs, shown live, end to end, with no mock data anywhere in
 the path.
+
+#### The one thing this phase cannot do for itself
+
+**The click-through is the deliverable, and no tool in this environment can
+perform it.** That has been true and flagged since Phase 1, and it is now the
+single thing standing between WP-7 and all four acceptance criteria being met.
+Three of the four are met already; the fourth — *"a member completes browse →
+book → confirm entirely through the UI"* — is specifically about a person
+clicking, which is why it is the only one still open.
+
+So this phase splits honestly along that line. **Steps 1–3 and 5 are mine**:
+everything that can be proven by a test, by an audit, or by a request against
+the running API. **Step 4 is the owner's**, and my job there is to make it
+cheap — a written script with exact steps, the data to use, and what each screen
+should say — rather than to claim a verification I did not perform.
+
+This matters more here than it would elsewhere. **Seven bugs in this package
+were found by the owner clicking and none by the suite** (`<select [value]>`
+showing the wrong time; a hand-edited `?quantity=16` booking one unit; three
+calendar layout faults; the detail screen's member-voiced copy; and the broken
+queue → booking link). The pattern in all seven is identical — the assertion
+that existed was true, but was not about what determined what the user saw. A
+phase that closed by asserting more of the same would be measuring the wrong
+thing.
+
+#### What is already true, checked before writing these steps
+
+Two audits were run first, so the steps below describe real work rather than
+assumed work:
+
+- **No dead navigation.** Every `routerLink` and `router.navigate` target in the
+  app resolves to a declared route: `/calendar`, `/resources`,
+  `/resources/:id`, `/resources/:id/availability`, `/resources/:id/book`,
+  `/bookings/:id`, `/approvals`, plus the shell's own `item.path` set
+  (`/settings`, `/help`). Nothing points at the removed `/my-bookings`. Step 1
+  is therefore about proving reachability *as a chain*, not about hunting
+  broken links.
+- **Coverage has two holes** — this was checked by eye and **was wrong**: step 2 enumerated every file and found five. Left as written so the correction is visible:
+  `approval-rejection.ts` is the only one of the four rejection dialects with no
+  spec of its own (it is covered indirectly through the decision panel), and
+  `core/notifications/notification.service.ts` has none at all while its
+  component does. Everything else with meaningful logic has a spec.
+
+#### Steps
+
+1. **The navigation chain, proven as a chain — done, 2026-09-22.** 8 tests in `app/tests/navigation-chain.spec.ts`; writing it cost 39 collateral failures and produced a `try/finally` TestBed reset so a leak in this file can never poison another. One assertion was wrong and the app right: a stale `/my-bookings` link lands on `/calendar`, not `/login`. Narrative in [`docs/roadmap/wp7.md`](roadmap/wp7.md). Original plan: Route-level specs that walk the
+   member's path and the approver's path the way a person does — each screen
+   reached *from the one before it* by following what is rendered, not by
+   navigating to a URL the test made up. The member: resources → a resource →
+   its availability → the booking form carrying the picked slot → calendar →
+   a chip → the booking → cancel. The approver: the nav's Approvals item →
+   a queue row → the booking → back to approvals.
+
+   Two things this must not become. It is **not** a second copy of each screen's
+   own tests — every assertion is about the *seam*, i.e. that the link the
+   previous screen renders lands somewhere that loads. And it must respect the
+   test gotcha Phase 4 recorded: a spec that navigates to a route which fetches
+   immediately leaves an open request whose `httpMock.verify()` failure corrupts
+   the shared TestBed for every spec file after it.
+
+2. **Close the coverage holes — done, 2026-09-22. There were five, not two.** The by-eye audit this plan recorded was wrong; enumerating every source file with no matching spec found `blackout-periods.service.ts`, `resource-type.ts` and `problem-details.ts` as well. Original plan: `approval-rejection.spec.ts` covering the
+   dialect directly — every code it maps, the AC-5 wording, the `Note` → `reason`
+   field mapping, and the unknown-outcome rules — so it is tested at the same
+   level as its three siblings rather than only through a component. Plus
+   `notification.service.spec.ts`. Then a sweep for anything else with real logic
+   and no spec, so the claim "coverage per service and per component" is checked
+   rather than asserted.
+
+3. **The AC sweep at the API level — done, 2026-09-22.** All four criteria walked live, plus AC-1 (five simultaneous attempts on one slot: `201 409 409 409 409`) and AC-4 (cross-tenant reads 404). Everything created was cancelled and the seeded data re-verified untouched. **It does not tick the first criterion** — that needs step 4. Original plan: All four
+   acceptance criteria walked against the running backend with no mock anywhere
+   in the path, each request and response recorded. This is the part of the
+   walkthrough that does not need a browser: that every screen's contract holds
+   on live data, in order, against rows that were created moments earlier by the
+   step before.
+
+   Includes the concurrency and isolation evidence WP-7's own criteria lean on
+   (AC-1 and AC-4 are the backend's, but a UI claiming to be end-to-end should
+   show it is not somehow bypassing them). Everything created gets cleaned up,
+   and the owner's seeded data stays untouched — the rule every probe in this
+   package has followed.
+
+4. **The click-through script — written 2026-09-22, in [`docs/wp7-clickthrough.md`](wp7-clickthrough.md); the walk itself is the owner's, not mine.** Its own file rather than a section here, because it is held in one hand while the other clicks. Three paths — the member (the open criterion), the approver, and ten deliberate wrong turns — with the seed data and example day verified against the running API rather than assumed. Original plan: A written
+   walkthrough: exact route to open, what to click, what the screen should say,
+   and what to check underneath (a status, a chip, an absence). Two paths, member
+   and approver, plus the deliberate wrong turns worth trying because this
+   package's history says they are where bugs live — a hand-edited query
+   parameter, a stale tab, a browser Back after a decision, a direct link to a
+   cancelled booking.
+
+   **I will not tick the acceptance criterion on the strength of steps 1–3.** The
+   script is written so the owner's pass is quick; the criterion is met when they
+   have walked it, and it stays open until they say so.
+
+5. **The write-up and the WP-7 close — done, 2026-09-22.** Outcomes recorded
+   into CLAUDE.md §12 (WP-7 marked **Done**, every task item ticked, all four
+   acceptance criteria met, plus a Phase 7 block of what is true before touching
+   this area), `STATE-OF-THE-APP.md` refreshed at the close of the **package**
+   rather than the phase, this plan's status table finished, and the narrative
+   in [`docs/roadmap/wp7.md`](roadmap/wp7.md).
+
+   **The first acceptance criterion was ticked on the walk, not on the
+   evidence.** API-level proof of the whole member path had existed since
+   2026-09-18; the criterion asks for a member completing it *through the UI*,
+   which is a different claim. It was met on 2026-09-22 when the owner walked
+   path A.
+
+   **The walk found one real bug** — an approver could not approve their own
+   request from the booking screen, a rule I invented and the suite was actively
+   asserting — plus one error in the script's own arithmetic (the owner was
+   right, the app was correct) and one limitation that is not a bug (two
+   identities in one browser, which `localStorage` storage rules out and which
+   this app has no use case for). All three are written up in the roadmap.
+
+Both are in `STATE-OF-THE-APP.md` §5 as "frontend, small and open", and
+**neither is in Phase 7's task list**, so neither is planned above (CLAUDE.md
+§11 — a gap is flagged rather than folded in on judgment). They are named here
+because Phase 7 is the last chance to do them inside WP-7, and each is small:
+
+- **The booking form's `?mode` is read but never written back**, so sharing a URL
+  mid-form always shares the one-off view. One write on the toggle.
+- **`/bookings/<all-zero GUID>` answers 400, not 404**, so it lands in the
+  generic error state with a retry that cannot help. Only reachable by
+  hand-typing that exact id.
+
+Say if either should be a step 6; otherwise they stay flagged and carry into
+whatever follows WP-7.
 
 ---
 
@@ -2321,7 +2791,14 @@ screen happens to render it.
     `BookingNotFound` and `BookingNotCancellable`, which belong in that same
     catalogue with the same "message *and* placement" treatment rather than in
     a second one. **Unchanged by the merge** — still step 5's job.
-- Nothing here touches the backend. If a phase turns up a genuine contract
-  gap (a field the UI needs that no response carries, an endpoint shape that
-  doesn't fit the screen), that's a stop-and-ask per CLAUDE.md §11, not a
-  silent backend patch mid-frontend-WP — same rule WP-6 closed with.
+- Nothing here touches the backend **by default**. If a phase turns up a
+  genuine contract gap (a field the UI needs that no response carries, an
+  endpoint shape that doesn't fit the screen), that's a stop-and-ask per
+  CLAUDE.md §11, not a silent backend patch mid-frontend-WP — same rule WP-6
+  closed with. **The stop-and-ask is the rule; the answer is the owner's.**
+  Twice now it has been asked. `POST /bookings`' missing idempotency key went
+  to a future backend package (2026-09-16, above). `createdAtUtc` on
+  `ListBookingsQueryResponse` was **granted** (2026-09-21) for Phase 6's
+  requested-at column — one field on a projection that already reads the
+  column, no migration. Recorded in both places so the exception is visible
+  from the rule, not only from the phase that took it.

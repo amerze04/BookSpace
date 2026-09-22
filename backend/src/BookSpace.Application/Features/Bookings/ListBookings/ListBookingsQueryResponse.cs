@@ -30,6 +30,19 @@ namespace BookSpace.Application.Features.Bookings.ListBookings;
 // id-and-name-no-email shape — a name is what an approver needs to decide, an
 // email address is contact information nobody asked for here.
 //
+// **CreatedAtUtc joins it in WP-7 Phase 6** — when the booking was requested,
+// which is the column that makes the approver queue a queue rather than a list
+// ("how long has this been waiting"). It was already a sort key here
+// (BookingSortFields.CreatedAtUtc) and already on the detail response, so this
+// endpoint could order by a field it would not return; a queue reading
+// oldest-first could sort correctly and render nothing to justify the order.
+//
+// **Not the approval's own RequestedAtUtc**, which is the more precisely-named
+// field: that one lives on the ApprovalRequest aggregate and only a detail read
+// carries it, so using it would force a GET /bookings/{id} per visible row. A
+// booking and its ApprovalRequest are written in the same unit of work, so the
+// booking's own stamp answers the same question at list cost.
+//
 // Status serializes as its name — "Confirmed", not 1 — because Program.cs
 // registered JsonStringEnumConverter app-wide in WP-3 Phase 3.
 public sealed record ListBookingsQueryResponse(
@@ -43,4 +56,5 @@ public sealed record ListBookingsQueryResponse(
     DateTime EndsAtUtc,
     int Quantity,
     string? Title,
-    BookingStatus Status);
+    BookingStatus Status,
+    DateTime CreatedAtUtc);

@@ -93,11 +93,22 @@ export const routes: Routes = [
       // and the source work package never asked for the screen. The three links
       // that pointed at it now point at /calendar.
       {
+        // WP-7 Phase 6 step 3: the placeholder this route has carried since
+        // WP-6 is now the real approval queue — the last unbuilt screen in the
+        // package.
+        //
+        // approverGuard stays, and it is doing two different jobs. It keeps a
+        // plain member out of a screen whose only request they would be 400'd
+        // for making (`scope=tenant` is refused for them), and it means the
+        // component never has to render a "you have no reach here" state —
+        // which would otherwise be indistinguishable from an empty queue.
         path: 'approvals',
         data: { title: 'Approvals' },
         canActivate: [approverGuard],
         loadComponent: () =>
-          import('./features/placeholder/components/placeholder/placeholder.component').then((m) => m.PlaceholderComponent),
+          import('./features/approvals/components/approval-queue/approval-queue.component').then(
+            (m) => m.ApprovalQueueComponent,
+          ),
       },
       {
         path: 'settings',

@@ -304,19 +304,7 @@ internal sealed class BookingRepository : IBookingRepository
 
         var bookings = _context.Bookings.AsNoTracking();
 
-        if (owner.UserId is { } ownerUserId)
-        {
-            bookings = bookings.Where(b => b.UserId == ownerUserId);
-        }
-
-        // The approver queue's restriction (WP-5 Phase 3, decision 0018) — an
-        // Approver's scope=tenant read, resource-restricted rather than
-        // owner-restricted, so it composes with the owner filter above rather
-        // than replacing it (both are null/no-op for a TenantAdmin's AnyOwner).
-        if (owner.ResourceIds is { } approverResourceIds)
-        {
-            bookings = bookings.Where(b => approverResourceIds.Contains(b.ResourceId));
-        }
+        bookings = ApplyOwnerFilter(bookings, owner);
 
         // Overlap, not containment, exactly as the blackout list does it: a
         // booking that started before the window and runs into it is part of
@@ -384,8 +372,58 @@ internal sealed class BookingRepository : IBookingRepository
                 b.EndsAtUtc,
                 b.Quantity,
                 b.Title,
-                b.Status))
+                b.Status,
+                b.CreatedAtUtc))
             .ToPagedResultAsync(query, cancellationToken);
+    }
+
+    // The one place a BookingOwnerFilter becomes a WHERE clause, shared by the
+    // list and the detail read (WP-7 Phase 6, decision 0027).
+    //
+    // **It is shared because the two used to disagree, and the disagreement was
+    // invisible.** ListAsync applied both restrictions; FindDetailAsync applied
+    // only UserId and silently ignored ResourceIds, which had been on the filter
+    // since WP-5 Phase 3. Nothing handed the detail read a resource-restricted
+    // filter, so nothing leaked — but the first caller to do so would have got
+    // *any* booking in the tenant back, which is the fail-open shape
+    // BookingOwnerFilter's own header exists to rule out. One helper means a
+    // future field on the filter cannot be honoured by one read and dropped by
+    // the other.
+    //
+    // The combinator is the filter's, not this method's: All for the list's
+    // "any owner, on my resources", Any for the detail's "mine, or on my
+    // resources". See BookingOwnerFilter for why those differ.
+    //
+    // Deliberately **not** used by FindForCancelAsync below, which applies only
+    // the owner restriction: decision 0002 gives the cancel to the booking's
+    // owner and to a TenantAdmin, and an Approver's resource reach does not
+    // extend to cancelling other people's bookings. That method says so itself
+    // rather than quietly passing a filter this one would widen.
+    private static IQueryable<Booking> ApplyOwnerFilter(
+        IQueryable<Booking> bookings,
+        BookingOwnerFilter owner)
+    {
+        var ownerUserId = owner.UserId;
+        var resourceIds = owner.ResourceIds;
+
+        if (ownerUserId is { } userId && resourceIds is { } ids)
+        {
+            return owner.Combine == BookingOwnerFilter.Combination.Any
+                ? bookings.Where(b => b.UserId == userId || ids.Contains(b.ResourceId))
+                : bookings.Where(b => b.UserId == userId && ids.Contains(b.ResourceId));
+        }
+
+        if (ownerUserId is { } soleUserId)
+        {
+            return bookings.Where(b => b.UserId == soleUserId);
+        }
+
+        if (resourceIds is { } soleResourceIds)
+        {
+            return bookings.Where(b => soleResourceIds.Contains(b.ResourceId));
+        }
+
+        return bookings;
     }
 
     // Null means "not visible to this caller", which folds three cases into one
@@ -412,10 +450,7 @@ internal sealed class BookingRepository : IBookingRepository
             .AsNoTracking()
             .Where(b => b.Id == bookingId);
 
-        if (owner.UserId is { } ownerUserId)
-        {
-            bookings = bookings.Where(b => b.UserId == ownerUserId);
-        }
+        bookings = ApplyOwnerFilter(bookings, owner);
 
         return bookings
             .Select(b => new GetBookingQueryResponse(
@@ -464,6 +499,12 @@ internal sealed class BookingRepository : IBookingRepository
 
         var bookings = _context.Bookings.Where(b => b.Id == bookingId);
 
+        // Only the owner restriction, deliberately — this method does *not* go
+        // through ApplyOwnerFilter (WP-7 Phase 6, decision 0027). Decision 0002
+        // gives the cancel to the booking's owner and to a TenantAdmin, and an
+        // Approver's resource reach widens what they may *read*, never what they
+        // may cancel. Routing this through the shared helper would silently hand
+        // an Approver the ability to cancel any booking on a resource they gate.
         if (owner.UserId is { } ownerUserId)
         {
             bookings = bookings.Where(b => b.UserId == ownerUserId);

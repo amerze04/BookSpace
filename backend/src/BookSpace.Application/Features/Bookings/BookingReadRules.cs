@@ -90,8 +90,55 @@ internal static class BookingReadRules
     // handler's only branch is null → BookingNotFoundException, which is the 404
     // decision 0002 and BookingNotFoundException both require (never a 403,
     // which would confirm the booking exists).
-    public static BookingOwnerFilter ResolveDetailFilter(Guid callerUserId, bool isTenantAdmin) =>
-        isTenantAdmin ? BookingOwnerFilter.AnyOwner : BookingOwnerFilter.Owner(callerUserId);
+    // **approverResourceIds widens it** (WP-7 Phase 6, decision 0027): non-null
+    // only when the handler has already resolved the caller as a non-admin
+    // holding Approver, in which case it is that Approver's
+    // `FindApprovableResourceIdsAsync` result — possibly empty, which is a legal
+    // answer meaning "assigned to nothing".
+    //
+    // The gap this closes was found by clicking, not by review (WP-7 Phase 6
+    // step 3): an Approver could see a booking in the queue, and was allowed to
+    // *decide* on it, but could not *open* it — the list half of this file was
+    // widened in WP-5 Phase 3 and the detail half was not, so the link the queue
+    // renders answered 404. Whether the two reads agree is not a detail: an
+    // approver being asked to judge a request must be able to read the thing
+    // they are judging.
+    //
+    // **The widening is a union, not a narrowing, and that is the whole
+    // subtlety.** `OwnerOrResources`, never
+    // `AnyOwnerRestrictedToResources` — an Approver may see a booking because it
+    // is theirs *or* because it is on a resource they gate, and the two sets do
+    // not contain each other. Handing this read the list's AND-shaped filter
+    // would have silently taken away an Approver's ability to read their own
+    // bookings on resources they do not approve for, which every plain member
+    // can do. The seeded approver owns no bookings, so no amount of clicking the
+    // dev data would have shown it.
+    //
+    // There is deliberately **no scope parameter here**. A detail read asks
+    // about one booking, so there is no "how wide" question for a client to
+    // answer and nothing for a validator to refuse — which is why an Approver's
+    // reach applies unconditionally here while it needs `scope=tenant` above.
+    public static BookingOwnerFilter ResolveDetailFilter(
+        Guid callerUserId,
+        bool isTenantAdmin,
+        IReadOnlyCollection<Guid>? approverResourceIds = null)
+    {
+        if (isTenantAdmin)
+        {
+            return BookingOwnerFilter.AnyOwner;
+        }
+
+        // An empty set falls through rather than being passed on: "their own, or
+        // one of no resources" is exactly "their own", and spelling it as the
+        // plainer filter keeps the query one predicate shorter for the common
+        // case of an Approver assigned to nothing.
+        if (approverResourceIds is { Count: > 0 })
+        {
+            return BookingOwnerFilter.OwnerOrResources(callerUserId, approverResourceIds);
+        }
+
+        return BookingOwnerFilter.Owner(callerUserId);
+    }
 
     // The one role that widens a booking read. Wrapped so both handlers ask the
     // same question of ICurrentUser and neither names the role itself.

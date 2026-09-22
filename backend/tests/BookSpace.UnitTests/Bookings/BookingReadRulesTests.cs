@@ -215,4 +215,105 @@ public class BookingReadRulesTests
         Assert.Null(filter.UserId);
         Assert.Equal([resourceId], filter.ResourceIds);
     }
+
+    // ---- An Approver's detail reach (WP-7 Phase 6, decision 0027) ----------
+
+    // The gap the queue screen found: an Approver could list a booking under
+    // scope=tenant and was allowed to decide on it, but reading it by id
+    // answered 404, because only ResolveOwnerFilter had been widened.
+    [Fact]
+    public void AnApproverSeesABookingOnAResourceTheyGate()
+    {
+        var gatedResource = Guid.NewGuid();
+
+        var owner = BookingReadRules.ResolveDetailFilter(
+            Caller,
+            isTenantAdmin: false,
+            approverResourceIds: [gatedResource]);
+
+        Assert.Equal([gatedResource], owner.ResourceIds);
+    }
+
+    // **The union is the point, and an AND here would have been a regression.**
+    // An Approver may see a booking because it is theirs *or* because it is on
+    // a resource they gate, and neither set contains the other — so a filter
+    // that required both would have taken away their ability to read their own
+    // bookings on resources they do not approve for, which every plain member
+    // can do.
+    [Fact]
+    public void AnApproverStillSeesTheirOwnBookingsOnResourcesTheyDoNotGate()
+    {
+        var owner = BookingReadRules.ResolveDetailFilter(
+            Caller,
+            isTenantAdmin: false,
+            approverResourceIds: [Guid.NewGuid()]);
+
+        Assert.Equal(Caller, owner.UserId);
+        Assert.Equal(BookingOwnerFilter.Combination.Any, owner.Combine);
+    }
+
+    // Assigned to nothing collapses to the plain member's filter rather than
+    // being carried as an empty set: "mine, or one of no resources" is exactly
+    // "mine", and the plainer filter is one predicate shorter.
+    [Fact]
+    public void AnApproverAssignedToNothingSeesWhatAMemberSees()
+    {
+        var owner = BookingReadRules.ResolveDetailFilter(
+            Caller,
+            isTenantAdmin: false,
+            approverResourceIds: []);
+
+        Assert.Equal(Caller, owner.UserId);
+        Assert.Null(owner.ResourceIds);
+        Assert.Equal(BookingOwnerFilter.Combination.All, owner.Combine);
+    }
+
+    // The default keeps every existing caller's meaning: omitting the argument
+    // is a plain member's read, not a widened one. The fail-open direction here
+    // would be a default that widened.
+    [Fact]
+    public void OmittingTheApproverReachIsStillAPlainMembersRead()
+    {
+        var owner = BookingReadRules.ResolveDetailFilter(Caller, isTenantAdmin: false);
+
+        Assert.Equal(Caller, owner.UserId);
+        Assert.Null(owner.ResourceIds);
+    }
+
+    // A TenantAdmin already sees everything, so their reach is unchanged by an
+    // approver set — including the case of an admin who is also an approver.
+    [Fact]
+    public void AnAdminsReachIsUnchangedByAnApproverSet()
+    {
+        var owner = BookingReadRules.ResolveDetailFilter(
+            Caller,
+            isTenantAdmin: true,
+            approverResourceIds: [Guid.NewGuid()]);
+
+        Assert.Null(owner.UserId);
+        Assert.Null(owner.ResourceIds);
+    }
+
+    [Fact]
+    public void OwnerOrResourcesCarriesBothRestrictionsAndTheOrCombinator()
+    {
+        var resourceId = Guid.NewGuid();
+        var filter = BookingOwnerFilter.OwnerOrResources(Caller, [resourceId]);
+
+        Assert.Equal(Caller, filter.UserId);
+        Assert.Equal([resourceId], filter.ResourceIds);
+        Assert.Equal(BookingOwnerFilter.Combination.Any, filter.Combine);
+    }
+
+    // The list's filter keeps AND semantics — an Approver's scope=tenant read
+    // asks "what is booked on the resources I gate", which their own booking
+    // elsewhere is not part of. Asserted so the two combinators cannot be
+    // quietly unified.
+    [Fact]
+    public void TheListsApproverFilterStillCombinesWithAnd()
+    {
+        var filter = BookingOwnerFilter.AnyOwnerRestrictedToResources([Guid.NewGuid()]);
+
+        Assert.Equal(BookingOwnerFilter.Combination.All, filter.Combine);
+    }
 }

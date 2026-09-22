@@ -1,4 +1,5 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { computed, signal } from '@angular/core';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
@@ -7,6 +8,7 @@ import { BookingDetailComponent } from '../components/booking-detail/booking-det
 import { BookingDetail, CancelBookingResponse } from '../models/booking.models';
 import { ResourceDetail } from '../../resources/models/resources.models';
 import { BreadcrumbService } from '../../../layout/breadcrumb.service';
+import { AuthService } from '../../../core/auth/auth.service';
 
 const API = 'http://localhost:5270';
 
@@ -80,14 +82,41 @@ function fakeResource(overrides: Partial<ResourceDetail> = {}): ResourceDetail {
   };
 }
 
+// The screen asks who is reading it (decision `0027` gave it two audiences), so
+// every fixture has to say. A fake rather than the real AuthService, which
+// reads its claims from localStorage — empty in jsdom, which would silently
+// make every viewer "not the owner" and hide the cancel actions these tests are
+// about.
+//
+// Defaults to the booking's own owner, because that is who this screen was
+// built for and what every test written before 2026-09-21 assumed.
+class FakeAuthService {
+  readonly claims = signal<{ sub: string; roles: string[] } | null>({
+    sub: 'u1',
+    roles: ['Member'],
+  });
+
+  readonly canApproveBookings = computed(() => {
+    const roles = this.claims()?.roles ?? [];
+    return roles.includes('Approver') || roles.includes('TenantAdmin');
+  });
+}
+
 describe('BookingDetailComponent', () => {
   let httpMock: HttpTestingController;
   let paramMap$: BehaviorSubject<ReturnType<typeof convertToParamMap>>;
   let breadcrumbService: BreadcrumbService;
   let fixture: ComponentFixture<BookingDetailComponent>;
+  let auth: FakeAuthService;
 
-  function createFixture(id = 'b1') {
+  // `viewer` names who is signed in: the owner by default, or an approver
+  // looking at someone else's request.
+  function createFixture(id = 'b1', viewer: 'owner' | 'approver' | 'approverOwnBooking' = 'owner') {
     paramMap$ = new BehaviorSubject(convertToParamMap({ id }));
+    auth = new FakeAuthService();
+    if (viewer !== 'owner') {
+      auth.claims.set({ sub: 'approver-1', roles: ['Approver'] });
+    }
 
     TestBed.configureTestingModule({
       imports: [BookingDetailComponent],
@@ -95,6 +124,7 @@ describe('BookingDetailComponent', () => {
         provideHttpClient(),
         provideHttpClientTesting(),
         provideRouter([]),
+        { provide: AuthService, useValue: auth as unknown as AuthService },
         {
           provide: ActivatedRoute,
           useValue: { snapshot: { paramMap: convertToParamMap({ id }) }, paramMap: paramMap$ },
@@ -1078,6 +1108,193 @@ describe('BookingDetailComponent', () => {
       });
 
       expect(text()).toContain('Fine by me');
+    });
+  });
+
+  // ---- Two audiences (decision 0027, 2026-09-21) -------------------------
+  //
+  // This screen was built for the booking's owner and every second-person
+  // string on it assumed that. Decision `0027` made it reachable by an approver
+  // reading a request on a resource they gate, and the screen had no way to
+  // tell them apart — which the owner found by clicking, not the suite. These
+  // tests assert the rendered words, because the words were the bug.
+  describe('who is reading it', () => {
+    it("tells the owner the time is not held for them", () => {
+      createFixture('b1', 'owner');
+      load({ status: 'Pending' });
+
+      expect(text()).toContain('not held for you yet');
+    });
+
+    // The exact sentence an approver was being shown about someone else's
+    // request. It has to be gone, not merely supplemented.
+    it('never tells an approver the time is not held for *them*', () => {
+      createFixture('b1', 'approver');
+      load({ status: 'Pending' });
+
+      expect(text()).not.toContain('not held for you yet');
+      expect(text()).toContain('waiting for a decision');
+      expect(text()).toContain('not held yet');
+    });
+
+    it('names the requester to an approver, and not to the owner', () => {
+      createFixture('b1', 'approver');
+      load({ userName: 'Member One' });
+
+      expect(text()).toContain('Requested by');
+      expect(text()).toContain('Member One');
+    });
+
+    it('does not print a member their own name on their own booking', () => {
+      createFixture('b1', 'owner');
+      load({ userName: 'Member One' });
+
+      expect(text()).not.toContain('Requested by');
+    });
+
+    // "Back to your calendar" is wrong for an approver twice over: the booking
+    // is not on their calendar, and the queue is where they came from.
+    it('sends an approver back to the queue, and the owner to their calendar', () => {
+      createFixture('b1', 'approver');
+      load();
+
+      expect(root().querySelector('.detail-actions a')?.getAttribute('href')).toBe('/approvals');
+      expect(text()).toContain('Back to approvals');
+    });
+
+    it('sends the owner back to their calendar', () => {
+      createFixture('b1', 'owner');
+      load();
+
+      expect(root().querySelector('.detail-actions a')?.getAttribute('href')).toBe('/calendar');
+    });
+
+    // `kind: 'self'` means *the owner cancelled it*, which is "you" only when
+    // the owner is the one looking. The template rendered it unconditionally as
+    // "You cancelled this booking" — flatly false read by anyone else.
+    it('does not tell an approver that *they* cancelled a member\'s booking', () => {
+      createFixture('b1', 'approver');
+      load({
+        status: 'Cancelled',
+        userId: 'u1',
+        userName: 'Member One',
+        cancelledByUserId: 'u1',
+        cancelledAtUtc: localInstant(2026, 8, 20, 11, 0),
+      });
+
+      expect(text()).not.toContain('You cancelled this booking');
+      expect(text()).toContain('Member One cancelled this booking');
+    });
+
+    it('still tells the owner that they cancelled it themselves', () => {
+      createFixture('b1', 'owner');
+      load({
+        status: 'Cancelled',
+        cancelledByUserId: 'u1',
+        cancelledAtUtc: localInstant(2026, 8, 20, 11, 0),
+      });
+
+      expect(text()).toContain('You cancelled this booking');
+    });
+
+    // The more serious half of the same bug: an action offered that cannot
+    // work. An approver's reach widens what they may read, never what they may
+    // cancel (decision `0002`), so the server answers 404 — verified against
+    // the running API when `0027` landed.
+    it('offers no cancel action to an approver', () => {
+      createFixture('b1', 'approver');
+      load({ status: 'Confirmed', endsAtUtc: localInstant(2036, 0, 1, 10, 0) });
+
+      expect(root().querySelector('.cancel-box')).toBeNull();
+    });
+
+    it('still offers the owner the cancel action', () => {
+      createFixture('b1', 'owner');
+      load({ status: 'Confirmed', endsAtUtc: localInstant(2036, 0, 1, 10, 0) });
+
+      expect(root().querySelector('.cancel-box')).not.toBeNull();
+    });
+
+    it('offers no series cancel to an approver', () => {
+      createFixture('b1', 'approver');
+      load({ recurrenceRuleId: 'rule-1', endsAtUtc: localInstant(2036, 0, 1, 10, 0) });
+
+      expect(root().querySelector('.cancel-box')).toBeNull();
+    });
+  });
+
+  // ---- The decision panel on this screen (step 4) -------------------------
+  describe('deciding from the booking', () => {
+    function decisionPanel(): HTMLElement | null {
+      return root().querySelector('app-decision-panel');
+    }
+
+    it('offers a decision to an approver on a pending request', () => {
+      createFixture('b1', 'approver');
+      load({ status: 'Pending' });
+
+      expect(decisionPanel()).not.toBeNull();
+      expect(text()).toContain('Your decision');
+    });
+
+    // **This test asserted the opposite until 2026-09-22**, and the behaviour it
+    // pinned was invented rather than required. An approver booking a resource
+    // they gate is ordinary — they are often the person who knows the equipment
+    // best — the backend answers 200 to a self-approval, and the queue already
+    // offered the panel on the viewer's own row. The detail screen was the only
+    // thing refusing, so it was the thing that was wrong.
+    //
+    // A plain member is still offered nothing here: `canApproveBookings()` is
+    // false for them, which is the condition that actually matters.
+    it("offers a decision on the approver's own request, because the server does", () => {
+      createFixture('b1', 'approverOwnBooking');
+      load({ status: 'Pending', userId: 'approver-1' });
+
+      expect(decisionPanel()).not.toBeNull();
+    });
+
+    it('offers no decision to a plain member on their own request', () => {
+      createFixture('b1', 'owner');
+      load({ status: 'Pending' });
+
+      expect(decisionPanel()).toBeNull();
+    });
+
+    it('offers no decision once the request has been decided', () => {
+      createFixture('b1', 'approver');
+      load({ status: 'Confirmed' });
+
+      expect(decisionPanel()).toBeNull();
+    });
+
+    // A decision re-reads the booking rather than patching it from the
+    // response: `status` moves *and* the approval section gains its decision,
+    // decider, timestamp and note, none of which the decision response carries.
+    it('re-reads the booking after a decision', () => {
+      createFixture('b1', 'approver');
+      load({ status: 'Pending' });
+
+      (
+        Array.from(root().querySelectorAll('app-decision-panel button')) as HTMLButtonElement[]
+      ).find((b) => b.textContent?.includes('Approve'))!.click();
+      fixture.detectChanges();
+
+      (
+        Array.from(root().querySelectorAll('app-decision-panel button')) as HTMLButtonElement[]
+      ).find((b) => b.textContent?.includes('Yes, approve it'))!.click();
+
+      httpMock.expectOne(`${API}/bookings/b1/approve`).flush({
+        id: 'b1',
+        status: 'Confirmed',
+        decidedByUserId: 'approver-1',
+        decidedAtUtc: localInstant(2026, 8, 21, 11, 0),
+      });
+
+      // The re-read, which is the assertion — not the decision request itself.
+      httpMock.expectOne(`${API}/bookings/b1`).flush(fakeBooking({ status: 'Confirmed' }));
+      httpMock.expectOne(`${API}/resources/r1`).flush(fakeResource());
+
+      expect(text()).toContain('Confirmed');
     });
   });
 });
