@@ -668,7 +668,9 @@ split into its own reviewable steps. Full narrative:
       validation feedback. **Done 2026-09-17** (Phase 3).
 - [x] Calendar view rendering bookings, including recurring series, without
       choking on volume. **Done 2026-09-18** (Phase 4) — the hard problem.
-- [ ] Approval queue UI for approvers. **Phase 6, the last unbuilt screen.**
+- [x] Approval queue UI for approvers. **Done 2026-09-21** (Phase 6) — `/approvals`,
+      plus approve/reject on the booking detail screen through the same shared
+      panel.
 - [x] Cancellation and blackout handling in the UI. **Done 2026-09-18**
       (Phase 4) — occurrence and whole-series cancellation, and the three
       cancellation readings including a blackout's null actor.
@@ -676,7 +678,7 @@ split into its own reviewable steps. Full narrative:
       whole path is verified at the API level; the browser click-through is
       what remains.
 
-Acceptance criteria (two met, two open):
+Acceptance criteria (three met, one open):
 - [ ] A member completes browse → book → confirm entirely through the UI.
       Every screen on that path exists, and as of 2026-09-18 the **whole path
       is verified end to end against the running API** (browse → availability
@@ -689,7 +691,10 @@ Acceptance criteria (two met, two open):
       2026-09-18**, and measured rather than asserted: DOM is bounded by the
       chip cap, not by the data — 50 → 1000 bookings holds at 56 chips. A
       browser-level measurement has not been taken (jsdom figures only).
-- [ ] An approver can action pending requests from the UI. **Phase 6.**
+- [x] An approver can action pending requests from the UI. **Done 2026-09-21** —
+      approve and reject with an optional note, from the queue or the booking.
+      The concurrent-decision race was forced live: one 200, one 422
+      `BookingNotPending`, rendered as "already been decided".
 
 Notes: Phase 1 deliberately does not render the admin resource CRUD actions
 the provided designs show — flagged rather than silently dropped. No
@@ -825,22 +830,57 @@ before touching this area:
   build instants from local components (`new Date(2026, 8, 24, 9, 0)`) rather
   than from `"...Z"` literals, which would be silently environment-dependent.
 
-**Phase 6 planned 2026-09-21** (six steps, in [`docs/wp7-plan.md`](docs/wp7-plan.md);
-narrative in [`docs/roadmap/wp7.md`](docs/roadmap/wp7.md)). Two things are true
+**Phase 6 — approval queue — Done 2026-09-21** (six steps; plan in
+[`docs/wp7-plan.md`](docs/wp7-plan.md), narrative in
+[`docs/roadmap/wp7.md`](docs/roadmap/wp7.md)). 813 vitest tests. What is true
 before touching this area:
 
-- **The queue is built without waiting for a design**, owner's call, on the
-  app's existing card vocabulary — the route booking detail and cancel took.
-- **`GET /bookings` now returns `createdAtUtc` on each row** (step 1, done
-  2026-09-21). This is a deliberate owner override of wp7-plan.md §7's "a
-  frontend package does not patch the backend" rule, not drift. The gap it
-  closes: `BookingSortFields` whitelists `createdAtUtc`, so the endpoint would
-  *order* by a field it would not *return*, and Phase 6's requested-at column —
-  "how long has this been waiting" — had nothing to render. No migration; the
-  column exists and the detail read already projected it. The other backend gap
-  this package raised, `POST /bookings`' missing idempotency key, was answered
-  the other way and still belongs to a future package — the stop-and-ask is the
-  rule, the answer is the owner's, and the two answers differ on cost.
+- **The queue sends one role-agnostic request**, `GET /bookings?scope=tenant&
+  status=Pending&sort=createdAtUtc`, and **must not start branching on role**.
+  An Approver and a TenantAdmin send identical bytes; the server narrows the
+  rows through `ApprovalReach` (assigned resources / everything). A client-side
+  branch would be a second copy of an authorization rule that cannot see what
+  the server sees — which resources an approver gates is not in the token.
+- **`GET /bookings` now returns `createdAtUtc` on each row** (step 1). A
+  deliberate owner override of wp7-plan.md §7's "a frontend package does not
+  patch the backend" rule, not drift: `BookingSortFields` already whitelisted
+  `createdAtUtc`, so the endpoint would *order* by a field it would not
+  *return*, and the requested-at column had nothing to render. No migration.
+  The package's other backend gap, `POST /bookings`' missing idempotency key,
+  was answered the other way and still belongs to a future package — the
+  stop-and-ask is the rule, the answer is the owner's, and the two differ on
+  cost.
+- **Decision `0027` widened the detail read**, because the queue's own link was
+  answering 404: an approver may read a booking that is **their own *or*** on a
+  resource they gate. It is a **union**, not the list's intersection — see the
+  decision for why reusing `AnyOwnerRestrictedToResources` would have removed an
+  approver's access to their own bookings elsewhere. The cancel deliberately did
+  not widen.
+- **The booking detail screen now serves two audiences**, and `viewerIsOwner`
+  is what tells them apart. Before it existed, an approver was told "the time is
+  not held for *you* yet" and "*You* cancelled this booking" about someone
+  else's request, and was offered a cancel button that answers 404. Any new
+  second-person string on that screen needs the same treatment.
+- **One `DecisionPanelComponent`, two hosts** (queue row and booking detail), so
+  the AC-5 wording, the in-flight rules and the no-retry rule exist once.
+  Neither decision is idempotent — a repeat answers `422 BookingNotPending` — so
+  **nothing on that path ever offers a retry**. The queue drops a decided row
+  from the response; the detail screen re-reads, because a decision changes more
+  than the response carries.
+- **AC-5's 409 is unreachable through the public API, by design.** A Pending
+  booking reserves its units in full (`0005`), and capacity cannot be shrunk
+  below existing bookings — so nothing legitimate can strand a pending approval.
+  The refusal is proven at `dbo.ApproveBooking` (raw-SQL fixture, WP-5) and in
+  the decision panel (vitest against a real 409). Defence in depth, not a gap;
+  the UI arm still has to exist.
+- **Self-approval is permitted, from both screens.** An approver may decide on
+  their own pending request for a resource they gate. The backend always allowed
+  it (`ApprovalReach` does not exclude the caller) and the queue always offered
+  it; the booking detail screen refused until 2026-09-22 on a rule I invented
+  and no FR or decision record asked for. Found by the owner walking the Phase 7
+  click-through, and notable because **the suite was asserting the invented rule
+  rather than merely missing it** — a green suite proves the code matches the
+  tests, which is worth nothing when the test is the invention.
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across

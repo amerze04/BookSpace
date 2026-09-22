@@ -111,10 +111,10 @@ describe('BookingDetailComponent', () => {
 
   // `viewer` names who is signed in: the owner by default, or an approver
   // looking at someone else's request.
-  function createFixture(id = 'b1', viewer: 'owner' | 'approver' = 'owner') {
+  function createFixture(id = 'b1', viewer: 'owner' | 'approver' | 'approverOwnBooking' = 'owner') {
     paramMap$ = new BehaviorSubject(convertToParamMap({ id }));
     auth = new FakeAuthService();
-    if (viewer === 'approver') {
+    if (viewer !== 'owner') {
       auth.claims.set({ sub: 'approver-1', roles: ['Approver'] });
     }
 
@@ -1237,10 +1237,23 @@ describe('BookingDetailComponent', () => {
       expect(text()).toContain('Your decision');
     });
 
-    // Nobody decides on their own request. An approver booking a resource they
-    // gate is ordinary and ApprovalReach does not exclude them, but this UI
-    // does not invite it.
-    it('offers no decision on the viewer\'s own booking', () => {
+    // **This test asserted the opposite until 2026-09-22**, and the behaviour it
+    // pinned was invented rather than required. An approver booking a resource
+    // they gate is ordinary — they are often the person who knows the equipment
+    // best — the backend answers 200 to a self-approval, and the queue already
+    // offered the panel on the viewer's own row. The detail screen was the only
+    // thing refusing, so it was the thing that was wrong.
+    //
+    // A plain member is still offered nothing here: `canApproveBookings()` is
+    // false for them, which is the condition that actually matters.
+    it("offers a decision on the approver's own request, because the server does", () => {
+      createFixture('b1', 'approverOwnBooking');
+      load({ status: 'Pending', userId: 'approver-1' });
+
+      expect(decisionPanel()).not.toBeNull();
+    });
+
+    it('offers no decision to a plain member on their own request', () => {
       createFixture('b1', 'owner');
       load({ status: 'Pending' });
 

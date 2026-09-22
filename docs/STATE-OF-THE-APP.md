@@ -1,6 +1,6 @@
 # BookSpace — state of the app
 
-**As of 2026-09-18**, at the close of WP-7 Phase 4.
+**As of 2026-09-21**, at the close of WP-7 Phase 6.
 
 A snapshot of what exists, what is verified, and what is deliberately not built
 yet. Written to be read on its own — if you are picking this up cold, or
@@ -32,7 +32,7 @@ no-show release, stale approval expiry) are specified and their idempotency
 constraint exists in the schema, but nothing writes `Completed` or `NoShow`
 today.
 
-### Frontend — WP-6 complete, WP-7 four of six phases done
+### Frontend — WP-6 complete, WP-7 five of six phases done
 
 | Screen | Route | State |
 |---|---|---|
@@ -43,7 +43,7 @@ today.
 | Availability | `/resources/:id/availability` | Done. Custom hour grid, drag-to-narrow selection, blackout labelling |
 | Booking form | `/resources/:id/book` | Done. One-off and recurring, full reason-code coverage |
 | Booking detail | `/bookings/:id` | Done. Cancel one occurrence or a whole series |
-| Approvals | `/approvals` | **Placeholder** — WP-7 Phase 6 |
+| Approvals | `/approvals` | Done. Tenant-scoped pending queue, oldest first; approve/reject with a note, also on the booking screen |
 | Settings, Help | `/settings`, `/help` | **Placeholder** — never scoped |
 
 A member can, today, sign in → browse resources → check availability → pick a
@@ -56,9 +56,9 @@ cancel it, or cancel the whole series.
 
 | Suite | Count | Notes |
 |---|---|---|
-| Backend unit | 1066 | |
-| Backend integration | 507 | Needs a real SQL Server — the in-memory provider has no locking and no RLS |
-| Frontend (vitest) | 754 | |
+| Backend unit | 1073 | |
+| Backend integration | 511 | Needs a real SQL Server — the in-memory provider has no locking and no RLS |
+| Frontend (vitest) | 813 | |
 
 Production build clean. The five named acceptance-criteria tests all pass:
 concurrency (AC-1), isolation (AC-4), DST (AC-3), approval re-check (AC-5),
@@ -96,7 +96,7 @@ Treat a visual pass as required before signing off any screen.
 | A member completes browse → book → confirm entirely through the UI | **Every screen exists and the whole path is verified at the API level.** The click-through itself is Phase 7's job |
 | Recurring bookings render correctly in the calendar | **Met** — occurrences carry a recurrence marker; verified against a real series |
 | The calendar stays responsive under realistic data volume | **Met structurally.** DOM is bounded by the chip cap, not by the data: 50 → 1000 bookings holds at 56 chips (19ms → 64ms in jsdom). A browser-level measurement has not been taken |
-| An approver can action pending requests from the UI | **Not started** — Phase 6 |
+| An approver can action pending requests from the UI | **Met** — approve and reject from the queue or the booking; the concurrent-decision race forced live (one 200, one 422 "already decided") |
 
 ---
 
@@ -135,27 +135,40 @@ Each of these is a decision with a reason, not an oversight.
    the booking detail screen cannot know whether a series is still active — it
    offers "cancel the whole series" optimistically and lets the 422 explain.
    A read endpoint would let it hide the action instead.
+3. **Self-approval is permitted, deliberately.** An approver may decide on their
+   own pending request for a resource they gate — from the queue and, since
+   2026-09-22, from the booking screen too. The backend has always allowed it
+   (`ApprovalReach.ForResources` does not exclude the caller; verified live,
+   `200 Confirmed`), and an approver booking equipment they are responsible for
+   is ordinary rather than a loophole.
+
+   The booking screen used to refuse, on an invented rule that no FR or decision
+   record ever asked for; the owner found it walking the Phase 7 click-through
+   and it was removed. Listed here because it is a **policy worth knowing**
+   rather than an open question: if self-approval should ever require a second
+   approver, that is a backend rule (`ApprovalReach`), not a UI one.
 
 **Frontend, small and open:**
 
-3. **The booking form's `?mode` is read but not written back**, so sharing a URL
+4. **The booking form's `?mode` is read but not written back**, so sharing a URL
    mid-form always shares the one-off view.
-4. **`/bookings/00000000-0000-0000-0000-000000000000`** answers 400, not 404, so
+5. **`/bookings/00000000-0000-0000-0000-000000000000`** answers 400, not 404, so
    it lands in the generic error state with a retry that cannot help. Only
    reachable by hand-typing that exact id.
-5. **A design pass is outstanding** for the calendar, booking detail and the
-   cancel confirmation — the owner has flagged this. The calendar was built to
-   two provided designs; the detail and cancel screens had none and follow the
+6. **A design pass is outstanding** for the calendar, booking detail, the
+   cancel confirmation, and the approval queue with its decision panel — the
+   owner has flagged this. The calendar was built to
+   two provided designs; the others had none and follow the
    app's existing card vocabulary.
 
 **Housekeeping:**
 
-6. `core/notifications/` is the one place a component still sits beside a
+7. `core/notifications/` is the one place a component still sits beside a
    service rather than in a `components/` folder.
-7. `calendar-range.ts` does five distinct jobs (URL contract, week/month
+8. `calendar-range.ts` does five distinct jobs (URL contract, week/month
    boundaries, fetch window, day layout, hour axis) and is a candidate for
    splitting.
-8. `local-date.ts` lives in `features/availability/date/` but is used by
+9. `local-date.ts` lives in `features/availability/date/` but is used by
    booking and calendar too. Consistent with the project's "the consumer owns
    the contract" convention, but `shared/` may be the better home.
 
@@ -163,14 +176,13 @@ Each of these is a decision with a reason, not an oversight.
 
 ## 6. What's next
 
-1. **WP-7 Phase 6 — the approval queue.** `GET /bookings?scope=tenant&status=Pending`
-   plus approve/reject. The backend is complete and tested; this is the last
-   unbuilt member-or-approver-facing screen, and the last open acceptance
-   criterion.
-2. **WP-7 Phase 7 — end-to-end wiring and the AC sweep.** Confirms every screen
-   is reachable by real navigation and walks all four acceptance criteria
-   against the running backend.
-3. **The design pass** the owner has flagged.
+1. **WP-7 Phase 7 — end-to-end wiring and the AC sweep.** The last phase.
+   Confirms every screen is reachable by real navigation and walks all four
+   acceptance criteria against the running backend. Three of the four are already
+   met; the open one is the member's browse → book → confirm click-through.
+2. **The design pass** the owner has flagged — calendar, booking detail, the
+   cancel confirmation, and now the approval queue and its decision panel, none
+   of which were built to a provided design.
 
 ---
 

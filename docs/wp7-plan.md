@@ -25,8 +25,8 @@ into its own smaller steps once it is about to start, not all up front.
 | — Recurring-booking hardening pass | **Done** 2026-09-17 (7 findings) | 556 |
 | 4 — Calendar, booking detail & cancellation (the hard problem) | **Done** 2026-09-18 (7 steps, re-planned mid-phase) | 754 |
 | ~~5 — Calendar~~ | **Absorbed into Phase 4**, 2026-09-18 — number retired, not reused | — |
-| 6 — Approval queue | **In progress** — steps 1–5 done 2026-09-21, step 6 (live race) open | 813 |
-| 7 — End-to-end wiring + AC sweep | Not started | — |
+| 6 — Approval queue | **Done** 2026-09-21 (6 steps) | 813 |
+| 7 — End-to-end wiring + AC sweep | **In progress** — steps 1–3 done 2026-09-22; step 4 is the owner's click-through | 860 |
 
 **Phase 5's number is retired rather than reused**, and Phases 6 and 7 keep
 theirs. Renumbering would silently falsify every existing reference to "Phase
@@ -2469,16 +2469,56 @@ nothing real by reading the booking's own stamp.
    approve answering 422 — then the probe cancelled and the queue count
    re-checked at 2, leaving the seeded requests untouched.
 
-6. **Live verification, including the race.** The queue walked against the
-   running API end to end, and the concurrent-decision case forced rather than
-   reasoned about: two callers approving the same Pending booking, confirming
-   the loser reads "already decided" and not a silent or generic failure. Plus
-   the since-taken-slot 409 provoked deliberately — approve a Pending booking
-   whose capacity has been consumed since it was requested — because that is
-   the arm of step 5 a mock cannot prove. As everywhere in this package, **no
-   browser click-through is claimed**: no automation for it exists here.
+6. **Live verification, including the race — done, 2026-09-21.** The queue
+   walked against the running API end to end, and the concurrent-decision case
+   forced rather than reasoned about: two callers approving the same Pending
+   booking, confirming the loser reads "already decided" and not a silent or
+   generic failure. As everywhere in this package, **no browser click-through is
+   claimed**: no automation for it exists here.
+
+   **The race came out exactly right**: the approver got `200 Confirmed`, the
+   tenant admin `422 BookingNotPending` — with a full ProblemDetails carrying
+   `title` as well as `reasonCode`, which is what decides whether the screen
+   says "already been decided" or falls back to the generic message. Reach does
+   not win a race; arrival does.
+
+   **The since-taken-slot 409 could not be provoked, and this step was wrong to
+   assume it could.** Two live attempts established why: a second overlapping
+   request is refused at creation (a Pending booking reserves its units in full,
+   decision `0005`), and shrinking capacity under a pending request is refused
+   at the resource-edit boundary (`CapacityBelowExistingBookings` counts Pending
+   bookings). `ApproveBookingProcedureTests`' own header said so back in WP-5 —
+   the re-check "by construction, almost never has anything to refuse through
+   legitimate application paths", and the test builds the over-capacity state
+   with raw SQL the application cannot reach.
+
+   So **AC-5's refusal is proven at two layers and is unreachable at the third**:
+   at `dbo.ApproveBooking` (raw-SQL fixture, both arms, WP-5) and in the decision
+   panel (vitest against a real 409 ProblemDetails, step 5), but not end to end
+   over HTTP — because nothing legitimate can produce it. That is defence in
+   depth working, not a gap; the UI arm still has to exist, because "unreachable
+   today" is a property of the current write paths rather than of the
+   procedure's contract.
+
+   **Nothing was left behind**: the race booking cancelled, the capacity probe's
+   booking cancelled and its resource archived, the stray request cancelled. The
+   owner's two seeded Pending requests were untouched throughout and the queue
+   count re-checked at 2 afterwards.
+
+   **Accepted as-is, not fixed (owner, 2026-09-21)**: the queue shows an
+   approver's *own* pending requests with decision controls on them, while the
+   booking detail screen refuses to offer a decision on the viewer's own booking.
+   The list filter widens by resource and drops the owner restriction entirely,
+   and the queue row renders the panel unconditionally. Two open questions behind
+   it — whether the queue should hide or merely disable those rows, and whether
+   self-approval is refused anywhere at all (`ApprovalReach` does not exclude the
+   caller, and `dbo.ApproveBooking` has not been read for a guard). Recorded in
+   [`docs/roadmap/wp7.md`](roadmap/wp7.md) rather than left implicit.
 
 ### Phase 7 — End-to-end wiring, tests, AC sweep
+
+The last phase of WP-7. Steps written 2026-09-22, before any code, the same way
+every phase since WP-3 has been.
 
 - No new screens. Confirms every prior phase's screen is reachable through
   real navigation (resource → availability → book → **calendar** → booking
@@ -2497,6 +2537,120 @@ nothing real by reading the booking's own stamp.
 
 **Demo:** the four ACs, shown live, end to end, with no mock data anywhere in
 the path.
+
+#### The one thing this phase cannot do for itself
+
+**The click-through is the deliverable, and no tool in this environment can
+perform it.** That has been true and flagged since Phase 1, and it is now the
+single thing standing between WP-7 and all four acceptance criteria being met.
+Three of the four are met already; the fourth — *"a member completes browse →
+book → confirm entirely through the UI"* — is specifically about a person
+clicking, which is why it is the only one still open.
+
+So this phase splits honestly along that line. **Steps 1–3 and 5 are mine**:
+everything that can be proven by a test, by an audit, or by a request against
+the running API. **Step 4 is the owner's**, and my job there is to make it
+cheap — a written script with exact steps, the data to use, and what each screen
+should say — rather than to claim a verification I did not perform.
+
+This matters more here than it would elsewhere. **Seven bugs in this package
+were found by the owner clicking and none by the suite** (`<select [value]>`
+showing the wrong time; a hand-edited `?quantity=16` booking one unit; three
+calendar layout faults; the detail screen's member-voiced copy; and the broken
+queue → booking link). The pattern in all seven is identical — the assertion
+that existed was true, but was not about what determined what the user saw. A
+phase that closed by asserting more of the same would be measuring the wrong
+thing.
+
+#### What is already true, checked before writing these steps
+
+Two audits were run first, so the steps below describe real work rather than
+assumed work:
+
+- **No dead navigation.** Every `routerLink` and `router.navigate` target in the
+  app resolves to a declared route: `/calendar`, `/resources`,
+  `/resources/:id`, `/resources/:id/availability`, `/resources/:id/book`,
+  `/bookings/:id`, `/approvals`, plus the shell's own `item.path` set
+  (`/settings`, `/help`). Nothing points at the removed `/my-bookings`. Step 1
+  is therefore about proving reachability *as a chain*, not about hunting
+  broken links.
+- **Coverage has two holes** — this was checked by eye and **was wrong**: step 2 enumerated every file and found five. Left as written so the correction is visible:
+  `approval-rejection.ts` is the only one of the four rejection dialects with no
+  spec of its own (it is covered indirectly through the decision panel), and
+  `core/notifications/notification.service.ts` has none at all while its
+  component does. Everything else with meaningful logic has a spec.
+
+#### Steps
+
+1. **The navigation chain, proven as a chain — done, 2026-09-22.** 8 tests in `app/tests/navigation-chain.spec.ts`; writing it cost 39 collateral failures and produced a `try/finally` TestBed reset so a leak in this file can never poison another. One assertion was wrong and the app right: a stale `/my-bookings` link lands on `/calendar`, not `/login`. Narrative in [`docs/roadmap/wp7.md`](roadmap/wp7.md). Original plan: Route-level specs that walk the
+   member's path and the approver's path the way a person does — each screen
+   reached *from the one before it* by following what is rendered, not by
+   navigating to a URL the test made up. The member: resources → a resource →
+   its availability → the booking form carrying the picked slot → calendar →
+   a chip → the booking → cancel. The approver: the nav's Approvals item →
+   a queue row → the booking → back to approvals.
+
+   Two things this must not become. It is **not** a second copy of each screen's
+   own tests — every assertion is about the *seam*, i.e. that the link the
+   previous screen renders lands somewhere that loads. And it must respect the
+   test gotcha Phase 4 recorded: a spec that navigates to a route which fetches
+   immediately leaves an open request whose `httpMock.verify()` failure corrupts
+   the shared TestBed for every spec file after it.
+
+2. **Close the coverage holes — done, 2026-09-22. There were five, not two.** The by-eye audit this plan recorded was wrong; enumerating every source file with no matching spec found `blackout-periods.service.ts`, `resource-type.ts` and `problem-details.ts` as well. Original plan: `approval-rejection.spec.ts` covering the
+   dialect directly — every code it maps, the AC-5 wording, the `Note` → `reason`
+   field mapping, and the unknown-outcome rules — so it is tested at the same
+   level as its three siblings rather than only through a component. Plus
+   `notification.service.spec.ts`. Then a sweep for anything else with real logic
+   and no spec, so the claim "coverage per service and per component" is checked
+   rather than asserted.
+
+3. **The AC sweep at the API level — done, 2026-09-22.** All four criteria walked live, plus AC-1 (five simultaneous attempts on one slot: `201 409 409 409 409`) and AC-4 (cross-tenant reads 404). Everything created was cancelled and the seeded data re-verified untouched. **It does not tick the first criterion** — that needs step 4. Original plan: All four
+   acceptance criteria walked against the running backend with no mock anywhere
+   in the path, each request and response recorded. This is the part of the
+   walkthrough that does not need a browser: that every screen's contract holds
+   on live data, in order, against rows that were created moments earlier by the
+   step before.
+
+   Includes the concurrency and isolation evidence WP-7's own criteria lean on
+   (AC-1 and AC-4 are the backend's, but a UI claiming to be end-to-end should
+   show it is not somehow bypassing them). Everything created gets cleaned up,
+   and the owner's seeded data stays untouched — the rule every probe in this
+   package has followed.
+
+4. **The click-through script — written 2026-09-22, in [`docs/wp7-clickthrough.md`](wp7-clickthrough.md); the walk itself is the owner's, not mine.** Its own file rather than a section here, because it is held in one hand while the other clicks. Three paths — the member (the open criterion), the approver, and ten deliberate wrong turns — with the seed data and example day verified against the running API rather than assumed. Original plan: A written
+   walkthrough: exact route to open, what to click, what the screen should say,
+   and what to check underneath (a status, a chip, an absence). Two paths, member
+   and approver, plus the deliberate wrong turns worth trying because this
+   package's history says they are where bugs live — a hand-edited query
+   parameter, a stale tab, a browser Back after a decision, a direct link to a
+   cancelled booking.
+
+   **I will not tick the acceptance criterion on the strength of steps 1–3.** The
+   script is written so the owner's pass is quick; the criterion is met when they
+   have walked it, and it stays open until they say so.
+
+5. **The write-up and the WP-7 close.** Outcomes recorded back into CLAUDE.md
+   §12, `STATE-OF-THE-APP.md` refreshed at the close of the package rather than
+   the phase, this plan's status table finished, and the four acceptance criteria
+   given their final state — including, honestly, whichever ones rest on the
+   owner's own walkthrough rather than on anything automated.
+
+#### Flagged, not assumed: two small gaps Phase 7 could close
+
+Both are in `STATE-OF-THE-APP.md` §5 as "frontend, small and open", and
+**neither is in Phase 7's task list**, so neither is planned above (CLAUDE.md
+§11 — a gap is flagged rather than folded in on judgment). They are named here
+because Phase 7 is the last chance to do them inside WP-7, and each is small:
+
+- **The booking form's `?mode` is read but never written back**, so sharing a URL
+  mid-form always shares the one-off view. One write on the toggle.
+- **`/bookings/<all-zero GUID>` answers 400, not 404**, so it lands in the
+  generic error state with a retry that cannot help. Only reachable by
+  hand-typing that exact id.
+
+Say if either should be a step 6; otherwise they stay flagged and carry into
+whatever follows WP-7.
 
 ---
 

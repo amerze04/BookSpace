@@ -267,17 +267,34 @@ export class BookingDetailComponent {
   // **Whether to offer a decision on this screen** (owner's call, 2026-09-21 —
   // the queue row was not the only place an approver reaches for it).
   //
-  // Three conditions, and each rules out a real case rather than being
-  // defensive:
+  // Two conditions:
   //   - the booking is still `Pending`, since a decided one has nothing to
   //     decide and the server would answer 422 BookingNotPending;
-  //   - the viewer is not the owner, so nobody is offered a decision on their
-  //     own request — an approver booking a resource they gate is ordinary, and
-  //     `ApprovalReach` does not exclude them, but self-approval is not a thing
-  //     this UI should invite;
   //   - the viewer holds an approving role at all.
   //
-  // **The last one is a UI convenience and nothing more.** The real reach is
+  // **A third condition — "and the viewer is not the owner" — was here and was
+  // wrong (removed 2026-09-22).** It was my own invention, justified in a
+  // comment saying self-approval was "not a thing this UI should invite", and
+  // nothing in the PRD, the FRs or any decision record ever asked for it. Three
+  // things were true against it and none were checked at the time:
+  //
+  //   - **the backend allows it** — `ApprovalReach.ForResources` does not
+  //     exclude the caller, and approving one's own request answers 200
+  //     Confirmed (verified against the running API, 2026-09-22);
+  //   - **the queue already allowed it**, rendering the panel on every row
+  //     including the viewer's own — so the same shared panel refused on one
+  //     screen and accepted on the other, which is precisely the drift a shared
+  //     component was meant to prevent;
+  //   - **an approver booking a resource they gate is ordinary.** They are
+  //     often the person who knows the equipment best. Forcing them to find a
+  //     second approver for their own booking is friction invented by a
+  //     comment.
+  //
+  // Found by the owner walking the Phase 7 click-through, which is the seventh
+  // time in this package that clicking found what the suite did not — and the
+  // first where the suite was actively asserting the wrong behaviour.
+  //
+  // **The role check is a UI convenience and nothing more.** The real reach is
   // resource-scoped and lives server-side (`ApprovalReach`, decision `0018`);
   // the token only says which roles the caller holds, not which resources they
   // gate. So this can offer the panel to an Approver who does *not* gate this
@@ -288,10 +305,7 @@ export class BookingDetailComponent {
   protected readonly canDecide = computed(() => {
     const booking = this.booking();
     return (
-      booking !== null
-      && booking.status === 'Pending'
-      && !this.viewerIsOwner()
-      && this.auth.canApproveBookings()
+      booking !== null && booking.status === 'Pending' && this.auth.canApproveBookings()
     );
   });
 

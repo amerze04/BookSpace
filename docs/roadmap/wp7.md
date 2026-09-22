@@ -1394,3 +1394,273 @@ probe cancelled afterwards. The owner's two seeded requests were left untouched
 and the queue count re-checked at 2.
 
 **813 vitest tests, 0 failed** (was 783). `npx ng build` clean.
+
+### Step 6 — live verification, and what the race actually proved (2026-09-21)
+
+#### The concurrent decision: forced, not reasoned about
+
+Two callers approving the same Pending booking at the same instant — the
+approver and the tenant admin, fired together against the running API:
+
+```
+approver: 200  {"status":"Confirmed","decidedByUserId":"4fd7af50…"}
+admin:    422  {"reasonCode":"BookingNotPending","title":"The request was rejected by a rule."}
+```
+
+Exactly the demo the plan asked for. Two details matter beyond the status
+codes. The loser's body is a **full ProblemDetails carrying `title` as well as
+`reasonCode`**, which is what `isProblemDetails` requires and therefore what
+decides whether the screen says "This request has already been decided" or falls
+back to the generic message — the same fixture mistake step 5's tests made, now
+confirmed against the real wire. And the loser is a *TenantAdmin* losing to an
+*Approver*, which is the right outcome: reach does not decide a race, arrival
+does.
+
+#### AC-5's 409 is not reachable through the API, and that is by design
+
+The step planned to "provoke the since-taken-slot 409 deliberately — approve a
+Pending booking whose capacity has been consumed since it was requested". **It
+cannot be done through the public API**, and two live attempts established why
+before the codebase was consulted:
+
+1. **Stack a second overlapping request.** Refused at creation — `409` from
+   `dbo.CreateBooking`. A Pending booking reserves its units in full (decision
+   `0005`), so a capacity-1 resource admits exactly one, pending or confirmed.
+2. **Shrink the capacity under a pending request.** Refused at the resource-edit
+   boundary — `422 CapacityBelowExistingBookings`, which counts Pending bookings
+   too.
+
+`ApproveBookingProcedureTests`' own header already said so, in WP-5, and says it
+better: the re-check "by construction, almost never has anything to refuse
+through legitimate application paths", and the test constructs the over-capacity
+state **with raw SQL the application cannot reach on its own** (decision `0017`'s
+carve-out). Rediscovering it from the outside is worth recording anyway, because
+it changes what the claim "AC-5 is verified" means:
+
+| Layer | How AC-5's refusal is proven | Status |
+|---|---|---|
+| `dbo.ApproveBooking` | Over-capacity state built by raw SQL, both `SlotUnavailable` and `CapacityExceeded` arms | Proven (WP-5) |
+| The decision panel | vitest, a real 409 ProblemDetails through `describeDecisionRejection` | Proven (step 5) |
+| End to end over HTTP | — | **Not reachable**, and nothing is wrong |
+
+So the approval-time capacity check is **defence in depth rather than a routine
+path**. That is a strength, not a gap: the guarantee holds at the layer decision
+`0023` puts it, and the layers above simply never get to exercise it. The UI arm
+still has to exist and still has to read as its own outcome, because "unreachable
+today" is a property of the current write paths, not of the procedure's contract.
+
+**Nothing was left behind.** Every probe was cleaned up: the race booking
+cancelled, the capacity probe's booking cancelled and its resource archived, the
+stray 3D Printer request cancelled. The owner's two seeded Pending requests were
+untouched throughout and the queue count was re-checked at 2 afterwards.
+
+**No browser click-through is claimed**, in this step or any before it — no
+automation exists in this environment. That remains the package's one standing
+verification gap.
+
+#### Accepted as-is: an approver's own request in their own queue
+
+Raised by the owner's question and settled the same day (2026-09-21): **the queue
+shows an approver's own pending requests, with decision controls on them.**
+
+The mechanism is that the list filter widens by *resource* and drops the *owner*
+restriction entirely (`AnyOwnerRestrictedToResources`), so an approver who books
+a resource they gate sees their own request alongside everyone else's — and the
+queue row renders the decision panel unconditionally. The booking detail screen
+does not: `canDecide` excludes the viewer's own booking.
+
+So the same shared panel behaves differently in its two hosts, which is precisely
+the drift the shared component was meant to prevent. The owner reviewed it and
+**accepted it as-is**. Recorded rather than left implicit, with the two questions
+it leaves open for whoever picks this up:
+
+- Should the queue hide an approver's own requests, or show them without
+  controls? Hiding is cleaner; showing them inert makes the reason visible.
+- **Is self-approval refused anywhere?** `ApprovalReach.ForResources` does not
+  exclude the caller, and `dbo.ApproveBooking` has not been read for a guard. If
+  nothing blocks it, that is a policy question for the backend rather than a UI
+  one, and it is not answered by any FR or decision record today.
+
+## Phase 7 — End-to-end wiring, tests, AC sweep
+
+Steps written 2026-09-22 before any code; steps 1–3 delivered the same day.
+**860 vitest tests, 0 failed** (was 813).
+
+### Step 1 — the navigation chain, proven as a chain (2026-09-22)
+
+`app/tests/navigation-chain.spec.ts`, 8 tests. Every one follows the `href` the
+previous screen actually rendered; a test that built its own URL would prove the
+route config resolves — which `app.routes.spec.ts` already does — and would have
+been just as green while the approval queue linked members into a 404.
+
+**Writing it proved Phase 4's TestBed gotcha from the inside, at a cost of 39
+failures.** One unflushed request — the availability screen's *third* fetch, the
+best-effort blackout read — failed `httpMock.verify()`, which threw out of
+`afterEach` before anything reset the module. Every test in **every other spec
+file** then failed with "Cannot configure the test module when the test module
+has already been instantiated". One missing line, 39 failures, none of them in
+the file at fault.
+
+The fix is in this file's own `afterEach` and is worth copying: `verify()` runs
+inside a `try` whose `finally` always calls `TestBed.resetTestingModule()`. A
+real leak still fails this file loudly and **stops there** rather than poisoning
+everything downstream.
+
+**One assertion was wrong and the app was right.** The test expected a stale
+`/my-bookings` link to land on `/login` via the catch-all. It actually lands on
+`/calendar`: the catch-all sends it to `/login`, `guestOnlyGuard` sees a live
+session and bounces it on. So a link written before 2026-09-18 delivers a
+signed-in member to the screen that replaced the one they asked for, rather than
+to a sign-in form they do not need. The assertion moved; the routing did not.
+
+Also pinned: the nav renders only links that resolve (it is the shell's, so no
+screen-level spec covers it), a member is neither shown nor allowed the
+Approvals route, and the approver's return leg goes to the queue rather than to a
+calendar that does not contain the booking.
+
+### Step 2 — the coverage sweep (2026-09-22)
+
+The plan said "coverage has exactly two holes". **That was wrong — there were
+five**, and the difference is the method: the first audit compared names by eye,
+this one enumerated every source file with no matching spec and sorted by size.
+Worth recording as a lesson about audits rather than as a tidy-up.
+
+| File | Why it needed one |
+|---|---|
+| `approval-rejection.ts` | The only one of four dialects tested solely through a component. Testing a mapper through a component proves they are wired together, not that the mapping is right — and its AC-5 arm *is* a message. |
+| `notification.service.ts` | The only service with no spec. Owns an auto-dismiss timer and an id sequence, both with real failure modes. |
+| `blackout-periods.service.ts` | **Missed entirely by the first audit** — an API service filed under `availability/services/` rather than beside its siblings. |
+| `resource-type.ts` | Two pure functions producing user-visible copy on three screens. The capacity label encodes decision `0005`; getting it wrong is a silent misstatement, not a crash. |
+| `problem-details.ts` | Twenty-one lines and **quietly the most load-bearing untested function in the app**: every dialect asks it whether a body is the error contract, and a `false` silently downgrades a specific message to a generic one. It had already cost five wrong assertions in the decision panel's first fixtures. |
+
+Left untested deliberately: `paged-result.ts` and `skip-error-toast.ts` (a type
+and a token), `app.config.ts` (DI wiring), `jwt-fixture.ts` (itself a test
+helper), and the three presentational components.
+
+**One test was wrong and the service was right**, again. The stale-timer test
+showed both notifications at `t=0`, so advancing to the first one's deadline also
+reached the second's — the empty list was correct. Staggering them is what makes
+the property (ids are never reused, so a dead timer removes nothing) actually
+under test rather than coincidentally passing.
+
+### Step 3 — the AC sweep at API level (2026-09-22)
+
+All four WP-7 criteria walked against the running backend, in order, on one
+dataset, with no mock anywhere in the path.
+
+| Criterion | Walked | Result |
+|---|---|---|
+| Browse → book → confirm | `GET /resources` → `GET /resources/{id}` → `GET …/availability` → `POST /bookings` → `GET /bookings/{id}` → the calendar's own window fetch | `201 Confirmed`, readable back, present in the December window |
+| Recurring bookings in the calendar | `POST /recurrence-rules`, weekly ×3 | 3 occurrences, **each its own row carrying the rule id** — decision `0007` is why the calendar needs no client-side expansion |
+| Calendar responsive under volume | the bounded window fetch and its page ceiling | `pageSize=101` → **400, refused not clamped**, which is exactly what the calendar's page-walking strategy depends on |
+| Approver actions pending requests | member requests a gated resource → queue → approve → queue again | `Pending` → in queue → `Confirmed` → **gone from the queue** |
+
+Plus the two backend guarantees a UI claiming to be end-to-end should show it is
+not bypassing:
+
+- **AC-1, through the real HTTP stack**: five simultaneous attempts at one slot
+  on a capacity-1 resource returned **`201 409 409 409 409`**. Exactly one
+  succeeded — the project's primary acceptance bar, observed rather than
+  inferred.
+- **AC-4**: a Globex member reading an Acme booking id and an Acme resource id
+  both answered **404**, byte-identical to "no such thing".
+
+**Everything created was cleaned up**: the series cancelled (3 occurrences), the
+one-off, the race winner and the approved request all cancelled. December was
+re-checked afterwards at **0 Confirmed, 0 Pending**, and the owner's seeded queue
+re-checked at **2**.
+
+**What this does not do is tick the first criterion.** Every contract on the
+member's path now has live evidence, in order, on rows created moments earlier —
+but the criterion asks for a member completing it *through the UI*, and that is
+step 4's click-through, which stays the owner's.
+
+### Step 4 — the click-through script (2026-09-22)
+
+Written, not walked. [`docs/wp7-clickthrough.md`](../wp7-clickthrough.md), its
+own file rather than a section of the plan because it is held in one hand while
+the other clicks.
+
+**The script is shaped by this package's own bug history rather than by the
+feature list.** Seven bugs in WP-7 were found by the owner clicking and none by
+the suite, so path C — ten deliberate wrong turns — gets as much space as the
+happy path: a hand-edited `quantity`, a hand-edited date, two tabs racing for
+one slot, two approvers deciding the same request, a stale queue row, a direct
+link to a cancelled booking, someone else's booking, `/approvals` without the
+role, a link from before the Phase 4 rename, and F5 on every screen.
+
+Three things were checked against the running API rather than assumed, so the
+script's numbers are real: Conference Room A is `America/New_York` and open
+13:00–21:00 UTC on **Mon 28 Sep 2026**, the 3D Printer is open the same hours
+and gated by `approver@acme.test`, and the seeded queue holds exactly two
+requests. The zone gap is deliberately load-bearing in the script — the owner is
+in CET and the room is in New York, so several steps are about whether a screen
+is clear about *whose* clock it is showing, which is precisely the kind of thing
+a jsdom assertion cannot judge.
+
+The script also asks the owner to confirm one **accepted oddity rather than a
+bug**: both seeded requests are for dates already past, because nothing expires
+stale approvals yet, and the queue shows them with no marker saying so.
+
+**The acceptance criterion stays open until the walk happens.** Steps 1–3 give
+every contract on the member's path live evidence, in order, on rows created
+moments earlier — but the criterion asks for a member completing it *through the
+UI*, and that is a different claim that no amount of API evidence converts into.
+
+### The walk — path A, B and C, 2026-09-22
+
+The owner walked the click-through. **Everything passed except one real bug**,
+plus one correction to the script itself and one limitation that is not a bug.
+
+#### The bug: an approver could not approve their own request
+
+Found at C5. An approver booking a resource they gate — ordinary, since they are
+often the person who knows the equipment best — could not decide on it from the
+booking screen.
+
+**The block was mine and entirely invented.** `canDecide` carried a third
+condition, "and the viewer is not the owner", justified in a comment I wrote
+saying self-approval was "not a thing this UI should invite". Nothing in the PRD,
+the FRs or any decision record asks for that. Three things were true against it
+and none had been checked when it was written:
+
+- **The backend allows it** — `ApprovalReach.ForResources` does not exclude the
+  caller. Verified on 2026-09-22: an approver booking the 3D Printer and
+  approving it themselves answers `200 Confirmed`.
+- **The queue already allowed it**, rendering the decision panel on every row
+  including the viewer's own. So the same shared panel refused on one screen and
+  accepted on the other — exactly the drift a shared component was supposed to
+  prevent, and the inconsistency flagged on 2026-09-21 and accepted then on the
+  understanding that it was cosmetic. Clicking showed it was not.
+- **The suite was asserting the wrong behaviour.** A test named "offers no
+  decision on the viewer's own booking" pinned the invented rule in place. It has
+  been replaced by its opposite, plus one asserting a plain member is still
+  offered nothing — which is the condition that actually matters
+  (`canApproveBookings()`).
+
+**This is the first bug in WP-7 where the tests actively defended the defect
+rather than merely missing it.** A green suite is evidence that the code does
+what the tests say; when the test is the invention, it is evidence of nothing.
+
+#### The correction: the script's own arithmetic was wrong
+
+Step A8 said a booking of the room's 10:00–11:00 would show as 15:00–16:00 in
+`Europe/Warsaw`. It is **16:00–17:00** — late September is EDT (UTC−4) in New
+York and CEST (UTC+2) in Warsaw, a six-hour gap. The script had applied the
+window's own 09:00→15:00 mapping to a 10:00 start and lost an hour. The owner
+caught it and was right; **the app was correct throughout.** Corrected in the
+script, along with the same slip in A4 ("four hours wrong" → six).
+
+#### Not a bug: two identities in two tabs
+
+C4 asked for the approver in one tab and the admin in another. That cannot work:
+tokens live in `localStorage`, shared per origin, so the second sign-in replaces
+the first. That is a direct consequence of decision `0011`'s accepted storage
+choice, and two simultaneous identities in one browser is not a use case this app
+has — the owner's judgment, and it is right.
+
+The step was rewritten rather than dropped: a **private/incognito window** has
+its own storage, so the race is walkable if wanted. It is also already proven at
+the API level (2026-09-21: `200` and `422 BookingNotPending` fired
+simultaneously), so what the UI step adds is only whether the losing *screen*
+says something useful — worth having, not worth blocking on.
