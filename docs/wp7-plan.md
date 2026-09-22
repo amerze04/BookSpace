@@ -9,7 +9,9 @@ is a gap to flag rather than something to add on judgment (CLAUDE.md §11).
 
 ## Status
 
-**In progress — four of six phases done**, and the fourth re-planned on
+**Done 2026-09-22.** All six live phases complete and all four acceptance
+criteria met. The package ran from 2026-09-15 to 2026-09-22; Phase 4 was
+re-planned on
 2026-09-18 after its first step had shipped (Phases 4 and 5 merged; see the
 table below). Plan approved by the repo owner
 2026-09-15, before any code was written, the same process WP-3 through WP-6
@@ -26,7 +28,7 @@ into its own smaller steps once it is about to start, not all up front.
 | 4 — Calendar, booking detail & cancellation (the hard problem) | **Done** 2026-09-18 (7 steps, re-planned mid-phase) | 754 |
 | ~~5 — Calendar~~ | **Absorbed into Phase 4**, 2026-09-18 — number retired, not reused | — |
 | 6 — Approval queue | **Done** 2026-09-21 (6 steps) | 813 |
-| 7 — End-to-end wiring + AC sweep | **In progress** — steps 1–3 done 2026-09-22; step 4 is the owner's click-through | 860 |
+| 7 — End-to-end wiring + AC sweep | **Done** 2026-09-22 (5 steps; step 4 walked by the owner) | 861 |
 
 **Phase 5's number is retired rather than reused**, and Phases 6 and 7 keep
 theirs. Renumbering would silently falsify every existing reference to "Phase
@@ -2630,13 +2632,25 @@ assumed work:
    script is written so the owner's pass is quick; the criterion is met when they
    have walked it, and it stays open until they say so.
 
-5. **The write-up and the WP-7 close.** Outcomes recorded back into CLAUDE.md
-   §12, `STATE-OF-THE-APP.md` refreshed at the close of the package rather than
-   the phase, this plan's status table finished, and the four acceptance criteria
-   given their final state — including, honestly, whichever ones rest on the
-   owner's own walkthrough rather than on anything automated.
+5. **The write-up and the WP-7 close — done, 2026-09-22.** Outcomes recorded
+   into CLAUDE.md §12 (WP-7 marked **Done**, every task item ticked, all four
+   acceptance criteria met, plus a Phase 7 block of what is true before touching
+   this area), `STATE-OF-THE-APP.md` refreshed at the close of the **package**
+   rather than the phase, this plan's status table finished, and the narrative
+   in [`docs/roadmap/wp7.md`](roadmap/wp7.md).
 
-#### Flagged, not assumed: two small gaps Phase 7 could close
+   **The first acceptance criterion was ticked on the walk, not on the
+   evidence.** API-level proof of the whole member path had existed since
+   2026-09-18; the criterion asks for a member completing it *through the UI*,
+   which is a different claim. It was met on 2026-09-22 when the owner walked
+   path A.
+
+   **The walk found one real bug** — an approver could not approve their own
+   request from the booking screen, a rule I invented and the suite was actively
+   asserting — plus one error in the script's own arithmetic (the owner was
+   right, the app was correct) and one limitation that is not a bug (two
+   identities in one browser, which `localStorage` storage rules out and which
+   this app has no use case for). All three are written up in the roadmap.
 
 Both are in `STATE-OF-THE-APP.md` §5 as "frontend, small and open", and
 **neither is in Phase 7's task list**, so neither is planned above (CLAUDE.md

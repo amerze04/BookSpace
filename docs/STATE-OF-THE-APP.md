@@ -1,6 +1,6 @@
 # BookSpace — state of the app
 
-**As of 2026-09-21**, at the close of WP-7 Phase 6.
+**As of 2026-09-22**, at the close of **WP-7** — the whole package, not just a phase.
 
 A snapshot of what exists, what is verified, and what is deliberately not built
 yet. Written to be read on its own — if you are picking this up cold, or
@@ -32,7 +32,7 @@ no-show release, stale approval expiry) are specified and their idempotency
 constraint exists in the schema, but nothing writes `Completed` or `NoShow`
 today.
 
-### Frontend — WP-6 complete, WP-7 five of six phases done
+### Frontend — WP-6 and WP-7 both complete
 
 | Screen | Route | State |
 |---|---|---|
@@ -58,7 +58,7 @@ cancel it, or cancel the whole series.
 |---|---|---|
 | Backend unit | 1073 | |
 | Backend integration | 511 | Needs a real SQL Server — the in-memory provider has no locking and no RLS |
-| Frontend (vitest) | 813 | |
+| Frontend (vitest) | 861 | |
 
 Production build clean. The five named acceptance-criteria tests all pass:
 concurrency (AC-1), isolation (AC-4), DST (AC-3), approval re-check (AC-5),
@@ -70,30 +70,44 @@ running API**, not only mocked — including a full end-to-end pass on
 booking detail → cancel → calendar window again, confirming the cancelled
 booking is no longer drawn.
 
-### The one standing verification gap
+### The standing verification gap, and how WP-7 closed it
 
-**No browser click-through has ever been performed by automation**, in any
-phase, because no browser-automation tool is available in the environment this
-was built in. What is verified is every request/response pair plus rendering
-assertions in vitest — not the rendered flow.
+**No browser click-through can be performed by automation here**, in any phase,
+because no browser-automation tool exists in this environment. What automation
+verifies is every request/response pair plus rendering assertions in vitest —
+not the rendered flow.
 
-This is not a formality. **Five bugs in WP-7 were found by the owner clicking
-and none by the suite**: the availability screen's `<select [value]>` showing
-the wrong time, a hand-edited `?quantity=16` silently booking one unit, and
-three separate calendar layout faults (chips sitting below their stated times,
-columns drifting out of line with their day headers, and short chips clipping
-their own labels). The pattern in all five is the same — the assertion that
-existed was true but was not about what determined what the user saw.
+**WP-7 closed the gap the only way available: a person walked it.**
+[`docs/wp7-clickthrough.md`](wp7-clickthrough.md) is a written script — the
+member's path, the approver's path, and ten deliberate wrong turns — which the
+owner walked on 2026-09-22. That walk is what met the first acceptance criterion;
+the API-level evidence, which had existed since 2026-09-18, was never enough on
+its own. **Re-walk the script after any change to the booking or approval
+flows.**
+
+This is not a formality. **Eight bugs in WP-7 were found by clicking and none by
+the suite**: the availability screen's `<select [value]>` showing the wrong time;
+a hand-edited `?quantity=16` silently booking one unit; three separate calendar
+layout faults (chips below their stated times, columns out of line with their day
+headers, short chips clipping their labels); the booking detail screen's
+member-voiced copy shown to an approver; the approval queue's link into a 404;
+and an approver blocked from approving their own request.
+
+The pattern in the first seven is the same — the assertion that existed was true
+but was not about what determined what the user saw. **The eighth is worse and
+worth remembering separately**: the suite was *asserting the invented rule*, so
+it was green precisely because it was wrong. A green suite proves the code
+matches the tests; that is worth nothing when the test is the invention.
 
 Treat a visual pass as required before signing off any screen.
 
 ---
 
-## 3. WP-7 acceptance criteria
+## 3. WP-7 acceptance criteria — all four met (2026-09-22)
 
 | Criterion | State |
 |---|---|
-| A member completes browse → book → confirm entirely through the UI | **Every screen exists and the whole path is verified at the API level.** The click-through itself is Phase 7's job |
+| A member completes browse → book → confirm entirely through the UI | **Met 2026-09-22** — walked end to end by the owner through the UI. API-level evidence had existed since 2026-09-18 and was deliberately not treated as sufficient: the criterion asks for a member completing it *through the UI* |
 | Recurring bookings render correctly in the calendar | **Met** — occurrences carry a recurrence marker; verified against a real series |
 | The calendar stays responsive under realistic data volume | **Met structurally.** DOM is bounded by the chip cap, not by the data: 50 → 1000 bookings holds at 56 chips (19ms → 64ms in jsdom). A browser-level measurement has not been taken |
 | An approver can action pending requests from the UI | **Met** — approve and reject from the queue or the booking; the concurrent-decision race forced live (one 200, one 422 "already decided") |
@@ -176,13 +190,29 @@ Each of these is a decision with a reason, not an oversight.
 
 ## 6. What's next
 
-1. **WP-7 Phase 7 — end-to-end wiring and the AC sweep.** The last phase.
-   Confirms every screen is reachable by real navigation and walks all four
-   acceptance criteria against the running backend. Three of the four are already
-   met; the open one is the member's browse → book → confirm click-through.
-2. **The design pass** the owner has flagged — calendar, booking detail, the
-   cancel confirmation, and now the approval queue and its decision panel, none
-   of which were built to a provided design.
+**WP-7 is closed and there is no work package in flight.** What follows is the
+backlog as it stands, in the order it is worth picking up — not a plan anyone
+has approved.
+
+1. **The design pass** the owner has flagged — the calendar, the booking detail,
+   the cancel confirmation, and the approval queue with its decision panel were
+   all built without a provided design, to the app's existing card vocabulary.
+   The largest single piece of outstanding work on the frontend.
+2. **A backend package to close the two API gaps WP-7 raised and could not fix**
+   (§5): an idempotency key on `POST /bookings`, mirroring the one
+   `POST /recurrence-rules` already has, and a `GET /recurrence-rules/{id}` so
+   the booking screen can stop offering a series cancel optimistically.
+3. **Resource administration UI** — create, edit, archive, and manage
+   availability windows, approvers and blackout periods. The backend has
+   supported all of it since WP-3 and the provided designs assume it; no work
+   package has ever asked for the screens (§4).
+4. **The three background jobs** — reminder dispatch, no-show release, stale
+   approval expiry. Specified, with their idempotency constraint in the schema,
+   but nothing runs them, which is why the approval queue can show requests whose
+   slot has already passed.
+5. **The small open items** in §5 — the booking form's `?mode` write-back and the
+   all-zero-GUID 400.
+
 
 ---
 

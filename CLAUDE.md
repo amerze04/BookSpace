@@ -654,12 +654,17 @@ Notes: this app is **zoneless** — a template only reacts to a signal write
 or an Angular-recognized event, never a plain field mutated after an
 `await`. Worth remembering for every WP-7 component. 26 vitest tests pass.
 
-### WP-7 — Booking UI & Calendar — **In progress**
+### WP-7 — Booking UI & Calendar — **Done** (2026-09-22)
 Source: `docs/Work Packages - Week 5 and 6.pdf`. Plan:
 `docs/wp7-plan.md`, approved 2026-09-15. The owner has allocated more than a
 week to this package and asked for every phase to be built seriously and
 split into its own reviewable steps. Full narrative:
-[`docs/roadmap/wp7.md`](docs/roadmap/wp7.md).
+[`docs/roadmap/wp7.md`](docs/roadmap/wp7.md). Click-through script:
+[`docs/wp7-clickthrough.md`](docs/wp7-clickthrough.md).
+
+Six live phases (Phase 5's number retired into Phase 4), 861 vitest tests at
+close. **All four acceptance criteria met**, the last of them by the owner
+walking the click-through on 2026-09-22.
 
 - [x] Resource list and detail views. Done 2026-09-15 (Phase 1).
 - [x] Availability view for a resource and date range. Done 2026-09-16
@@ -674,17 +679,21 @@ split into its own reviewable steps. Full narrative:
 - [x] Cancellation and blackout handling in the UI. **Done 2026-09-18**
       (Phase 4) — occurrence and whole-series cancellation, and the three
       cancellation readings including a blackout's null actor.
-- [ ] Wire the full flow end-to-end against the real API. **Phase 7.** The
-      whole path is verified at the API level; the browser click-through is
-      what remains.
+- [x] Wire the full flow end-to-end against the real API. **Done 2026-09-22**
+      (Phase 7) — a navigation-chain spec that follows only rendered links, the
+      coverage sweep, an API-level sweep of all four criteria on one dataset,
+      and the owner's own click-through.
 
-Acceptance criteria (three met, one open):
-- [ ] A member completes browse → book → confirm entirely through the UI.
-      Every screen on that path exists, and as of 2026-09-18 the **whole path
-      is verified end to end against the running API** (browse → availability
-      → book → calendar → detail → cancel → calendar). What is missing is the
-      click-through itself, which no tool here can perform. Phase 7's sweep
-      is where it gets ticked.
+Acceptance criteria — **all four met** (2026-09-22):
+- [x] A member completes browse → book → confirm entirely through the UI.
+      **Met 2026-09-22**, by the owner walking
+      [`docs/wp7-clickthrough.md`](docs/wp7-clickthrough.md) path A end to end:
+      sign in → calendar → resources → resource → availability → pick a slot →
+      book → Confirmed → the chip on the calendar → the booking → cancel.
+      Deliberately **not** ticked on the API-level evidence alone, which had
+      existed since 2026-09-18: the criterion asks for a member completing it
+      *through the UI*, and no amount of request/response evidence converts into
+      that claim.
 - [x] Recurring bookings render correctly in the calendar. **Done 2026-09-18** —
       occurrences carry a recurrence marker; verified against a real series.
 - [x] The calendar stays responsive under realistic data volume. **Done
@@ -881,6 +890,32 @@ before touching this area:
   click-through, and notable because **the suite was asserting the invented rule
   rather than merely missing it** — a green suite proves the code matches the
   tests, which is worth nothing when the test is the invention.
+
+**Phase 7 — end-to-end wiring, tests, AC sweep — Done 2026-09-22** (five steps).
+What is true before touching this area:
+
+- **`app/tests/navigation-chain.spec.ts` tests seams, not screens.** Every hop
+  follows the `href` the previous screen actually rendered. A version that built
+  its own URLs would prove the route config resolves — which `app.routes.spec.ts`
+  already does — and would have stayed green while the approval queue linked
+  members into a 404. Keep that discipline if you extend it.
+- **Its `afterEach` runs `verify()` inside a `try/finally` that always resets the
+  TestBed**, and the reason is worth knowing before writing any spec that drives
+  real routes: one unflushed request there failed `verify()`, which threw before
+  anything reset the module, and **every test in every other spec file** then
+  failed with "test module already instantiated". One missing line, 39 failures,
+  none in the file at fault.
+- **The coverage sweep found five holes where an eyeball audit had found two.**
+  Enumerate files, do not scan names — `blackout-periods.service.ts` was missed
+  because it sits under `availability/services/` rather than beside its siblings.
+- **AC-1 and AC-4 were re-proven through real HTTP**, not just at the procedure
+  level: five simultaneous attempts at one slot answered `201 409 409 409 409`,
+  and cross-tenant reads answered 404.
+- **The click-through is a written artefact, not a claim**
+  ([`docs/wp7-clickthrough.md`](docs/wp7-clickthrough.md)). It is shaped by this
+  package's bug history — ten deliberate wrong turns get as much space as the
+  happy path — and it found a real bug on its first walk. Re-walk it after any
+  change to the booking or approval flows.
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across

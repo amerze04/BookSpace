@@ -1664,3 +1664,57 @@ its own storage, so the race is walkable if wanted. It is also already proven at
 the API level (2026-09-21: `200` and `422 BookingNotPending` fired
 simultaneously), so what the UI step adds is only whether the losing *screen*
 says something useful — worth having, not worth blocking on.
+
+### Step 5 — the write-up, and WP-7 closed (2026-09-22)
+
+Six live phases, 2026-09-15 to 2026-09-22, **861 vitest tests at close** (from
+26 at the end of WP-6). All four acceptance criteria met. Phase 5's number is
+retired rather than reused, so every reference to "Phase 5, the hard problem"
+still resolves.
+
+Recorded into CLAUDE.md §12 (WP-7 **Done**, every task ticked, the criteria
+table finished, and a Phase 7 block of what is true before touching this area),
+`STATE-OF-THE-APP.md` (refreshed at the close of the *package*, with a backlog
+replacing "what's next" now that nothing is in flight), and this plan's status
+table.
+
+#### What this package actually taught, as distinct from what it built
+
+Three things are worth carrying past WP-7, and none of them is a feature.
+
+**1. Eight bugs were found by clicking and none by the suite.** Seven shared one
+shape: the assertion that existed was true, but was not about what determined
+what the user saw — a `<select>` binding, a silently clamped quantity, three
+calendar layout faults, member-voiced copy shown to an approver, a queue link
+into a 404. The eighth is worse and is the one to remember: **the suite was
+asserting a rule I had invented**, so it was green precisely because it was
+wrong. A green suite proves the code matches the tests; that is worth nothing
+when the test is the invention.
+
+**2. Two audits in this package were wrong in the same direction.** "Coverage
+has exactly two holes" (there were five) and "the approval queue is done" (its
+primary link answered 404). Both were produced by scanning rather than
+enumerating, and both read as confident. The sweep that found the real number
+took one shell loop.
+
+**3. The click-through is now an artefact, not an intention.**
+[`docs/wp7-clickthrough.md`](../wp7-clickthrough.md) exists, has been walked
+once, found a real bug on that walk, and had one of its own numbers corrected by
+the owner in the process. It is the thing to re-walk after any change to the
+booking or approval flows — which is a cheaper habit than the eight bugs above.
+
+#### What WP-7 deliberately did not do
+
+- **Resource administration UI** — create, edit, archive, manage windows,
+  approvers and blackouts. Backed since WP-3, assumed by the provided designs,
+  and in no work package's task list. Flagged in Phase 1 and still flagged.
+- **A "My Bookings" list** — cancelled 2026-09-18; the calendar answers the same
+  question and the source PDF never asked for the screen.
+- **Two backend gaps it raised and could not close**: `POST /bookings` has no
+  idempotency key, and there is no `GET /recurrence-rules/{id}`. Both belong to
+  whatever backend package comes next. The one backend gap that *was* closed
+  inside WP-7 — `createdAtUtc` on the list row — was an explicit owner override
+  of the rule, recorded as such rather than left to read as drift.
+- **A browser-level performance measurement.** The calendar's volume claim rests
+  on jsdom figures and the structural argument that the DOM is bounded by the
+  chip cap rather than by the data.
