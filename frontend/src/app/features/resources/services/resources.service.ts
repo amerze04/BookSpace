@@ -10,6 +10,7 @@ import {
   CreateResourceRequest,
   CreateResourceResponse,
   ListResourcesParams,
+  ReplaceApproversResponse,
   ReplaceAvailabilityWindowsResponse,
   ResourceDetail,
   ResourceSummary,
@@ -86,6 +87,17 @@ export class ResourcesService {
     return this.http.post<ArchiveResourceResponse>(
       `${environment.apiBaseUrl}/resources/${id}/archive`,
       {},
+      { context: skipErrorToast() },
+    );
+  }
+
+  // PUT /resources/{id}/approvers (admin console phase 5). Replace-the-set,
+  // same shape as the schedule next door and for the same reason: swapping one
+  // approver for another in a single request has no intermediate state.
+  replaceApprovers(id: string, approverUserIds: string[]): Observable<ReplaceApproversResponse> {
+    return this.http.put<ReplaceApproversResponse>(
+      `${environment.apiBaseUrl}/resources/${id}/approvers`,
+      { approverUserIds },
       { context: skipErrorToast() },
     );
   }

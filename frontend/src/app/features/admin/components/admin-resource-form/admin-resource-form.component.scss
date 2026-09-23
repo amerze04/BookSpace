@@ -355,3 +355,9 @@ textarea.field-input {
   font-size: 0.9rem;
   line-height: 1.5;
 }
+
+.inline-link {
+  color: var(--color-primary);
+  font-weight: 600;
+  white-space: nowrap;
+}

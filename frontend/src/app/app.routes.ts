@@ -190,6 +190,17 @@ export const routes: Routes = [
                 './features/admin/components/admin-availability-windows/admin-availability-windows.component'
               ).then((m) => m.AdminAvailabilityWindowsComponent),
           },
+          {
+            // Phase 5. A sibling of `resources/:id` for the same reason the
+            // schedule is — the crumb chain ends in "Approvers" and the
+            // resource's name is inserted before it.
+            path: 'resources/:id/approvers',
+            data: { title: 'Approvers' },
+            loadComponent: () =>
+              import('./features/admin/components/admin-approvers/admin-approvers.component').then(
+                (m) => m.AdminApproversComponent,
+              ),
+          },
           { path: '', pathMatch: 'full', redirectTo: 'resources' },
         ],
       },

@@ -200,3 +200,24 @@ export interface ReplaceAvailabilityWindowsResponse {
   resourceId: string;
   availabilityWindows: AvailabilityWindowDetail[];
 }
+
+// PUT /resources/{id}/approvers — ReplaceApproversRequest. Bare user ids, not
+// names or emails: the client is assigning people it already listed through
+// GET /users, and a name on the wire would be a second source of truth for
+// something the server can look up.
+//
+// **Replace-the-set.** An omitted id is a removed approver, and an empty array
+// is a legitimate request — including on a resource that requires approval,
+// since decision 0028; its requests then fall back to the tenant admins.
+export interface ReplaceApproversRequest {
+  approverUserIds: string[];
+}
+
+// The 200 body. requiresApproval is echoed because it is what tells a client
+// the resource is still gated rather than quietly opened up when the list is
+// emptied.
+export interface ReplaceApproversResponse {
+  resourceId: string;
+  requiresApproval: boolean;
+  approvers: ApproverDetail[];
+}

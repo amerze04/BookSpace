@@ -423,6 +423,20 @@ describe('navigation chain (WP-7 Phase 7 step 1)', () => {
       expect(toWindows).toBe('/admin/resources/r1/availability-windows');
       flushResource();
       expect(router.url).toBe('/admin/resources/r1/availability-windows');
+
+      // Back to the resource, then into phase 5's picker. It reads *two*
+      // endpoints, so both have to be answered or the spec leaves one open and
+      // poisons every file after it.
+      await harness.navigateByUrl('/admin/resources/r1');
+      flushResource();
+
+      const toApprovers = await follow('a[href="/admin/resources/r1/approvers"]');
+      expect(toApprovers).toBe('/admin/resources/r1/approvers');
+      flushResource();
+      httpMock
+        .expectOne((r) => r.url === `${API}/users`)
+        .flush(pageOf([], { pageSize: 50 }));
+      expect(router.url).toBe('/admin/resources/r1/approvers');
     });
 
     // **Regression, phase 3.** The admin routes were briefly declared as a

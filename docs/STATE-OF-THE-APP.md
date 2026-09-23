@@ -49,6 +49,7 @@ today.
 | Admin — resource list | `/admin/resources` | Done (phase 3). Search, include-archived, pagination; TenantAdmin only |
 | Admin — resource form | `/admin/resources/new`, `/admin/resources/:id` | Done (phase 3). Create, edit, and archive behind a hard confirmation |
 | Admin — opening hours | `/admin/resources/:id/availability-windows` | Done (phase 4). Weekly editor, replace-the-set, decision `0022`'s midnight convention |
+| Admin — approvers | `/admin/resources/:id/approvers` | Done (phase 5). Eligibility-filtered picker over `GET /users`, replace-the-set |
 
 A member can, today, sign in → browse resources → check availability → pick a
 slot → book it (one-off or recurring) → see it on their calendar → open it →
@@ -62,7 +63,7 @@ cancel it, or cancel the whole series.
 |---|---|---|
 | Backend unit | 1071 | |
 | Backend integration | 536 | Needs a real SQL Server — the in-memory provider has no locking and no RLS |
-| Frontend (vitest) | 1007 | |
+| Frontend (vitest) | 1044 | |
 
 Production build clean. The five named acceptance-criteria tests all pass:
 concurrency (AC-1), isolation (AC-4), DST (AC-3), approval re-check (AC-5),
@@ -122,9 +123,9 @@ Treat a visual pass as required before signing off any screen.
 
 Each of these is a decision with a reason, not an oversight.
 
-- **Resource administration UI** — **resource create/edit/archive is built**
-  (admin console phase 3, 2026-09-23); availability windows, approvers and
-  blackouts are not, and are phases 4–6 of
+- **Resource administration UI** — **resources, opening hours and approvers are
+  built** (admin console phases 3-5, 2026-09-23); blackout periods are not, and
+  are phase 6 of
   [`docs/admin-plan.md`](admin-plan.md). The backend has supported all of it
   since WP-3 and the provided designs assumed it, but every work package's task
   list was member-facing, so the buttons were left absent rather than shown
@@ -202,17 +203,17 @@ backlog as it stands, in the order it is worth picking up.
 
 1. **The admin console** — tenant admin CRUD for resources, availability
    windows, approvers and blackout periods. **In progress**:
-   [`docs/admin-plan.md`](admin-plan.md), seven phases, of which **phases 1–4
+   [`docs/admin-plan.md`](admin-plan.md), seven phases, of which **phases 1–5
    are done** (2026-09-22 to 2026-09-23). Owner-initiated rather than
    mentor-issued, and the largest thing still missing from the application —
    flagged as a gap since WP-7 Phase 1 (§4). Phase 1 was the one backend
    addition the plan could not avoid: **`GET /users`**, without which approvers
    cannot be assigned from a UI at all, because nothing in the API listed
    users — it answers the decision `0018` eligible set only, not a user
-   directory. Phase 2 put the shell in place; phase 3 built the resource list
-   and the create/edit/archive form; phase 4 the weekly opening-hours editor.
-   **Phases 5 and 6 are the two remaining screens** — approvers and blackout
-   periods.
+   directory, and phase 5 is the screen it was built for. Phase 2 put the shell
+   in place; phase 3 built the resource list and the create/edit/archive form;
+   phase 4 the weekly opening-hours editor; phase 5 the approvers picker.
+   **Phase 6, blackout periods, is the one remaining screen.**
 2. **The design pass** the owner has flagged — the calendar, the booking detail,
    the cancel confirmation, and the approval queue with its decision panel were
    all built without a provided design, to the app's existing card vocabulary.

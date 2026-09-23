@@ -165,6 +165,16 @@
             No approvers are assigned yet, so requests will go to your organization's
             administrators until you assign some. Bookings are held as pending in the meantime —
             nothing is confirmed without a decision.
+            @if (mode === 'edit') {
+              <!--
+                Only on edit: the approvers screen is per-resource, so it needs a
+                resource that exists. Phase 5 added this link — until then the
+                warning deliberately pointed nowhere rather than into a 404.
+              -->
+              <a class="inline-link" [routerLink]="['/admin/resources', resourceIdOrNull(), 'approvers']">
+                Assign approvers
+              </a>
+            }
           </span>
         }
         @if (approvalError(); as message) {
@@ -288,6 +298,21 @@
       </p>
       <a class="secondary-action" [routerLink]="['/admin/resources', resourceIdOrNull(), 'availability-windows']">
         Edit opening hours
+      </a>
+    </section>
+
+    <section class="related">
+      <h2 class="related-heading">Approvers</h2>
+      <p class="related-detail">
+        Who decides on booking requests for this resource.
+        @if (approverCount() === 0) {
+          Nobody is assigned, so requests go to your organization's administrators.
+        } @else {
+          {{ approverCount() }} assigned.
+        }
+      </p>
+      <a class="secondary-action" [routerLink]="['/admin/resources', resourceIdOrNull(), 'approvers']">
+        Manage approvers
       </a>
     </section>
   }

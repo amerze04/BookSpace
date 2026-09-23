@@ -8,7 +8,7 @@ frontend and this is the largest thing still missing from the application.
 
 ## Status
 
-**In progress.** Phases 1–4 are done; phases 5–7 below. The owner asked on
+**In progress.** Phases 1–5 are done; phases 6–7 below. The owner asked on
 2026-09-22 that each phase be built in one go rather than split into separately
 reviewable steps, on the judgment that they are individually small enough —
 so unlike WP-7, there is no per-phase step breakdown written ahead of the work.
@@ -19,7 +19,7 @@ so unlike WP-7, there is no per-phase step breakdown written ahead of the work.
 | 2 — The admin shell | **Done 2026-09-23** |
 | 3 — Resources: create, edit, archive | **Done 2026-09-23** |
 | 4 — Availability windows editor | **Done 2026-09-23** |
-| 5 — Approvers editor | Not started |
+| 5 — Approvers editor | **Done 2026-09-23** |
 | 6 — Blackout periods | Not started |
 | 7 — Wiring, click-through, close | Not started |
 
@@ -375,11 +375,52 @@ a real saveable state ("closed"); and `availability-rejection.ts` is the sixth
 dialect and the only one that offers a retry, because replace-the-set is
 idempotent by construction.
 
-### Phase 5 — Approvers editor
-Replace-the-set against phase 1's endpoint. `ApproverNotEligible` collapses every
-ineligibility reason into one code (decision `0018`), so the UI cannot explain
-*why* someone is ineligible — which is an argument for the picker only ever
-offering eligible people in the first place.
+### Phase 5 — Approvers editor — **Done 2026-09-23**
+`/admin/resources/:id/approvers`, replace-the-set against phase 1's `GET /users`.
+FR-3.3, and the first screen phase 1's endpoint actually has a caller for.
+
+- **The picker only ever offers eligible people, and that is forced rather than
+  polite.** Decision `0018` collapses every ineligibility reason into one
+  `ApproverNotEligible` code — deliberately, because naming the cause would
+  confirm a cross-tenant id exists somewhere (AC-4). So a picker that let an
+  admin type an id could only answer "no" without saying why. Offering the
+  eligible set is the only shape that can explain itself.
+
+- **The screen reconciles two endpoints that do not agree**, and the gap is real
+  rather than theoretical. `FindApproverSummariesAsync` does **not** filter by
+  `IsActive` — checked against the repository — so somebody assigned and later
+  deactivated still comes back on `GET /resources/{id}`. They will *not* come
+  back from `GET /users`, which applies `0018`'s active requirement.
+
+  A picker built the obvious way — render the eligible, tick the assigned —
+  would never show them, and **the very next save would silently drop them**.
+  They cannot be kept either: re-sending the id is refused, because the server
+  checks the whole requested set. So they are rendered as a separate "no longer
+  able to approve" group, with the plain statement that saving removes them.
+  `strandedApprovers` is that computation, and it has its own tests precisely
+  because it is empty in every healthy tenant and nothing would exercise it by
+  accident.
+
+- **"Stranded" is only trusted when the picker is showing everyone** — no search
+  term and one page. A searched picker is showing a subset, so absence proves
+  nothing, and somebody merely on another page is not stranded.
+
+- **A selection survives a search.** The picker reloads on every search but the
+  selection is held as ids in their own signal, never as flags on the option
+  objects, which are replaced wholesale each time. Losing a tick because
+  somebody scrolled out of view would be the same silent removal again.
+
+- **`approver-rejection.ts` is the seventh dialect.** Its `ApproverNotEligible`
+  copy deliberately names neither the person nor the reason — `0018` forbids the
+  second and the code does not carry the first — and says what is both true and
+  useful instead: something changed since the page loaded, reload to see what.
+
+- **Decision `0028`'s loose end is closed.** The resource form's "no approvers
+  assigned" warning now links here; it deliberately pointed nowhere in phases 3
+  and 4, because the screen did not exist and WP-7 Phase 6 already taught this
+  project what linking into a 404 costs. The approvers screen carries the same
+  warning from the other side: emptying the list on a gated resource is allowed,
+  and says the requests will go to the tenant's administrators.
 
 ### Phase 6 — Blackout periods
 Per-row CRUD, the one screen with a real delete. Settles §4.4's question about

@@ -932,7 +932,7 @@ approvers, and blackout periods. It is not new scope; it has been flagged as a
 gap in `docs/wp7-plan.md` §7 and `STATE-OF-THE-APP.md` §4 since WP-7 Phase 1,
 with the buttons left absent rather than shown disabled.
 
-Seven phases; **phases 1–4 are done**, and phases 5–7 are all frontend. Each
+Seven phases; **phases 1–5 are done**, and phases 6–7 are all frontend. Each
 phase is built in one go rather than split into steps (owner's call,
 2026-09-22). Three things settled before planning:
 
@@ -1143,6 +1143,38 @@ form. FR-3.2, replace-the-set.
 - **`availability-rejection.ts` is the sixth dialect**, and the only one that
   offers a retry — replace-the-set is idempotent by construction, so sending the
   same schedule twice is harmless and the copy can say so.
+
+**Phase 5 — approvers editor — Done 2026-09-23.** 1044 vitest tests (37 new),
+production build clean, whole flow probed live. What is true before touching it:
+
+- **The picker only ever offers eligible people, and that is forced rather than
+  polite.** Decision `0018` collapses every ineligibility reason into one code
+  because naming the cause would confirm a cross-tenant id exists (AC-4) — so a
+  picker that let an admin type an id could only ever answer "no" without saying
+  why. `GET /users` (phase 1) finally has the caller it was built for.
+- **`GET /resources/{id}` and `GET /users` do not agree, and the screen has to
+  reconcile them.** `FindApproverSummariesAsync` does **not** filter by
+  `IsActive`, so somebody assigned and later deactivated still comes back on the
+  resource read but *not* from `/users`. A picker built the obvious way — render
+  the eligible, tick the assigned — would never show them and **the next save
+  would silently drop them**; they cannot be kept either, since re-sending the id
+  is refused. They are therefore rendered as a separate "no longer able to
+  approve" group that says saving removes them. `strandedApprovers` has its own
+  tests because it is empty in every healthy tenant and nothing would exercise it
+  by accident.
+- **"Stranded" is only trusted when the picker is showing everyone** — no search
+  term, one page. A searched picker shows a subset, so absence proves nothing.
+- **The selection is held as ids in its own signal**, never as flags on the
+  option objects, which are replaced wholesale on every search. A tick lost
+  because somebody scrolled out of view would be the same silent removal.
+- **Decision `0028`'s loose end is closed**: the resource form's "no approvers
+  assigned" warning now links here. It deliberately pointed nowhere in phases 3
+  and 4, because the screen did not exist.
+- **Test gotcha worth knowing before writing anything against this screen**:
+  the two reads go through `forkJoin`, which **cancels its remaining sources the
+  instant one errors**. A spec that flushes the failing request first leaves the
+  sibling cancelled and unflushable ("Cannot flush a cancelled request"). Answer
+  the succeeding one first.
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across
