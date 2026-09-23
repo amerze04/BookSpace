@@ -341,33 +341,40 @@ public class ApproverEndpointTests
     // edit. Without the same check here the state FR-3.3 rules out comes back
     // through the side door.
     [Fact]
-    public async Task Replace_EmptyList_OnAResourceRequiringApproval_Returns422ApproversRequired()
+    public async Task Replace_EmptyList_OnAResourceRequiringApproval_ClearsAndStaysGated()
     {
         var client = await AuthenticatedClientAsync(AcmeAdmin);
-        var resource = await CreateResourceAsync(client, "Approvers Cannot Be Emptied");
+        var resource = await CreateResourceAsync(client, "Approvers Emptied");
         var approverId = await UserIdAsync(AcmeApprover);
 
         try
         {
-            // Assign an approver, then set the flag — the only order that works,
-            // since Phase 2 refuses the flag on a resource with no approvers.
+            // Either order works since decision 0028 — the flag no longer
+            // depends on the list. Assigning first only because that is what the
+            // swap test below also does.
             await client.PutAsJsonAsync(
                 $"/resources/{resource.Id}/approvers",
                 new { approverUserIds = new[] { approverId } });
             var flagged = await client.PutAsJsonAsync(
                 $"/resources/{resource.Id}",
-                ValidResource("Approvers Cannot Be Emptied", requiresApproval: true));
+                ValidResource("Approvers Emptied", requiresApproval: true));
             flagged.EnsureSuccessStatusCode();
 
             var response = await client.PutAsJsonAsync(
                 $"/resources/{resource.Id}/approvers",
                 new { approverUserIds = Array.Empty<Guid>() });
 
-            Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
-            await AssertReasonCodeAsync(response, "ApproversRequired");
+            response.EnsureSuccessStatusCode();
 
-            // The approver survived: rule checks run before any mutator.
-            Assert.Equal(1, await StoredApproverCountAsync(resource.Id));
+            // The list is empty and the resource is still gated. Before 0028 the
+            // only way to remove the last approver was to un-gate the resource
+            // first, which turned a staffing change into a window where anyone
+            // could book it unapproved.
+            Assert.Equal(0, await StoredApproverCountAsync(resource.Id));
+
+            var detail = await client.GetFromJsonAsync<GetResourceQueryResponse>(
+                $"/resources/{resource.Id}", TestJson.Options);
+            Assert.True(detail!.RequiresApproval);
         }
         finally
         {
@@ -376,8 +383,10 @@ public class ApproverEndpointTests
     }
 
     // The whole reason approvers use replace-the-set: swapping one for another is
-    // a single request with no invalid state in between. Per-row POST/DELETE would
-    // have to pass through the empty list, which the test above shows is refused.
+    // a single request with no moment in between where the resource has the wrong
+    // approver. Per-row POST/DELETE would have to pass through an intermediate
+    // state — either both approvers at once or neither — and which one depends on
+    // the order the client happened to pick.
     [Fact]
     public async Task Replace_CanSwapApproversOnAResourceRequiringApproval()
     {

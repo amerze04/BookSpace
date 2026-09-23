@@ -40,19 +40,12 @@ export type ResourceFieldName =
 
 export type ResourceRejection = Rejection<ResourceFieldName>;
 
+// `ApproversRequired` was here and was **removed by decision 0028**, along with
+// the reason code itself. A resource may now require approval with an empty
+// approver list — that is what one looks like between being created gated and
+// having its approvers assigned — so nothing can return the code and copy for
+// it would describe a rule the server no longer has.
 const RESOURCE_COPY: Record<string, RejectionCopy<ResourceFieldName>> = {
-  // **The FR-3.3 invariant, and the one refusal that spans two endpoints.**
-  // A resource may not carry RequiresApproval with an empty approver list, and
-  // the flag and the list are set by *different* requests — so the way out is
-  // not on this form at all. The message has to say that, or an admin will
-  // hunt for an approvers field that is not there (docs/admin-plan.md §4.3).
-  ApproversRequired: {
-    field: 'requiresApproval',
-    message:
-      'This resource needs at least one approver before approval can be required. '
-      + 'Assign approvers first, then turn this on.',
-  },
-
   // Counts Pending as well as Confirmed: a pending request reserves its units
   // in full (decision `0005`), so it is holding capacity even before anyone has
   // decided on it. Worth saying, because an admin looking at a half-empty

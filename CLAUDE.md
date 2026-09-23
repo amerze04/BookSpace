@@ -399,6 +399,7 @@ added, add its one-liner to both places.
 25. [`0025`](docs/decisions/0025-recurrence-rule-tenant-scoping.md) — `RecurrenceRules` gets its own `OrgId` and all three §4.2 mechanisms (a gap found building WP-5 Phase 2).
 26. [`0026`](docs/decisions/0026-notifications-series-anchor.md) — `CK_Notifications_HasContext` now also accepts `RecurrenceRuleId` alone, for the whole-series-cancel notification.
 27. [`0027`](docs/decisions/0027-approver-booking-detail-reach.md) — an Approver may read a booking by id when it is **their own or** on a resource they gate; the union, not the list's intersection.
+28. [`0028`](docs/decisions/0028-approval-gating-without-approvers.md) — a resource may require approval with **no approvers assigned**; FR-3.3's implies-approvers invariant is removed, `ApproversRequired` is deleted, and the request falls back to the tenant's admins.
 
 If a task needs a decision that isn't listed above and isn't in this log,
 **stop and ask** rather than picking silently.
@@ -931,7 +932,7 @@ approvers, and blackout periods. It is not new scope; it has been flagged as a
 gap in `docs/wp7-plan.md` §7 and `STATE-OF-THE-APP.md` §4 since WP-7 Phase 1,
 with the buttons left absent rather than shown disabled.
 
-Seven phases; **phases 1–3 are done**, and phases 4–7 are all frontend. Each
+Seven phases; **phases 1–4 are done**, and phases 5–7 are all frontend. Each
 phase is built in one go rather than split into steps (owner's call,
 2026-09-22). Three things settled before planning:
 
@@ -1083,6 +1084,65 @@ now covered:**
   each with its own component. The member-facing `resources` group has the same
   shape and escapes it only because its parent carries no title to inherit; keep
   that in mind before giving any grouping route a title.
+
+**Decision `0028` — approval gating no longer needs approvers — 2026-09-23.**
+Owner's call, raised while reviewing phase 3, and it reverses an FR-3.3
+invariant this codebase had enforced since WP-3. Full reasoning in
+[`docs/decisions/0028-approval-gating-without-approvers.md`](docs/decisions/0028-approval-gating-without-approvers.md).
+What is true now:
+
+- **A resource may require approval with an empty approver list**, and the
+  create form offers the flag. The old rule produced the state it existed to
+  prevent: the flag and the list are set by different endpoints, so the only
+  route to a gated resource was create-ungated → assign → flip, leaving it
+  published and **freely bookable** throughout.
+- **`ReasonCodes.ApproversRequired` and `ApproversRequiredException` are
+  deleted**, as `ApprovalRequired` was in WP-4 Phase 1a — nothing can throw
+  them, and §6 keeps the catalogue describing what the API can actually return.
+  `ResourceWriteRules.EnsureApproversWhenRequired` is gone with them.
+- **Clearing an approver list on a gated resource is now allowed.** Previously
+  the only way to drop the last approver was to un-gate the resource first,
+  which turned a staffing change into a window where anyone could book it.
+- **`NotificationsFor` no longer reads the approver list directly**, in either
+  creation handler. Both built one `ApprovalRequested` row per approver on the
+  written assumption that the list could never be empty; left alone, a gated
+  resource with no approvers would have created Pending bookings notifying
+  **nobody**, and FR-9.3's expiry job would have decided them unseen. The
+  recipients are the approvers when there are any and
+  `IUserRepository.FindTenantAdminUserIdsAsync` when there are not — mirroring
+  `BookingApprovalReach`, so whoever can decide is who gets told. It is a
+  fallback, not an addition: an assigned list wins outright.
+
+### Phase 4 — Availability windows editor — **Done 2026-09-23**
+`/admin/resources/:id/availability-windows`, reachable only from the resource
+form. FR-3.2, replace-the-set.
+
+- **An "edit everything, save once" form**, because `PUT /resources/{id}/
+  availability-windows` replaces the whole set and an omitted window is a
+  deleted one. Blackout periods (phase 6) are per-row CRUD and will look
+  different on purpose — `docs/admin-plan.md` §4.1.
+- **Decision `0022` is a control, not a value.** `ClosesAt = 23:59:59` means the
+  *following midnight*, so the editor renders it as an "Until midnight" tick and
+  keeps the flag separate from the time — a stored 23:59:59 and a deliberate
+  one-second-to-midnight are indistinguishable on the wire and must not be on
+  screen. The minute arithmetic reads it as 1440, never 1439.
+- **Overlaps are refused client-side before the request goes out**, per row, and
+  the rule is the server's restated exactly — **including that adjacency is not
+  overlap**: `ClosesAt` is exclusive, so 09:00–12:00 and 12:00–17:00 coexist.
+  Verified against the live API, which accepts that pair and answers 409 for a
+  genuine overlap. Being stricter than the API it writes to would be a bug.
+- **The rules live in `windows/window-editor.ts` as pure functions**, the way
+  `recurrence-form.ts` holds the booking form's. The interesting part is
+  arithmetic over times, and arithmetic is worth testing without a TestBed.
+- **Save is disabled until something changes**, compared over the payload shape
+  rather than the rows — a row deleted and re-added identically is not an edit,
+  because the endpoint replaces the set.
+- **An empty schedule is a real, saveable state** ("closed"), not a gap to fill.
+  The backend validator says the same about an empty array: a resource open at
+  no time is one taken out of circulation without archiving it.
+- **`availability-rejection.ts` is the sixth dialect**, and the only one that
+  offers a retry — replace-the-set is idempotent by construction, so sending the
+  same schedule twice is harmless and the copy can say so.
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across

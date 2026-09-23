@@ -24,16 +24,15 @@ function problem(status: number, reasonCode?: string, errors?: Record<string, st
 }
 
 describe('describeResourceRejection', () => {
-  // **FR-3.3, and the one refusal whose fix is on a different screen.** The
-  // flag and the approver list are set by two different endpoints, so an admin
-  // told only "approvers are required" would look for a field this form does
-  // not have (docs/admin-plan.md §4.3).
-  it('sends the admin to assign approvers before requiring approval', () => {
+  // **`ApproversRequired` is gone** — decision 0028 deleted the rule and the
+  // reason code with it, so this dialect must not still claim to know it. A
+  // stale entry would be worse than a missing one: it would explain a rule the
+  // server no longer has, on a form whose control is no longer restricted.
+  it('has no copy for the deleted ApproversRequired code', () => {
     const rejection = describeResourceRejection(problem(422, 'ApproversRequired'));
 
-    expect(rejection.fieldMessages.requiresApproval).toContain('at least one approver');
-    expect(rejection.fieldMessages.requiresApproval).toContain('Assign approvers first');
-    expect(rejection.formMessage).toBeNull();
+    expect(rejection.formMessage).toBe('This resource could not be saved.');
+    expect(rejection.fieldMessages.requiresApproval).toBeUndefined();
   });
 
   // Decision `0005`: a Pending booking reserves its units in full, so it holds
@@ -117,7 +116,7 @@ describe('describeResourceRejection', () => {
   // is no slot being picked here. The flag lives on the shared shape, so this
   // is what pins that the admin dialect leaves it alone.
   it('never suggests re-checking availability', () => {
-    for (const code of ['ApproversRequired', 'CapacityBelowExistingBookings', 'ResourceArchived', 'ConcurrencyConflict']) {
+    for (const code of ['CapacityBelowExistingBookings', 'ResourceArchived', 'ConcurrencyConflict']) {
       expect(describeResourceRejection(problem(422, code)).recheckAvailability).toBe(false);
     }
 

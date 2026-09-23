@@ -48,6 +48,7 @@ today.
 | Settings, Help | `/settings`, `/help` | **Placeholder** — never scoped |
 | Admin — resource list | `/admin/resources` | Done (phase 3). Search, include-archived, pagination; TenantAdmin only |
 | Admin — resource form | `/admin/resources/new`, `/admin/resources/:id` | Done (phase 3). Create, edit, and archive behind a hard confirmation |
+| Admin — opening hours | `/admin/resources/:id/availability-windows` | Done (phase 4). Weekly editor, replace-the-set, decision `0022`'s midnight convention |
 
 A member can, today, sign in → browse resources → check availability → pick a
 slot → book it (one-off or recurring) → see it on their calendar → open it →
@@ -59,9 +60,9 @@ cancel it, or cancel the whole series.
 
 | Suite | Count | Notes |
 |---|---|---|
-| Backend unit | 1073 | |
+| Backend unit | 1071 | |
 | Backend integration | 536 | Needs a real SQL Server — the in-memory provider has no locking and no RLS |
-| Frontend (vitest) | 955 | |
+| Frontend (vitest) | 1007 | |
 
 Production build clean. The five named acceptance-criteria tests all pass:
 concurrency (AC-1), isolation (AC-4), DST (AC-3), approval re-check (AC-5),
@@ -201,7 +202,7 @@ backlog as it stands, in the order it is worth picking up.
 
 1. **The admin console** — tenant admin CRUD for resources, availability
    windows, approvers and blackout periods. **In progress**:
-   [`docs/admin-plan.md`](admin-plan.md), seven phases, of which **phases 1–3
+   [`docs/admin-plan.md`](admin-plan.md), seven phases, of which **phases 1–4
    are done** (2026-09-22 to 2026-09-23). Owner-initiated rather than
    mentor-issued, and the largest thing still missing from the application —
    flagged as a gap since WP-7 Phase 1 (§4). Phase 1 was the one backend
@@ -209,11 +210,9 @@ backlog as it stands, in the order it is worth picking up.
    cannot be assigned from a UI at all, because nothing in the API listed
    users — it answers the decision `0018` eligible set only, not a user
    directory. Phase 2 put the shell in place; phase 3 built the resource list
-   and the create/edit/archive form. **Phases 4–6 are the three remaining
-   screens** — availability windows, approvers, blackout periods. Worth knowing
-   while they are outstanding: **a resource cannot be made approval-gated
-   through the UI until phase 5**, because FR-3.3 needs approvers first and that
-   screen does not exist yet.
+   and the create/edit/archive form; phase 4 the weekly opening-hours editor.
+   **Phases 5 and 6 are the two remaining screens** — approvers and blackout
+   periods.
 2. **The design pass** the owner has flagged — the calendar, the booking detail,
    the cancel confirmation, and the approval queue with its decision panel were
    all built without a provided design, to the app's existing card vocabulary.

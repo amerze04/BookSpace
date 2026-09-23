@@ -80,7 +80,8 @@ public class CreateRecurrenceSeriesCommandRequestHandlerTests
         IReadOnlyList<UtcInterval>? blackouts = null,
         IReadOnlyList<BookedQuantity>? bookings = null,
         ITimeZoneCatalog? timeZones = null,
-        Guid? currentUserId = null)
+        Guid? currentUserId = null,
+        FakeUserRepository? users = null)
     {
         var availability = new FakeAvailabilityRepository(resource, blackouts, bookings);
         var bookingRepository = new FakeSeriesBookingRepository(outcomes, defaultResult, approvalExpiryHours);
@@ -90,6 +91,7 @@ public class CreateRecurrenceSeriesCommandRequestHandlerTests
         var handler = new CreateRecurrenceSeriesCommandRequestHandler(
             availability,
             bookingRepository,
+            users ?? new FakeUserRepository(),
             recurrenceRules,
             timeZones ?? new FakeTimeZoneCatalog("UTC"),
             unitOfWork,
@@ -602,6 +604,7 @@ public class CreateRecurrenceSeriesCommandRequestHandlerTests
         var handler = new CreateRecurrenceSeriesCommandRequestHandler(
             availability,
             new FakeSeriesBookingRepository(),
+            new FakeUserRepository(),
             new FakeRecurrenceRuleRepository(),
             new FakeTimeZoneCatalog("UTC"),
             new PassThroughUnitOfWork(),

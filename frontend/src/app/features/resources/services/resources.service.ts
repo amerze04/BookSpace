@@ -6,9 +6,11 @@ import { PagedResult } from '../../../core/http/paged-result';
 import { skipErrorToast } from '../../../core/http/skip-error-toast';
 import {
   ArchiveResourceResponse,
+  AvailabilityWindowInput,
   CreateResourceRequest,
   CreateResourceResponse,
   ListResourcesParams,
+  ReplaceAvailabilityWindowsResponse,
   ResourceDetail,
   ResourceSummary,
   UpdateResourceRequest,
@@ -84,6 +86,27 @@ export class ResourcesService {
     return this.http.post<ArchiveResourceResponse>(
       `${environment.apiBaseUrl}/resources/${id}/archive`,
       {},
+      { context: skipErrorToast() },
+    );
+  }
+
+  // PUT /resources/{id}/availability-windows (admin console phase 4).
+  //
+  // **Replace-the-set**: the whole weekly schedule goes in one request and an
+  // omitted window is a deleted one. Its own endpoint rather than a field on
+  // PUT /resources/{id} precisely so a rename cannot wipe a schedule by
+  // omission — see ResourcesController.
+  //
+  // An empty array is a legitimate request meaning "this resource opens at no
+  // time at all", which is why the caller must state it rather than achieve it
+  // by leaving the field out.
+  replaceAvailabilityWindows(
+    id: string,
+    windows: AvailabilityWindowInput[],
+  ): Observable<ReplaceAvailabilityWindowsResponse> {
+    return this.http.put<ReplaceAvailabilityWindowsResponse>(
+      `${environment.apiBaseUrl}/resources/${id}/availability-windows`,
+      { windows },
       { context: skipErrorToast() },
     );
   }

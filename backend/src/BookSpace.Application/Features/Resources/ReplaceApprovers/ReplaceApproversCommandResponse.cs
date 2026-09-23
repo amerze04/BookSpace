@@ -8,9 +8,10 @@ namespace BookSpace.Application.Features.Resources.ReplaceApprovers;
 // cheapest way for an admin to confirm they assigned the people they meant —
 // a wrong-but-eligible Guid is otherwise invisible.
 //
-// RequiresApproval is echoed because the two are coupled: emptying this list on a
-// resource that requires approval is refused (ApproversRequired), so a client
-// needs the flag in view to understand why.
+// RequiresApproval is echoed because a client needs it in view to read the
+// answer: since decision 0028 an empty list on a gated resource is accepted, and
+// the flag is what tells the client the resource is still gated rather than
+// quietly opened up.
 public sealed record ReplaceApproversCommandResponse(
     Guid ResourceId,
     bool RequiresApproval,

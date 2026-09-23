@@ -12,7 +12,8 @@ namespace BookSpace.Application.Features.Resources.CreateResource;
 //
 // No approver list either: FR-3.3's approver assignment is Phase 3, where the
 // eligibility rules to validate it live. RequiresApproval = true is therefore
-// refused here for now — see ResourceWriteRules.EnsureApproversWhenRequired.
+// accepted here since decision 0028 — the resource is gated from creation and
+// its requests fall to the tenant's admins until approvers are assigned.
 public sealed record CreateResourceCommandRequest(
     string Name,
     string? Description,

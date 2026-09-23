@@ -53,4 +53,21 @@ public interface IUserRepository
         ListUsersQueryRequest query,
         SortOption? sort,
         CancellationToken cancellationToken);
+
+    // The current tenant's active TenantAdmins (decision 0028).
+    //
+    // **Who is told about an approval request on a gated resource that has no
+    // approvers assigned.** Since 0028 removed FR-3.3's implies-approvers
+    // invariant, that state is legal and expected — it is what a resource looks
+    // like between being created gated and having its approver list filled in.
+    // `ApprovalRequested` used to be built one-per-approver on the assumption
+    // that the list could never be empty; without this it would now be built
+    // for nobody, and FR-9.3's stale-approval job would quietly expire requests
+    // no human was ever told about.
+    //
+    // TenantAdmin only, not the wider eligible-approver set: this mirrors
+    // `BookingApprovalReach`, where a TenantAdmin reaches any resource and an
+    // Approver reaches only the ones listing them. Notifying an Approver about a
+    // resource they cannot act on would be worse than notifying nobody.
+    Task<IReadOnlyCollection<Guid>> FindTenantAdminUserIdsAsync(CancellationToken cancellationToken);
 }

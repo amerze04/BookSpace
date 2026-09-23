@@ -51,12 +51,11 @@ public sealed class ReplaceApproversCommandRequestHandler
 
         ResourceWriteRules.EnsureNotArchived(resource);
 
-        // FR-3.3's empty-state rule, applied from the approver side. The flag is
-        // read from the resource rather than the payload: this endpoint does not
-        // set it, so the question is whether the list being emptied belongs to a
-        // resource that currently requires approval.
-        ResourceWriteRules.EnsureApproversWhenRequired(
-            resource.RequiresApproval, request.ApproverUserIds.Count);
+        // Clearing the list on a resource that requires approval is allowed
+        // since decision 0028. The resource stays gated and its requests fall
+        // back to the tenant's admins — strictly safer than the alternative the
+        // old rule forced, which was to un-gate the resource in order to empty
+        // its approver list.
 
         // Skipped entirely for an empty list — there is nothing to look up, and a
         // resource that does not require approval is allowed to have none.

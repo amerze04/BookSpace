@@ -530,6 +530,98 @@ public class BookingApprovalEndpointTests
         return (await response.Content.ReadFromJsonAsync<CreateBookingCommandResponse>(TestJson.Options))!;
     }
 
+    // **Decision 0028, end to end: the workflow the old FR-3.3 rule made
+    // impossible.** A resource is created already requiring approval, with no
+    // approvers at all; a member books it and gets Pending; the tenant admin
+    // decides on it; the booking is Confirmed.
+    //
+    // Before 0028 the only route to a gated resource was create-ungated →
+    // assign approvers → flip the flag, which left the resource published and
+    // freely bookable for the whole of the first two steps. This test is the
+    // evidence that the replacement route is not merely permitted by the write
+    // endpoint but actually usable: the approval it produces has to be
+    // actionable by somebody, and with no approvers assigned the only somebody
+    // is a TenantAdmin (BookingApprovalReach.AnyResource).
+    [Fact]
+    public async Task GatedResourceWithNoApprovers_StillProducesAnApprovalATenantAdminCanDecide()
+    {
+        var resourceId = await CreateGatedResourceWithoutApproversAsync();
+
+        try
+        {
+            var memberClient = await AuthenticatedClientAsync(AcmeMember);
+            var created = await CreateBookingAsync(memberClient, resourceId, At(14), At(15));
+
+            // FR-7.1: a booking on a gated resource enters Pending rather than
+            // being refused — unchanged by 0028, and the reason the approver
+            // list being empty must not be a dead end.
+            Assert.Equal(BookingStatus.Pending, created.Status);
+            Assert.NotNull(created.Approval);
+
+            // Nobody is assigned, so the notification fell to the tenant's
+            // admins. Without that fallback this row would not exist and
+            // FR-9.3's expiry job would eventually decide the request with no
+            // human ever having been told.
+            var adminId = await ScalarAsync<Guid>(
+                "SELECT Id FROM dbo.Users WHERE Email = @p0;", AcmeAdmin);
+            Assert.Equal(
+                1,
+                await CountAsync(
+                    "SELECT COUNT(*) FROM dbo.Notifications WHERE BookingId = @p0 AND RecipientUserId = @p1 AND Kind = @p2;",
+                    created.Id, adminId, nameof(NotificationKind.ApprovalRequested)));
+
+            var adminClient = await AuthenticatedClientAsync(AcmeAdmin);
+            var approve = await adminClient.PostAsJsonAsync(
+                $"/bookings/{created.Id}/approve", new { note = (string?)null });
+
+            Assert.Equal(HttpStatusCode.OK, approve.StatusCode);
+
+            var decided = (await approve.Content.ReadFromJsonAsync<ApproveBookingCommandResponse>(
+                TestJson.Options))!;
+            Assert.Equal(BookingStatus.Confirmed, decided.Status);
+        }
+        finally
+        {
+            await CleanUpAsync(resourceId);
+        }
+    }
+
+    // The 0028 shape: gated from creation, approver list untouched. Deliberately
+    // not a flag on CreateBookableResourceAsync — that helper's requiresApproval
+    // branch assigns an approver first, which is precisely the sequence this is
+    // here to avoid.
+    private async Task<Guid> CreateGatedResourceWithoutApproversAsync(string admin = AcmeAdmin)
+    {
+        var client = await AuthenticatedClientAsync(admin);
+
+        var response = await client.PostAsJsonAsync(
+            "/resources",
+            new
+            {
+                name = $"Gated No Approvers {Guid.NewGuid():N}",
+                description = "Created by the decision 0028 workflow test",
+                resourceType = "Room",
+                capacity = 4,
+                timeZoneId = "UTC",
+                requiresApproval = true,
+                minDurationMinutes = (int?)null,
+                maxDurationMinutes = (int?)null,
+            });
+        response.EnsureSuccessStatusCode();
+
+        var created = (await response.Content.ReadFromJsonAsync<CreateResourceCommandResponse>(
+            TestJson.Options))!;
+
+        var windows = Enum.GetValues<DayOfWeek>()
+            .Select(day => new { weekday = day.ToString(), opensAt = "00:00:00", closesAt = "23:59:59" })
+            .ToArray();
+
+        (await client.PutAsJsonAsync(
+            $"/resources/{created.Id}/availability-windows", new { windows })).EnsureSuccessStatusCode();
+
+        return created.Id;
+    }
+
     private async Task<Guid> CreateBookableResourceAsync(
         int capacity = 4, bool requiresApproval = false, string admin = AcmeAdmin)
     {

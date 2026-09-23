@@ -81,20 +81,27 @@ public class CreateResourceCommandRequestHandlerTests
         Assert.Equal(0, repository.SaveChangesCount);
     }
 
-    // FR-3.3: a resource cannot be created already requiring approval, because
-    // there is no way to give it an approver in the same request (Phase 3 owns
-    // assignment). Refused rather than saved into a state FR-3.3 rules out.
+    // **Reversed by decision 0028**, and the reversal is the point. This used to
+    // assert ApproversRequired: FR-3.3 refused a resource created already
+    // requiring approval, because approvers are assigned through a second
+    // endpoint and there were none yet.
+    //
+    // That rule forced every gated resource through a window in which it existed
+    // and was freely bookable — which is the state the rule was supposed to
+    // prevent, reached by the only route the rule left open. A gated resource is
+    // now gated from the moment it exists; a TenantAdmin can decide on its
+    // requests until approvers are assigned.
     [Fact]
-    public async Task Handle_RequiresApprovalWithNoApprovers_ThrowsApproversRequired()
+    public async Task Handle_RequiresApprovalWithNoApprovers_IsAllowed()
     {
         var repository = new FakeResourceRepository();
 
-        var exception = await Assert.ThrowsAsync<ApproversRequiredException>(() =>
-            Handler(repository).Handle(ValidCommand(requiresApproval: true), CancellationToken.None));
+        var response = await Handler(repository).Handle(
+            ValidCommand(requiresApproval: true), CancellationToken.None);
 
-        Assert.Equal(ReasonCodes.ApproversRequired, exception.ReasonCode);
-        Assert.Equal(ErrorKind.RuleViolation, exception.Kind);
-        Assert.Null(repository.Added);
+        Assert.True(response.RequiresApproval);
+        Assert.NotNull(repository.Added);
+        Assert.Equal(1, repository.SaveChangesCount);
     }
 
     // A 500, not a reason code: these endpoints sit behind TenantAdmin plus

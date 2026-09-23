@@ -25,7 +25,7 @@ type TestableForm = AdminResourceFormComponent & {
   archived: () => boolean;
   isArchived: () => boolean;
   createdId: () => string | null;
-  canRequireApproval: () => boolean;
+  gatedWithoutApprovers: () => boolean;
   canSubmit: () => boolean;
   nameError: () => string | null;
   capacityError: () => string | null;
@@ -203,42 +203,72 @@ describe('AdminResourceFormComponent', () => {
     expect(TestBed.inject(BreadcrumbService).override()).toBe('Conference Room A');
   });
 
-  // ---- FR-3.3, the §4.3 answer ----
+  // ---- FR-3.3 as decision 0028 leaves it ----
+  //
+  // These asserted the opposite until 2026-09-23. The flag used to be
+  // unavailable until a resource had approvers, which meant every gated
+  // resource had to exist ungated first — published and freely bookable for as
+  // long as it took the admin to assign somebody. The rule produced the state
+  // it existed to prevent.
 
-  // **The structural case.** A resource that does not exist cannot have
-  // approvers, and approvers are assigned by a different endpoint — so
-  // `requiresApproval` can only ever be false at creation. The control is
-  // rendered and disabled rather than hidden, so the setting is discoverable.
-  it('cannot require approval on create, because a new resource has no approvers', () => {
+  // **The case that matters.** A brand-new resource can be gated outright, even
+  // though it cannot possibly have approvers yet.
+  it('can require approval on create, with no approvers in existence', () => {
     const component = create(null);
+    component.onNameInput(input('Gated From Birth'));
+    component.onRequiresApprovalChange(checkbox(true));
 
-    expect(component.canRequireApproval()).toBe(false);
+    expect(component.canSubmit()).toBe(true);
+
+    component.submit();
+
+    const request = httpMock.expectOne(`${API}/resources`);
+    expect(request.request.body.requiresApproval).toBe(true);
+    request.flush({ ...updateResponse(), id: 'g1', requiresApproval: true });
   });
 
-  it('still cannot require approval on edit while the resource has no approvers', () => {
+  it('can require approval on edit while the resource has no approvers', () => {
     const component = createLoaded(detail({ approvers: [] }));
+    component.onRequiresApprovalChange(checkbox(true));
 
-    expect(component.canRequireApproval()).toBe(false);
+    component.submit();
+
+    const request = httpMock.expectOne(`${API}/resources/r1`);
+    expect(request.request.body.requiresApproval).toBe(true);
+    request.flush(updateResponse({ requiresApproval: true }));
   });
 
-  it('opens the approval control as soon as the resource has an approver', () => {
-    const component = createLoaded(detail({ approvers: [{ userId: 'u9', fullName: 'Resource Approver' }] }));
-
-    expect(component.canRequireApproval()).toBe(true);
-  });
-
-  it('renders the approval control disabled with the reason, rather than hiding it', () => {
-    const component = create(null);
+  // The control is never disabled any more, and the explanation that used to
+  // sit under it is now a warning about who picks the requests up.
+  it('leaves the approval control enabled and warns about who will be notified', () => {
+    create(null);
     const fixture = TestBed.createComponent(AdminResourceFormComponent);
+    const instance = fixture.componentInstance as TestableForm;
     fixture.detectChanges();
 
     const dom = fixture.nativeElement as HTMLElement;
     const approvalBox = dom.querySelector<HTMLInputElement>('.field--checkbox input[type="checkbox"]');
+    expect(approvalBox!.disabled).toBe(false);
 
-    expect(approvalBox).not.toBeNull();
-    expect(approvalBox!.disabled).toBe(true);
-    expect(dom.textContent).toContain('has no approvers yet');
-    expect(component.mode).toBe('create');
+    // Nothing to warn about until it is actually switched on.
+    expect(dom.textContent).not.toContain('No approvers are assigned yet');
+
+    instance.onRequiresApprovalChange(checkbox(true));
+    fixture.detectChanges();
+
+    expect(instance.gatedWithoutApprovers()).toBe(true);
+    expect(dom.textContent).toContain('No approvers are assigned yet');
+    expect(dom.textContent).toContain('administrators');
+  });
+
+  // The warning is about the gap, not about the flag: a gated resource that has
+  // approvers has nothing to warn about.
+  it('does not warn once the resource has an approver', () => {
+    const component = createLoaded(
+      detail({ requiresApproval: true, approvers: [{ userId: 'u9', fullName: 'Resource Approver' }] }),
+    );
+
+    expect(component.gatedWithoutApprovers()).toBe(false);
   });
 
   // ---- Client-side field rules ----

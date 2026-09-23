@@ -178,6 +178,18 @@ export const routes: Routes = [
                 (m) => m.AdminResourceFormComponent,
               ),
           },
+          {
+            // Phase 4. A sibling of `resources/:id` rather than a child, mirroring
+            // how the member-facing availability screen sits beside the resource
+            // detail — so the crumb chain ends in "Availability" and the resource's
+            // own name is *inserted* before it rather than replacing it.
+            path: 'resources/:id/availability-windows',
+            data: { title: 'Availability' },
+            loadComponent: () =>
+              import(
+                './features/admin/components/admin-availability-windows/admin-availability-windows.component'
+              ).then((m) => m.AdminAvailabilityWindowsComponent),
+          },
           { path: '', pathMatch: 'full', redirectTo: 'resources' },
         ],
       },

@@ -177,6 +177,15 @@ internal sealed class FakeUserRepository : IUserRepository
             candidateUserIds.Where(_eligible.Contains).ToList());
     }
 
+    // Decision 0028: who an ApprovalRequested notification falls back to when
+    // a gated resource has no approvers. Settable so a test can say "this tenant
+    // has these admins" without a database; empty by default, which is the
+    // least-privileged answer and matches this file's other defaults.
+    public List<Guid> TenantAdminUserIds { get; } = new();
+
+    public Task<IReadOnlyCollection<Guid>> FindTenantAdminUserIdsAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyCollection<Guid>>(TenantAdminUserIds.ToList());
+
     public Task<IReadOnlyList<ApproverSummary>> FindApproverSummariesAsync(
         IReadOnlyCollection<Guid> userIds,
         CancellationToken cancellationToken) =>

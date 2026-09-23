@@ -112,26 +112,28 @@ export class AdminResourceFormComponent {
     this.mode === 'create' ? 'New resource' : (this.loaded()?.name ?? 'Resource'),
   );
 
-  // **The FR-3.3 invariant, and the answer to `docs/admin-plan.md` §4.3.**
+  // **`docs/admin-plan.md` §4.3, answered by decision 0028 rather than by this
+  // form.** The flag used to be unavailable until the resource had approvers,
+  // which this screen rendered as a disabled control with an explanation.
   //
-  // A resource may not require approval with an empty approver list, and the
-  // flag and the list are set by *different* endpoints — so on create the
-  // answer is structural rather than a matter of taste: a resource that does
-  // not exist yet cannot have approvers, so `requiresApproval` can only ever be
-  // false at creation. It is rendered and disabled rather than hidden, with the
-  // reason beside it, because an administrator looking for the setting should
-  // find it and learn when it becomes available rather than wonder where it
-  // went.
+  // That rule is gone, and the reason is worth carrying here because it is the
+  // whole point of the control: the flag and the approver list are set by
+  // different endpoints, so requiring approvers first forced every gated
+  // resource through a window in which it existed and was **freely bookable** —
+  // the exact state the rule existed to prevent. A resource is now gated from
+  // the moment it is created, and a TenantAdmin can decide on its requests
+  // until approvers are assigned.
   //
-  // On edit it opens up as soon as the resource has approvers. The check
-  // duplicates a server rule on purpose — the same UI-convenience duplication
-  // the nav and the guards make — and buys the admin a disabled control with an
-  // explanation instead of a guaranteed 422 whose reason code
-  // (`ApproversRequired`) cannot say which screen to go to.
+  // So the control is always available. What remains is a warning, not a
+  // refusal: an administrator turning this on with nobody assigned should know
+  // who is going to be notified meanwhile.
   protected readonly approverCount = computed(() => this.loaded()?.approvers.length ?? 0);
 
-  protected readonly canRequireApproval = computed(
-    () => this.mode === 'edit' && this.approverCount() > 0,
+  // True while the resource is gated with nobody assigned — the legal but
+  // worth-saying state 0028 introduced. On the create form it is whatever the
+  // admin has just ticked, since a new resource has no approvers by definition.
+  protected readonly gatedWithoutApprovers = computed(
+    () => this.requiresApproval() && this.approverCount() === 0,
   );
 
   // ---- Client-side field messages ----
@@ -462,6 +464,13 @@ export class AdminResourceFormComponent {
     const stored = this.loaded()?.timeZoneId;
     return stored !== undefined && !this.timeZoneIds.includes(stored) ? stored : null;
   });
+
+  // The template needs the id for the opening-hours link, and `resourceId` is
+  // private because nothing else should reach for it. Null on the create form,
+  // where the link is not rendered at all.
+  protected resourceIdOrNull(): string | null {
+    return this.resourceId;
+  }
 
   protected goToList(): void {
     void this.router.navigate(['/admin/resources']);

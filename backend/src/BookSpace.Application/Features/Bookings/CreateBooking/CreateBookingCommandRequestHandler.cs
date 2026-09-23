@@ -35,6 +35,7 @@ public sealed class CreateBookingCommandRequestHandler
 {
     private readonly IAvailabilityRepository _availability;
     private readonly IBookingRepository _bookings;
+    private readonly IUserRepository _users;
     private readonly ITimeZoneCatalog _timeZones;
     private readonly IUnitOfWork _unitOfWork;
     private readonly ICurrentUser _currentUser;
@@ -43,6 +44,7 @@ public sealed class CreateBookingCommandRequestHandler
     public CreateBookingCommandRequestHandler(
         IAvailabilityRepository availability,
         IBookingRepository bookings,
+        IUserRepository users,
         ITimeZoneCatalog timeZones,
         IUnitOfWork unitOfWork,
         ICurrentUser currentUser,
@@ -50,6 +52,7 @@ public sealed class CreateBookingCommandRequestHandler
     {
         _availability = availability;
         _bookings = bookings;
+        _users = users;
         _timeZones = timeZones;
         _unitOfWork = unitOfWork;
         _currentUser = currentUser;
@@ -161,8 +164,20 @@ public sealed class CreateBookingCommandRequestHandler
             expiryHours is null ? null : nowUtc.AddHours(expiryHours.Value));
         var approvalDetail = new BookingApprovalDetail(approval.Id, approval.ExpiresAtUtc);
 
-        var confirmedNotifications = NotificationsFor(resource, bookingId, userId, BookingStatus.Confirmed, nowUtc);
-        var pendingNotifications = NotificationsFor(resource, bookingId, userId, BookingStatus.Pending, nowUtc);
+        // Resolved out here rather than inside the delegate, for the same reason
+        // expiryHours is: a read whose result feeds freshly-minted Notification
+        // ids must not sit inside a block a 1205 retry can run twice.
+        //
+        // Queried only when the fallback is actually needed — decision 0028's
+        // empty-approver-list case — so the ordinary gated resource costs
+        // nothing extra, and an ungated one never gets here at all because
+        // `requestedStatus` decides which of the two lists is used.
+        var approvalRecipients = resource.ApproverUserIds.Count > 0
+            ? resource.ApproverUserIds
+            : await _users.FindTenantAdminUserIdsAsync(cancellationToken);
+
+        var confirmedNotifications = NotificationsFor(approvalRecipients, bookingId, userId, BookingStatus.Confirmed, nowUtc);
+        var pendingNotifications = NotificationsFor(approvalRecipients, bookingId, userId, BookingStatus.Pending, nowUtc);
 
         return await _unitOfWork.ExecuteAsync(
             async token =>
@@ -247,7 +262,7 @@ public sealed class CreateBookingCommandRequestHandler
     // as soon as the dispatch job next runs. Reminder rows (FR-8.3) are
     // deliberately not written here — see docs/wp4-plan.md.
     private static IReadOnlyList<Notification> NotificationsFor(
-        Resource resource,
+        IReadOnlyCollection<Guid> approvalRecipients,
         Guid bookingId,
         Guid userId,
         BookingStatus status,
@@ -262,16 +277,23 @@ public sealed class CreateBookingCommandRequestHandler
             ];
         }
 
-        // One per approver. The rows differ by RecipientUserId, so
-        // UQ_Notifications_Once admits all of them. The list cannot be empty: a
-        // resource with RequiresApproval and no approvers is refused at both ends
-        // by ApproversRequired (WP-3 Phase 3), so this is not a case to defend
-        // against here.
-        return resource.ApproverUserIds
-            .Select(approverId => Notification.ForBooking(
+        // One per recipient. The rows differ by RecipientUserId, so
+        // UQ_Notifications_Once admits all of them.
+        //
+        // **The recipients are not always the approvers.** Until decision 0028
+        // this read `resource.ApproverUserIds` directly, on the stated ground
+        // that the list could never be empty — FR-3.3 refused a gated resource
+        // with no approvers at both ends. 0028 removed that invariant, so the
+        // empty list is now a legal and expected state, and building "one per
+        // approver" over it would notify nobody while FR-9.3's stale-approval
+        // job quietly expired the request. `approvalRecipients` is the approver
+        // list when there is one and the tenant's admins when there is not —
+        // resolved by the caller, because it needs a query.
+        return approvalRecipients
+            .Select(recipientId => Notification.ForBooking(
                 Guid.NewGuid(),
                 bookingId,
-                approverId,
+                recipientId,
                 NotificationKind.ApprovalRequested,
                 nowUtc,
                 userId,

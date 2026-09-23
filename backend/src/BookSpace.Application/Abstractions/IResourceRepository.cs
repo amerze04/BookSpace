@@ -42,7 +42,7 @@ public interface IResourceRepository
     // because the caller mutates it through the domain methods — the same
     // reason IAuthenticationUserRepository returns a User. Loads the approver
     // assignments and availability windows with it, since the edit rules read
-    // both (ApproversRequired, and the timezone-change notice's count).
+    // both (approver eligibility, and the timezone-change notice's count).
     Task<Resource?> FindForUpdateAsync(Guid resourceId, CancellationToken cancellationToken);
 
     void Add(Resource resource);

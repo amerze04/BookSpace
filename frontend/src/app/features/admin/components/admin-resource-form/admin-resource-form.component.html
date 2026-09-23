@@ -144,29 +144,27 @@
           <input
             type="checkbox"
             [checked]="requiresApproval()"
-            [disabled]="submitting() || !canRequireApproval()"
+            [disabled]="submitting()"
             (change)="onRequiresApprovalChange($event)"
           />
           <span>Require approval for every booking</span>
         </label>
 
         <!--
-          FR-3.3: a resource may not require approval with no approvers, and the
-          flag and the approver list are set by two different endpoints. So the
-          control is disabled until the resource has approvers — with the reason
-          beside it, because `ApproversRequired` cannot say which screen to go
-          to, and an admin told only "approvers are required" would hunt this
-          form for a field that isn't on it.
+          Always available since decision 0028. It used to be disabled until the
+          resource had approvers, which forced every gated resource through a
+          window in which it existed and was freely bookable — the state that
+          rule was meant to prevent.
+
+          A warning, not a refusal: the resource is properly gated either way,
+          and what an administrator needs to know is who picks the requests up
+          in the meantime.
         -->
-        @if (!canRequireApproval()) {
-          <span class="field-hint">
-            @if (mode === 'create') {
-              A new resource has no approvers yet, so approval can't be required at creation. Create
-              it first, then assign approvers.
-            } @else {
-              This resource has no approvers yet. Assign at least one before approval can be
-              required.
-            }
+        @if (gatedWithoutApprovers()) {
+          <span class="field-warning" role="status">
+            No approvers are assigned yet, so requests will go to your organization's
+            administrators until you assign some. Bookings are held as pending in the meantime —
+            nothing is confirmed without a decision.
           </span>
         }
         @if (approvalError(); as message) {
@@ -271,6 +269,28 @@
       </div>
     }
   </form>
+
+  @if (mode === 'edit') {
+    <!--
+      Phase 4's screen, reachable only from here. It exists for a resource that
+      exists, so it is deliberately absent on the create form — the outcome
+      panel after creating points at this page instead.
+
+      Offered on an archived resource too: the editor renders read-only there,
+      and an admin looking at what a retired room's hours *were* is a reasonable
+      thing to want.
+    -->
+    <section class="related">
+      <h2 class="related-heading">Opening hours</h2>
+      <p class="related-detail">
+        When members can book this resource, written in its own timezone. A resource with no
+        opening hours cannot be booked at all.
+      </p>
+      <a class="secondary-action" [routerLink]="['/admin/resources', resourceIdOrNull(), 'availability-windows']">
+        Edit opening hours
+      </a>
+    </section>
+  }
 
   @if (mode === 'edit' && !isArchived()) {
     <section class="danger-zone">

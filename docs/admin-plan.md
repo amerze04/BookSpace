@@ -8,7 +8,7 @@ frontend and this is the largest thing still missing from the application.
 
 ## Status
 
-**In progress.** Phases 1–3 are done; phases 4–7 below. The owner asked on
+**In progress.** Phases 1–4 are done; phases 5–7 below. The owner asked on
 2026-09-22 that each phase be built in one go rather than split into separately
 reviewable steps, on the judgment that they are individually small enough —
 so unlike WP-7, there is no per-phase step breakdown written ahead of the work.
@@ -18,7 +18,7 @@ so unlike WP-7, there is no per-phase step breakdown written ahead of the work.
 | 1 — `GET /users` (backend only) | **Done 2026-09-22** |
 | 2 — The admin shell | **Done 2026-09-23** |
 | 3 — Resources: create, edit, archive | **Done 2026-09-23** |
-| 4 — Availability windows editor | Not started |
+| 4 — Availability windows editor | **Done 2026-09-23** |
 | 5 — Approvers editor | Not started |
 | 6 — Blackout periods | Not started |
 | 7 — Wiring, click-through, close | Not started |
@@ -359,9 +359,21 @@ Other things true now:
   reason. The member-facing `resources` group has the same shape and gets away
   with it only because its parent carries no title to inherit.
 
-### Phase 4 — Availability windows editor
-The weekly editor, replace-the-set, encoding decision `0022`'s midnight
-convention and refusing overlaps before the server has to.
+### Phase 4 — Availability windows editor — **Done 2026-09-23**
+The weekly editor at `/admin/resources/:id/availability-windows`,
+replace-the-set, encoding decision `0022`'s midnight convention as an "Until
+midnight" control rather than a magic time, and refusing overlaps client-side
+before the server has to.
+
+**Adjacency is not overlap**, on both sides: `ClosesAt` is exclusive, so
+09:00-12:00 and 12:00-17:00 coexist. The client rule restates the server's
+exactly, and being stricter than the API it writes to would be a bug — verified
+live, the endpoint accepts that pair and answers 409 for a genuine overlap.
+
+The rules are pure functions in `windows/window-editor.ts`; an empty schedule is
+a real saveable state ("closed"); and `availability-rejection.ts` is the sixth
+dialect and the only one that offers a retry, because replace-the-set is
+idempotent by construction.
 
 ### Phase 5 — Approvers editor
 Replace-the-set against phase 1's endpoint. `ApproverNotEligible` collapses every
@@ -393,9 +405,11 @@ says that is where the bugs are — and the write-up.
   that and no archived-only view. Filtering a fetched page client-side would
   leave `totalCount` and the page boundaries describing a different set than the
   rows under them. Not worth a backend change.
-- **Approval cannot be turned on through the UI until phase 5.** FR-3.3 needs
-  approvers first and the approvers screen does not exist yet; nothing links to
-  it, deliberately. A phase boundary, not a gap — see Phase 3 above.
+- **Approval gating no longer needs approvers at all** — decision `0028`,
+  2026-09-23. This entry used to say approval could not be turned on through the
+  UI until phase 5; the owner reversed the underlying FR-3.3 rule instead, on
+  the grounds that it forced every gated resource through a freely-bookable
+  window. Resolved, not deferred.
 
 ## 7. Screens to design — **settled, phase 2**
 

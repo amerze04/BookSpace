@@ -49,8 +49,9 @@ public sealed class UpdateResourceCommandRequestHandler
 
         ResourceWriteRules.EnsureNotArchived(resource);
         ResourceWriteRules.EnsureKnownTimeZone(_timeZones, request.TimeZoneId);
-        ResourceWriteRules.EnsureApproversWhenRequired(
-            request.RequiresApproval, resource.ApproverUserIds.Count);
+        // No approver check here any more: decision 0028 removed FR-3.3's
+        // RequiresApproval-implies-approvers invariant, so turning the flag on
+        // is allowed whatever the approver list currently holds.
 
         // Only a decrease can strand an existing booking, and the check costs a
         // query — so an increase, or no change, skips it.

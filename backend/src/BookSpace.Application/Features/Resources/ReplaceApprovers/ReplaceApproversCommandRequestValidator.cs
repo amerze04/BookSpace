@@ -23,8 +23,8 @@ public sealed class ReplaceApproversCommandRequestValidator
 
         // NotNull, not NotEmpty, exactly as for the availability windows: an
         // empty array is a real request meaning "this resource has no approvers".
-        // It is refused only when the resource requires approval, and then by the
-        // handler with ApproversRequired — a rule, not a shape problem.
+        // Since decision 0028 it is never refused — not even on a resource that
+        // requires approval, which then falls back to the tenant's admins.
         RuleFor(c => c.ApproverUserIds)
             .NotNull()
             .WithMessage("ApproverUserIds is required; send an empty array to clear the list.");

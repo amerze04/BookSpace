@@ -179,3 +179,24 @@ export interface UpdateResourceResponse extends CreateResourceResponse {
 // The 200 body of POST /resources/{id}/archive. FR-3.5 preserves the resource,
 // so the useful reply is the row with isArchived flipped rather than a 204.
 export type ArchiveResourceResponse = CreateResourceResponse;
+
+// PUT /resources/{id}/availability-windows — one item of
+// ReplaceAvailabilityWindowsRequest. No id: the whole set is replaced, so the
+// server mints ids and a client has nothing to correlate them to.
+//
+// Times are resource-local wall clock (decision `0003`), "HH:mm:ss", and must
+// carry whole seconds — both columns are `time(0)`, so a sub-second value would
+// be rounded on write and the response would disagree with the row read back.
+export interface AvailabilityWindowInput {
+  weekday: DayOfWeekName;
+  opensAt: string;
+  closesAt: string;
+}
+
+// The 200 body. Returns the schedule rather than 204 because the server
+// assigned an id to every row and normalized the order — a client given 204
+// would have to re-read to learn either.
+export interface ReplaceAvailabilityWindowsResponse {
+  resourceId: string;
+  availabilityWindows: AvailabilityWindowDetail[];
+}

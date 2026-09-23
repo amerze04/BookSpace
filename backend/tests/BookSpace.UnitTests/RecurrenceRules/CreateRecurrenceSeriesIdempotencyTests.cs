@@ -70,6 +70,7 @@ public class CreateRecurrenceSeriesIdempotencyTests
         var handler = new CreateRecurrenceSeriesCommandRequestHandler(
             availability,
             bookingRepository,
+            new FakeUserRepository(),
             recurrenceRules,
             new FakeTimeZoneCatalog("UTC"),
             new PassThroughUnitOfWork(),

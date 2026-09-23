@@ -415,6 +415,14 @@ describe('navigation chain (WP-7 Phase 7 step 1)', () => {
       expect(toResource).toBe('/admin/resources/r1');
       flushResource();
       expect(router.url).toBe('/admin/resources/r1');
+
+      // Phase 4's editor is reachable only from the resource form, so this is
+      // the only seam it has — and the one a typo in the routerLink array would
+      // break silently, since the route itself resolves either way.
+      const toWindows = await follow('a[href="/admin/resources/r1/availability-windows"]');
+      expect(toWindows).toBe('/admin/resources/r1/availability-windows');
+      flushResource();
+      expect(router.url).toBe('/admin/resources/r1/availability-windows');
     });
 
     // **Regression, phase 3.** The admin routes were briefly declared as a

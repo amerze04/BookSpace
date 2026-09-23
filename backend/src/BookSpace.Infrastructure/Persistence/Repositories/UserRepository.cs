@@ -78,6 +78,22 @@ internal sealed class UserRepository : IUserRepository
             .ToListAsync(cancellationToken);
     }
 
+    // Decision 0028's fallback recipients. The same shape as the predicate
+    // above and for the same reason — the role test has to run in SQL, not in
+    // memory — but narrowed to TenantAdmin alone, matching who
+    // BookingApprovalReach says can decide on any resource in the tenant.
+    public async Task<IReadOnlyCollection<Guid>> FindTenantAdminUserIdsAsync(
+        CancellationToken cancellationToken)
+    {
+        return await _context.Users
+            .AsNoTracking()
+            .Where(u => u.IsActive
+                && EF.Property<ICollection<User.RoleAssignment>>(u, RoleAssignmentsNavigation)
+                    .Any(r => r.Role == Role.TenantAdmin))
+            .Select(u => u.Id)
+            .ToListAsync(cancellationToken);
+    }
+
     public async Task<IReadOnlyList<ApproverSummary>> FindApproverSummariesAsync(
         IReadOnlyCollection<Guid> userIds,
         CancellationToken cancellationToken)

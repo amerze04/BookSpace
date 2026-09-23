@@ -23,23 +23,6 @@ internal static class ResourceWriteRules
         }
     }
 
-    // FR-3.3: "marked RequiresApproval, with one or more assigned approvers".
-    // Enforced here rather than in Resource because the entity would have to
-    // throw an ArgumentException, which reaches the client as a 500 with no
-    // reason code (see the note above Resource's edit methods).
-    //
-    // Applied on create as well as edit, so the empty state is never a resting
-    // state. That has a temporary consequence worth knowing about: approver
-    // assignment is Phase 3 (FR-3.3), so until it lands the only resources that
-    // can carry RequiresApproval = true are ones that already have an approver.
-    public static void EnsureApproversWhenRequired(bool requiresApproval, int approverCount)
-    {
-        if (requiresApproval && approverCount == 0)
-        {
-            throw new ApproversRequiredException();
-        }
-    }
-
     // FR-3.3. eligibleUserIds is what IUserRepository.FindEligibleApproverIdsAsync
     // returned for the requested set; anything missing from it failed one of the
     // three eligibility conditions, and which one is deliberately not reported —

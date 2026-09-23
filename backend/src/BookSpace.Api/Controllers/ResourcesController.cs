@@ -131,9 +131,13 @@ public sealed class ResourcesController : ControllerBase
     // policy admits the role, but TenantMember's orgId-claim requirement does
     // not, and a SysAdmin has no tenant to create a resource in.
     //
-    // 400 InvalidTimeZone and 422 ApproversRequired come from the handler as
-    // AppExceptions; 403 comes from the authorization policy with no reason
-    // code at all. Which one you get says whether you are hitting RBAC or a rule.
+    // 400 InvalidTimeZone comes from the handler as an AppException; 403 comes
+    // from the authorization policy with no reason code at all. Which one you
+    // get says whether you are hitting RBAC or a rule.
+    //
+    // RequiresApproval = true is accepted with no approvers since decision 0028
+    // — a resource is gated from creation rather than passing through a
+    // freely-bookable window while its approver list is filled in.
     [HttpPost]
     [Authorize(Policy = AuthorizationPolicies.TenantAdmin)]
     [ProducesResponseType<CreateResourceCommandResponse>(StatusCodes.Status201Created)]
@@ -259,19 +263,21 @@ public sealed class ResourcesController : ControllerBase
     // FR-3.3. The whole approver list in one payload; see
     // ReplaceApproversCommandRequest for why replace-the-set rather than per-row
     // POST/DELETE — chiefly that swapping approvers one at a time has to pass
-    // through the empty list, which ApproversRequired refuses.
+    // through an intermediate state with either both or neither assigned, and
+    // which one depends on the order the client happened to pick.
     //
     // Its own endpoint rather than a field on PUT /resources/{id}, same reasoning
     // as the schedule: that payload is a full representation, so an admin
-    // renaming a room while omitting the array would clear the approver list —
-    // and on a resource that requires approval that state is forbidden outright.
+    // renaming a room while omitting the array would silently clear the approver
+    // list. Since decision 0028 that would no longer be refused, which makes
+    // keeping the two endpoints separate matter more rather than less.
     public sealed record ReplaceApproversRequest(IReadOnlyList<Guid> ApproverUserIds);
 
-    // 422 covers two different refusals here, both RuleViolation: emptying the
-    // list on a resource that requires approval (ApproversRequired), and an id
-    // that cannot approve for this tenant (ApproverNotEligible). The second is
-    // deliberately vague about which of its three causes applied — see the
-    // exception.
+    // 422 is ApproverNotEligible: an id that cannot approve for this tenant,
+    // deliberately vague about which of its three causes applied (see the
+    // exception). Emptying the list was the other 422 here until decision 0028
+    // removed it — the resource now stays gated and its requests fall back to
+    // the tenant's admins.
     [HttpPut("{id:guid}/approvers")]
     [Authorize(Policy = AuthorizationPolicies.TenantAdmin)]
     [ProducesResponseType<ReplaceApproversCommandResponse>(StatusCodes.Status200OK)]

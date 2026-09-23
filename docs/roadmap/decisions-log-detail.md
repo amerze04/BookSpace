@@ -267,6 +267,23 @@ feature, the reasoning matters as much as the answer.
     (decision `0002` keeps it with the owner and the TenantAdmin). Closed a
     latent fail-open on the way: `FindDetailAsync` had been silently ignoring
     `owner.ResourceIds` since WP-5 Phase 3.
+28. [`0028`](../decisions/0028-approval-gating-without-approvers.md) — a
+    resource may require approval with **no approvers assigned**, reversing
+    FR-3.3's implies-approvers invariant. Owner's call, raised while reviewing
+    admin console phase 3, and the reasoning is that the rule produced the state
+    it existed to prevent: the flag and the approver list are set by different
+    endpoints, so the only route to a gated resource was create-ungated → assign
+    → flip the flag, leaving it published and **freely bookable** throughout.
+    Safe because `ApprovalRequest` carries no approver reference and
+    `BookingApprovalReach` already gives a TenantAdmin `AnyResource`, so the
+    requests were always actionable. One consequence had to be closed with it:
+    `NotificationsFor` built one `ApprovalRequested` row per approver on the
+    written assumption that the list could never be empty, so the recipients now
+    fall back to the tenant's active `TenantAdmin`s — otherwise a gated resource
+    with no approvers would have created Pending bookings notifying nobody, with
+    FR-9.3's expiry job deciding them unseen. `ReasonCodes.ApproversRequired`
+    and `ApproversRequiredException` are deleted, as `ApprovalRequired` was in
+    WP-4 Phase 1a.
 
 If a task needs a decision that isn't listed above and isn't in this log,
 **stop and ask** rather than picking silently.
