@@ -131,16 +131,52 @@ export const routes: Routes = [
         data: { title: 'Admin' },
         canActivate: [adminGuard],
         children: [
+          // **Flat siblings, not a nested `resources` group**, and that is a
+          // correctness constraint rather than a style choice. Angular's
+          // default `paramsInheritanceStrategy` ('emptyOnly') copies a parent's
+          // `data` onto any child that has an empty path *or no component* — so
+          // a componentless `resources` grouping route would inherit this
+          // parent's `title: 'Admin'` and the breadcrumb walk would read
+          // "Admin > Admin > Resources". The member-facing `resources` group
+          // gets away with the same shape only because its parent carries no
+          // title to inherit. Every route below loads a component, so none of
+          // them inherits anything.
           {
-            // Phase 3 replaces this placeholder with the real admin resource
-            // list — the same way /approvals carried one from WP-6 until WP-7
-            // Phase 6 step 3 replaced it. The route and its nav item exist now
-            // so the role plumbing is provable end to end before any screen
-            // depends on it.
+            // Phase 3: the placeholder this route carried since phase 2 is now
+            // the real admin resource list.
             path: 'resources',
             data: { title: 'Resources' },
             loadComponent: () =>
-              import('./features/placeholder/components/placeholder/placeholder.component').then((m) => m.PlaceholderComponent),
+              import('./features/admin/components/admin-resource-list/admin-resource-list.component').then(
+                (m) => m.AdminResourceListComponent,
+              ),
+          },
+          {
+            // **Before `resources/:id`, and the order is load-bearing**: the
+            // router matches in declaration order, so the parameterised route
+            // declared first would swallow `/admin/resources/new` and try to
+            // load a resource whose id is the string "new".
+            path: 'resources/new',
+            data: { title: 'New resource' },
+            loadComponent: () =>
+              import('./features/admin/components/admin-resource-form/admin-resource-form.component').then(
+                (m) => m.AdminResourceFormComponent,
+              ),
+          },
+          {
+            // The same component as `resources/new`. Its mode comes from
+            // whether this `:id` is present — see the component for why one
+            // form serves both.
+            //
+            // 'Resource' is only the fallback crumb: the form replaces it with
+            // the resource's own name through BreadcrumbService once it has
+            // loaded, the way the member-facing detail screen does.
+            path: 'resources/:id',
+            data: { title: 'Resource' },
+            loadComponent: () =>
+              import('./features/admin/components/admin-resource-form/admin-resource-form.component').then(
+                (m) => m.AdminResourceFormComponent,
+              ),
           },
           { path: '', pathMatch: 'full', redirectTo: 'resources' },
         ],

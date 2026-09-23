@@ -102,3 +102,80 @@ export interface ListResourcesParams {
   search?: string;
   requiresApproval?: boolean;
 }
+
+// ---- Write contracts (admin console phase 3) ----
+//
+// Reads had this file to themselves until now, because nothing in the app
+// wrote a resource. These mirror ResourcesController's own request and response
+// records, and the notes are about where the wire shape is surprising rather
+// than about what each field means.
+
+// POST /resources — CreateResourceRequest. No id and no orgId: the server
+// assigns the first and takes the second from the token, so neither can be
+// forged by editing a body.
+//
+// `requiresApproval` is on the wire and is always `false` from the create
+// screen — FR-3.3 refuses a new resource that requires approval, because it
+// cannot have approvers yet and they are assigned by a different endpoint. The
+// field exists here because the API has it, not because the form can set it.
+export interface CreateResourceRequest {
+  name: string;
+  description: string | null;
+  resourceType: ResourceType;
+  capacity: number;
+  timeZoneId: string;
+  requiresApproval: boolean;
+  minDurationMinutes: number | null;
+  maxDurationMinutes: number | null;
+}
+
+// PUT /resources/{id} — UpdateResourceRequest. **A full representation, not a
+// patch** (docs/decisions/0015): every mutable field is supplied and an omitted
+// nullable one means cleared. A form that sent only what changed would silently
+// wipe the rest. The id travels in the route, not the body, so the two cannot
+// disagree.
+export type UpdateResourceRequest = CreateResourceRequest;
+
+// What an edit can do that its own fields do not show — TimeZoneChangeNotice.
+//
+// Changing TimeZoneId **reinterprets** every existing availability window
+// rather than shifting it, because a window is stored as resource-local
+// wall-clock time (docs/decisions/0003): 09:00–17:00 stays 09:00–17:00 and
+// starts meaning a different instant. Defensible but surprising, which is why
+// the server reports it instead of leaving an admin to discover it from a
+// booking that lands an hour off.
+//
+// Null whenever the timezone did not change, which is the normal case.
+export interface TimeZoneChangeNotice {
+  previousTimeZoneId: string;
+  newTimeZoneId: string;
+  reinterpretedAvailabilityWindowCount: number;
+}
+
+// The 201 body of POST /resources — CreateResourceCommandResponse. Carries no
+// availability windows or approvers: a client has no use for a window list it
+// has not created yet.
+export interface CreateResourceResponse {
+  id: string;
+  name: string;
+  description: string | null;
+  resourceType: ResourceType;
+  capacity: number;
+  timeZoneId: string;
+  requiresApproval: boolean;
+  minDurationMinutes: number | null;
+  maxDurationMinutes: number | null;
+  isArchived: boolean;
+  createdAtUtc: string;
+  updatedAtUtc: string;
+}
+
+// The 200 body of PUT /resources/{id} — flat, with the notice alongside the
+// fields rather than wrapping them.
+export interface UpdateResourceResponse extends CreateResourceResponse {
+  timeZoneChange: TimeZoneChangeNotice | null;
+}
+
+// The 200 body of POST /resources/{id}/archive. FR-3.5 preserves the resource,
+// so the useful reply is the row with isArchived flipped rather than a 204.
+export type ArchiveResourceResponse = CreateResourceResponse;

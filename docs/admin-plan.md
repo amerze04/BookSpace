@@ -8,7 +8,7 @@ frontend and this is the largest thing still missing from the application.
 
 ## Status
 
-**In progress.** Phases 1 and 2 are done; phases 3–7 below. The owner asked on
+**In progress.** Phases 1–3 are done; phases 4–7 below. The owner asked on
 2026-09-22 that each phase be built in one go rather than split into separately
 reviewable steps, on the judgment that they are individually small enough —
 so unlike WP-7, there is no per-phase step breakdown written ahead of the work.
@@ -17,7 +17,7 @@ so unlike WP-7, there is no per-phase step breakdown written ahead of the work.
 |---|---|
 | 1 — `GET /users` (backend only) | **Done 2026-09-22** |
 | 2 — The admin shell | **Done 2026-09-23** |
-| 3 — Resources: create, edit, archive | Not started |
+| 3 — Resources: create, edit, archive | **Done 2026-09-23** |
 | 4 — Availability windows editor | Not started |
 | 5 — Approvers editor | Not started |
 | 6 — Blackout periods | Not started |
@@ -287,10 +287,77 @@ Four things are true now that were not, and phases 3–6 are built on them:
 `/admin/resources` renders the placeholder component for now, exactly as
 `/approvals` did from WP-6 until WP-7 Phase 6 replaced it. Phase 3 replaces it.
 
-### Phase 3 — Resources: create, edit, archive
-The create and edit forms, with §4.5's three refusals rendered in place, and
-archive behind its hard confirmation. Settles §4.3's open question about how
-creation handles the approvals flag.
+### Phase 3 — Resources: create, edit, archive — **Done 2026-09-23**
+The admin resource list at `/admin/resources`, one form serving both
+`/admin/resources/new` and `/admin/resources/:id`, and archive behind its hard
+confirmation. §4.5's three refusals are rendered in place.
+
+**§4.3 is settled, and the answer turned out to be structural rather than a
+matter of taste.** A resource that does not exist cannot have approvers, and
+approvers are assigned by a different endpoint — so `requiresApproval` can only
+ever be false at creation. Verified against the live API rather than assumed:
+`POST /resources` with `"requiresApproval": true` answers **422
+`ApproversRequired`**. The control is therefore rendered *disabled* rather than
+hidden, with the reason beside it, and opens up on the edit form as soon as
+`ResourceDetail.approvers` is non-empty. Hidden would have been worse: an
+administrator looking for the setting should find it and learn when it becomes
+available, not wonder where it went.
+
+**Consequence worth stating plainly: between now and phase 5, no resource can
+be made approval-gated through the UI at all.** Nothing links to the approvers
+screen either, because it does not exist yet and WP-7 Phase 6 already taught
+this project what linking into a 404 costs. That is a phase boundary, not a gap.
+
+**§6's flagged item is checked, and the parameter is adequate.** `GET /resources`
+offers `includeArchived` (a widening) and nothing that narrows *to* archived. The
+list therefore has an "Include archived" toggle mapped straight onto it and no
+archived-only view: filtering a fetched page client-side would leave `totalCount`
+and the page boundaries describing the unfiltered set, which is phase 1's lesson
+in a different place.
+
+Other things true now:
+
+- **One component for create and edit.** Every field, every refusal and the
+  §4.5 rules are shared; the differences are a heading, a CTA, whether an id is
+  loaded first, and two sections that exist in edit mode alone. Two components
+  would be two copies of the field vocabulary, and the first to drift would be
+  the one nobody was looking at.
+- **Archive is on the form, not on a list row.** It cannot be undone, so the one
+  thing worth buying is that the administrator is looking at the resource when
+  they decide. The confirmation says both of the things an admin actually worries
+  about — that there is no way back, *and* that existing bookings are **not**
+  cancelled (confirmed in `Resource.Archive`, which flips a flag and nothing
+  else). An acknowledgement tick rather than type-the-name: nothing is deleted
+  and no booking is cancelled, so type-to-confirm would be friction out of
+  proportion to the act.
+- **The form goes read-only once archived**, both for a resource archived here
+  and one that arrived that way, because `PUT /resources/{id}` answers 422
+  `ResourceArchived` (verified live). The list reads such a row's action as
+  "View" rather than "Edit".
+- **`TimeZoneChangeNotice` is surfaced.** Changing the timezone *reinterprets*
+  every availability window rather than shifting it (decision `0003`), and the
+  server reports it because it is surprising. The form renders the count.
+- **The timezone picker is `Intl.supportedValuesOf('timeZone')`** — canonical
+  IANA ids from the host's own ICU data, because CLAUDE.md §4.3 refuses a
+  resolvable-but-non-canonical id. **It omits `"UTC"`**, which a test caught:
+  UTC is a tz database *link*, not a zone. It is added explicitly, and the
+  backend accepting it was verified against the running API rather than assumed.
+  `InvalidTimeZone` stays handled anyway — the two ICU catalogues can disagree
+  at the edges, so narrowing the input makes that refusal rare, not impossible.
+
+**Two bugs found while building, neither in phase 3's own code:**
+
+- **The shell's breadcrumb crashed on a repeated crumb.** It tracked by the
+  crumb's own text, and Angular throws NG0955 on a duplicate track key — taking
+  the whole shell down, not just the breadcrumb. Now tracked by position, which
+  is the only honest key for a list of plain strings.
+- **Route `data` inherits further than it looks.** Angular's default
+  `paramsInheritanceStrategy` ('emptyOnly') copies a parent's `data` onto any
+  child with an empty path *or no component*, so a componentless `resources`
+  grouping route under `admin` inherited `title: 'Admin'` and the breadcrumb read
+  "Admin > Admin > Resources". The admin routes are flat siblings for that
+  reason. The member-facing `resources` group has the same shape and gets away
+  with it only because its parent carries no title to inherit.
 
 ### Phase 4 — Availability windows editor
 The weekly editor, replace-the-set, encoding decision `0022`'s midnight
@@ -320,10 +387,15 @@ says that is where the bugs are — and the write-up.
 - **No unarchive** (§3). Settled as acceptable; if it is ever wanted it needs its
   own decision record, because `ResourcesController` currently argues against it
   in writing.
-- **`GET /resources` has no `isArchived`-only filter** — it has `includeArchived`,
-  so an "archived resources" view would have to filter client-side or the
-  parameter would need widening. Check during phase 3 rather than assuming.
-- **User management stays out of scope** (§3) and has no backend whatever.
+- **`GET /resources` has no `isArchived`-only filter** — **checked in phase 3,
+  and the parameter is adequate.** It offers `includeArchived` (a widening) and
+  nothing that narrows *to* archived, so the admin list has a toggle mapped onto
+  that and no archived-only view. Filtering a fetched page client-side would
+  leave `totalCount` and the page boundaries describing a different set than the
+  rows under them. Not worth a backend change.
+- **Approval cannot be turned on through the UI until phase 5.** FR-3.3 needs
+  approvers first and the approvers screen does not exist yet; nothing links to
+  it, deliberately. A phase boundary, not a gap — see Phase 3 above.
 
 ## 7. Screens to design — **settled, phase 2**
 

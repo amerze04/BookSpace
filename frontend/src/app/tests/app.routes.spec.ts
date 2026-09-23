@@ -191,6 +191,7 @@ describe('shell route guarding (canActivateChild)', () => {
     await harness.navigateByUrl('/admin/resources');
 
     expect(router.url).toBe('/admin/resources');
+    flushAdminResourceList();
   });
 
   // /admin itself is a redirect, so a typed or bookmarked bare /admin lands
@@ -202,6 +203,7 @@ describe('shell route guarding (canActivateChild)', () => {
     await harness.navigateByUrl('/admin');
 
     expect(router.url).toBe('/admin/resources');
+    flushAdminResourceList();
   });
 
   // The redirect must not become a way around the guard: a Member asking for
@@ -219,6 +221,24 @@ describe('shell route guarding (canActivateChild)', () => {
   // The calendar fetches its visible window as soon as it renders; these tests
   // are about routing, so the response is answered and discarded rather than
   // asserted on (calendar.component.spec.ts owns what the request looks like).
+  // The admin resource list fetches its first page as soon as it renders, the
+  // same way the calendar does. These tests are about routing, so the response
+  // is answered and discarded — leaving it open fails verify() and, worse,
+  // corrupts the shared TestBed for every spec file after this one.
+  function flushAdminResourceList(): void {
+    httpMock
+      .expectOne((r) => r.url === `${API}/resources`)
+      .flush({
+        items: [],
+        page: 1,
+        pageSize: 50,
+        totalCount: 0,
+        totalPages: 0,
+        hasPreviousPage: false,
+        hasNextPage: false,
+      });
+  }
+
   function flushCalendarWindow(): void {
     httpMock
       .expectOne((r) => r.url === `${API}/bookings`)

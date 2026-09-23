@@ -46,7 +46,8 @@ today.
 | Booking detail | `/bookings/:id` | Done. Cancel one occurrence or a whole series |
 | Approvals | `/approvals` | Done. Tenant-scoped pending queue, oldest first; approve/reject with a note, also on the booking screen |
 | Settings, Help | `/settings`, `/help` | **Placeholder** — never scoped |
-| Admin console | `/admin/resources` | **Placeholder** — shell only (phase 2). Route, `adminGuard` and a TenantAdmin-only nav item exist; the list lands in phase 3 |
+| Admin — resource list | `/admin/resources` | Done (phase 3). Search, include-archived, pagination; TenantAdmin only |
+| Admin — resource form | `/admin/resources/new`, `/admin/resources/:id` | Done (phase 3). Create, edit, and archive behind a hard confirmation |
 
 A member can, today, sign in → browse resources → check availability → pick a
 slot → book it (one-off or recurring) → see it on their calendar → open it →
@@ -60,7 +61,7 @@ cancel it, or cancel the whole series.
 |---|---|---|
 | Backend unit | 1073 | |
 | Backend integration | 536 | Needs a real SQL Server — the in-memory provider has no locking and no RLS |
-| Frontend (vitest) | 894 | |
+| Frontend (vitest) | 955 | |
 
 Production build clean. The five named acceptance-criteria tests all pass:
 concurrency (AC-1), isolation (AC-4), DST (AC-3), approval re-check (AC-5),
@@ -120,15 +121,13 @@ Treat a visual pass as required before signing off any screen.
 
 Each of these is a decision with a reason, not an oversight.
 
-- **Resource administration UI** — create, edit, archive, manage availability
-  windows / approvers / blackouts. The backend has supported all of it since
-  WP-3 and the provided designs assume it, but WP-7's task list is member-facing
-  only. Buttons are absent rather than shown disabled. **Now being built** —
-  [`docs/admin-plan.md`](admin-plan.md); phase 1 (`GET /users`) landed
-  2026-09-22 and phase 2 (the admin shell — `/admin`, `adminGuard`, the nav
-  item, the admin rejection dialect) on 2026-09-23. `/admin/resources` is a
-  placeholder until phase 3 puts the real list there; the five management
-  screens are still unbuilt.
+- **Resource administration UI** — **resource create/edit/archive is built**
+  (admin console phase 3, 2026-09-23); availability windows, approvers and
+  blackouts are not, and are phases 4–6 of
+  [`docs/admin-plan.md`](admin-plan.md). The backend has supported all of it
+  since WP-3 and the provided designs assumed it, but every work package's task
+  list was member-facing, so the buttons were left absent rather than shown
+  disabled and flagged each time.
 - **A "My Bookings" list** — cancelled on 2026-09-18. The calendar answers the
   same question, and the source work package never asked for the screen.
 - **Cancelled and rejected bookings on the calendar** — neither holds any time,
@@ -202,18 +201,19 @@ backlog as it stands, in the order it is worth picking up.
 
 1. **The admin console** — tenant admin CRUD for resources, availability
    windows, approvers and blackout periods. **In progress**:
-   [`docs/admin-plan.md`](admin-plan.md), seven phases, of which **phases 1 and
-   2 are done** (2026-09-22 and 2026-09-23). Owner-initiated rather than
+   [`docs/admin-plan.md`](admin-plan.md), seven phases, of which **phases 1–3
+   are done** (2026-09-22 to 2026-09-23). Owner-initiated rather than
    mentor-issued, and the largest thing still missing from the application —
    flagged as a gap since WP-7 Phase 1 (§4). Phase 1 was the one backend
    addition the plan could not avoid: **`GET /users`**, without which approvers
    cannot be assigned from a UI at all, because nothing in the API listed
    users — it answers the decision `0018` eligible set only, not a user
-   directory. Phase 2 put the shell in place: `/admin` behind an `adminGuard`,
-   a nav item for a TenantAdmin only, and the rejection machinery moved to
-   `core/http` so the admin forms reuse it rather than inventing a second
-   error-handling scheme. **Phases 3–6 are the five management screens**, all
-   still unbuilt.
+   directory. Phase 2 put the shell in place; phase 3 built the resource list
+   and the create/edit/archive form. **Phases 4–6 are the three remaining
+   screens** — availability windows, approvers, blackout periods. Worth knowing
+   while they are outstanding: **a resource cannot be made approval-gated
+   through the UI until phase 5**, because FR-3.3 needs approvers first and that
+   screen does not exist yet.
 2. **The design pass** the owner has flagged — the calendar, the booking detail,
    the cancel confirmation, and the approval queue with its decision panel were
    all built without a provided design, to the app's existing card vocabulary.

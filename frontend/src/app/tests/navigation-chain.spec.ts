@@ -392,6 +392,51 @@ describe('navigation chain (WP-7 Phase 7 step 1)', () => {
 
       expect(toAdmin).toBe('/admin/resources');
       expect(router.url).toBe('/admin/resources');
+      flushResourceList();
+    });
+
+    // Phase 3's two seams, each followed from the link the previous screen
+    // rendered. The row title has to lead to the *admin* form — a row that led
+    // to the member-facing detail screen would be a detour on every single use,
+    // and only a rendered-href test notices which one it is.
+    it('walks the console into the create form and into a resource', async () => {
+      harness = await RouterTestingHarness.create('/admin/resources');
+      flushResourceList();
+
+      const toNew = await follow('a[href="/admin/resources/new"]');
+      expect(toNew).toBe('/admin/resources/new');
+      expect(router.url).toBe('/admin/resources/new');
+
+      // Back to the list, then into the row itself.
+      await harness.navigateByUrl('/admin/resources');
+      flushResourceList();
+
+      const toResource = await follow('.row-title-link');
+      expect(toResource).toBe('/admin/resources/r1');
+      flushResource();
+      expect(router.url).toBe('/admin/resources/r1');
+    });
+
+    // **Regression, phase 3.** The admin routes were briefly declared as a
+    // componentless `resources` group nested under `admin`. Angular's default
+    // `paramsInheritanceStrategy` ('emptyOnly') copies a parent's `data` onto
+    // any child with an empty path *or no component*, so that group inherited
+    // `title: 'Admin'` and the breadcrumb read "Admin > Admin > Resources" —
+    // and then crashed the whole shell with NG0955, because the crumb loop
+    // tracked by the crumb's own text and two of them were now identical.
+    //
+    // Both halves are fixed (flat sibling routes; tracking by position), and
+    // this asserts the rendered crumbs rather than the route config, because
+    // the route config is exactly what looked correct.
+    it('renders one Admin crumb, not two', async () => {
+      harness = await RouterTestingHarness.create('/admin/resources');
+      flushResourceList();
+      harness.detectChanges();
+
+      const crumbs = (harness.fixture.nativeElement as HTMLElement).querySelector('.breadcrumb');
+      const text = crumbs?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+
+      expect(text).toBe('Admin > Resources');
     });
 
     // The other half, and the one that matters for a role-gated link: a Member

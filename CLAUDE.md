@@ -931,7 +931,7 @@ approvers, and blackout periods. It is not new scope; it has been flagged as a
 gap in `docs/wp7-plan.md` §7 and `STATE-OF-THE-APP.md` §4 since WP-7 Phase 1,
 with the buttons left absent rather than shown disabled.
 
-Seven phases; **phases 1 and 2 are done**, and phases 3–7 are all frontend. Each
+Seven phases; **phases 1–3 are done**, and phases 4–7 are all frontend. Each
 phase is built in one go rather than split into steps (owner's call,
 2026-09-22). Three things settled before planning:
 
@@ -1030,8 +1030,59 @@ phase builds on:
   `docs/admin-plan.md` §4.2, which is about the replace-the-set child
   collections, where no version reaches the wire at all.
 
-`/admin/resources` renders the placeholder component until phase 3, exactly as
-`/approvals` did from WP-6 until WP-7 Phase 6 replaced it.
+`/admin/resources` rendered the placeholder component until phase 3 replaced it
+with the real list, exactly as `/approvals` did from WP-6 until WP-7 Phase 6.
+
+**Phase 3 — resources: create, edit, archive — Done 2026-09-23.** 955 vitest
+tests (61 new), production build clean, and the whole flow probed against the
+running API. What is true before touching this area:
+
+- **`docs/admin-plan.md` §4.3 is settled, and the answer is structural.** A
+  resource that does not exist cannot have approvers, and approvers are assigned
+  by a *different* endpoint, so `requiresApproval` can only ever be false at
+  creation — `POST /resources` with it true answers **422 `ApproversRequired`**,
+  verified live. The control is rendered **disabled with the reason beside it**
+  rather than hidden, and opens on the edit form once `approvers` is non-empty.
+  **Until phase 5 lands, no resource can be made approval-gated through the UI
+  at all**, and nothing links to the approvers screen because it does not exist
+  yet. A phase boundary, not a gap.
+- **One component serves create and edit** (`AdminResourceFormComponent`). Every
+  field and every refusal is shared; the differences are a heading, a CTA, and
+  two sections that exist only in edit mode. Splitting it would be two copies of
+  the field vocabulary, and the first to drift would be the unwatched one.
+- **Archive lives on the form, never on a list row**, because it cannot be
+  undone and the one thing worth buying is that the admin is looking at the
+  resource when they decide. The confirmation says both things that matter: there
+  is no way back, **and** existing bookings are not cancelled (`Resource.Archive`
+  flips a flag and nothing else). An acknowledgement tick, not type-the-name —
+  nothing is deleted, so type-to-confirm would be disproportionate. The form goes
+  read-only once archived, because `PUT` then answers 422 `ResourceArchived`.
+- **The timezone picker is `Intl.supportedValuesOf('timeZone')`**, since §4.3
+  refuses a resolvable-but-non-canonical id. **That list omits `"UTC"`** — it is
+  a tz database *link*, not a zone — so it is added explicitly, after verifying
+  against the running API that the backend accepts it. `InvalidTimeZone` stays
+  handled: the browser's ICU data and the server's can disagree at the edges.
+- **`GET /resources` has `includeArchived` and nothing that narrows *to*
+  archived**, so the admin list has a toggle and no archived-only view. Filtering
+  a fetched page client-side would leave `totalCount` and the page boundaries
+  describing a different set than the rows under them.
+
+**Two bugs found while building this, both outside phase 3's own code and both
+now covered:**
+
+- **The shell's breadcrumb crashed on a repeated crumb.** `@for` tracked by the
+  crumb's own text, and Angular throws NG0955 on a duplicate track key — which
+  takes the entire shell down, not just the breadcrumb. Now tracked by `$index`,
+  the only honest key for a list of plain strings.
+- **Route `data` inherits further than it looks.** Angular's default
+  `paramsInheritanceStrategy` ('emptyOnly') copies a parent's `data` onto any
+  child with an empty path **or no component**. A componentless `resources`
+  grouping route under `admin` therefore inherited `title: 'Admin'` and the
+  breadcrumb read "Admin > Admin > Resources". **The admin routes are flat
+  siblings for this reason** — `resources`, `resources/new`, `resources/:id`,
+  each with its own component. The member-facing `resources` group has the same
+  shape and escapes it only because its parent carries no title to inherit; keep
+  that in mind before giving any grouping route a title.
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across
