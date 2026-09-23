@@ -1,0 +1,392 @@
+@if (notFound()) {
+  <div class="state-message state-message--error">
+    <p><strong>That resource doesn't exist, or it isn't yours to manage.</strong></p>
+    <a class="secondary-action" routerLink="/admin/resources">Back to resources</a>
+  </div>
+} @else if (loading()) {
+  <p class="state-message">Loading resource…</p>
+} @else if (loadError()) {
+  <div class="state-message state-message--error">
+    <p>Couldn't load this resource.</p>
+    <button type="button" class="retry-button" (click)="retryLoad()">Try again</button>
+  </div>
+} @else if (createdId(); as createdId) {
+  <!--
+    Rendered from the 201 response, not from form state. The screen stays put
+    rather than navigating on its own: the admin has just made something and
+    the next step is theirs to pick — assign approvers and hours to it, or make
+    another one.
+  -->
+  <div class="outcome" role="status" tabindex="-1">
+    <p class="outcome-title"><strong>Resource created.</strong></p>
+    <p class="outcome-detail">
+      It is bookable as soon as it has availability hours. Approval can be required once it has
+      approvers.
+    </p>
+    <div class="outcome-actions">
+      <a class="primary-action" [routerLink]="['/admin/resources', createdId]">Manage this resource</a>
+      <a class="secondary-action" routerLink="/admin/resources">Back to resources</a>
+    </div>
+  </div>
+} @else {
+  <form class="resource-form" (submit)="$event.preventDefault(); submit()">
+    @if (isArchived()) {
+      <!--
+        FR-3.5: an archived resource stays readable and keeps its history, but
+        accepts no further edits. The form renders its values as a record of
+        what the resource is rather than as controls that cannot be saved.
+      -->
+      <p class="archived-banner" role="status">
+        <strong>This resource is archived.</strong> It is preserved with its booking history and can
+        no longer be edited or booked. Archiving cannot be undone.
+      </p>
+    }
+
+    <fieldset class="field-group" [disabled]="isArchived()">
+      <legend class="sr-only">Resource details</legend>
+
+      <label class="field">
+        <span class="field-label">Name</span>
+        <input
+          type="text"
+          class="field-input"
+          [value]="name()"
+          [attr.maxlength]="nameMaxLength"
+          [attr.aria-invalid]="nameError() !== null"
+          [disabled]="submitting()"
+          (input)="onNameInput($event)"
+        />
+        @if (nameError(); as message) {
+          <span class="field-error" role="alert">{{ message }}</span>
+        }
+      </label>
+
+      <label class="field">
+        <span class="field-label">Description <span class="field-optional">(optional)</span></span>
+        <textarea
+          class="field-input"
+          rows="3"
+          [value]="description()"
+          [attr.maxlength]="descriptionMaxLength"
+          [attr.aria-invalid]="descriptionError() !== null"
+          [disabled]="submitting()"
+          (input)="onDescriptionInput($event)"
+        ></textarea>
+        @if (descriptionError(); as message) {
+          <span class="field-error" role="alert">{{ message }}</span>
+        }
+      </label>
+
+      <div class="field-row">
+        <label class="field">
+          <span class="field-label">Type</span>
+          <select class="field-input" [value]="resourceType()" [disabled]="submitting()" (change)="onTypeChange($event)">
+            @for (type of resourceTypes; track type) {
+              <option [value]="type" [selected]="type === resourceType()">{{ typeLabel(type) }}</option>
+            }
+          </select>
+        </label>
+
+        <label class="field">
+          <!--
+            Decision `0005`: units that can be booked at the same time, never
+            seats. The hint is on screen because the word "capacity" reads as
+            seats to almost everyone, and getting it wrong here is how a
+            meeting room ends up accepting eight simultaneous bookings.
+          -->
+          <span class="field-label">Capacity</span>
+          <input
+            type="number"
+            class="field-input"
+            min="1"
+            step="1"
+            [value]="capacity()"
+            [attr.aria-invalid]="capacityError() !== null"
+            [disabled]="submitting()"
+            (input)="onCapacityInput($event)"
+          />
+          <span class="field-hint">How many can be booked at the same time — not how many people fit.</span>
+          @if (capacityError(); as message) {
+            <span class="field-error" role="alert">{{ message }}</span>
+          }
+        </label>
+      </div>
+
+      <label class="field">
+        <span class="field-label">Timezone</span>
+        <select class="field-input" [value]="timeZoneId()" [disabled]="submitting()" (change)="onTimeZoneChange($event)">
+          @for (zone of timeZoneIds; track zone) {
+            <option [value]="zone" [selected]="zone === timeZoneId()">{{ timeZoneLabel(zone) }}</option>
+          }
+        </select>
+        <span class="field-hint">
+          Availability hours are written in this timezone, not in the booker's (decision 0003).
+        </span>
+        @if (timeZoneUnavailable(); as stored) {
+          <!--
+            The stored id is not one this browser's timezone data lists, so the
+            select above cannot represent it. Saying so beats letting the select
+            show its first option while the admin believes they are looking at
+            the resource's real timezone — saving would then move it silently.
+          -->
+          <span class="field-warning" role="alert">
+            This resource is set to <strong>{{ stored }}</strong>, which this browser doesn't
+            recognize. Saving will change it to the timezone selected above.
+          </span>
+        }
+        @if (timeZoneError(); as message) {
+          <span class="field-error" role="alert">{{ message }}</span>
+        }
+      </label>
+
+      <div class="field field--checkbox">
+        <label class="checkbox-line">
+          <input
+            type="checkbox"
+            [checked]="requiresApproval()"
+            [disabled]="submitting()"
+            (change)="onRequiresApprovalChange($event)"
+          />
+          <span>Require approval for every booking</span>
+        </label>
+
+        <!--
+          Always available since decision 0028. It used to be disabled until the
+          resource had approvers, which forced every gated resource through a
+          window in which it existed and was freely bookable — the state that
+          rule was meant to prevent.
+
+          A warning, not a refusal: the resource is properly gated either way,
+          and what an administrator needs to know is who picks the requests up
+          in the meantime.
+        -->
+        @if (gatedWithoutApprovers()) {
+          <span class="field-warning" role="status">
+            No approvers are assigned yet, so requests will go to your organization's
+            administrators until you assign some. Bookings are held as pending in the meantime —
+            nothing is confirmed without a decision.
+            @if (mode === 'edit') {
+              <!--
+                Only on edit: the approvers screen is per-resource, so it needs a
+                resource that exists. Phase 5 added this link — until then the
+                warning deliberately pointed nowhere rather than into a 404.
+              -->
+              <a class="inline-link" [routerLink]="['/admin/resources', resourceIdOrNull(), 'approvers']">
+                Assign approvers
+              </a>
+            }
+          </span>
+        }
+        @if (approvalError(); as message) {
+          <span class="field-error" role="alert">{{ message }}</span>
+        }
+      </div>
+
+      <div class="field-row">
+        <label class="field">
+          <span class="field-label">Shortest booking <span class="field-optional">(optional)</span></span>
+          <input
+            type="number"
+            class="field-input"
+            min="1"
+            step="1"
+            placeholder="No limit"
+            [value]="minDurationMinutes()"
+            [attr.aria-invalid]="minDurationError() !== null"
+            [disabled]="submitting()"
+            (input)="onMinDurationInput($event)"
+          />
+          <span class="field-hint">Minutes.</span>
+          @if (minDurationError(); as message) {
+            <span class="field-error" role="alert">{{ message }}</span>
+          }
+        </label>
+
+        <label class="field">
+          <span class="field-label">Longest booking <span class="field-optional">(optional)</span></span>
+          <input
+            type="number"
+            class="field-input"
+            min="1"
+            step="1"
+            placeholder="No limit"
+            [value]="maxDurationMinutes()"
+            [attr.aria-invalid]="maxDurationError() !== null"
+            [disabled]="submitting()"
+            (input)="onMaxDurationInput($event)"
+          />
+          <span class="field-hint">Minutes.</span>
+          @if (maxDurationError(); as message) {
+            <span class="field-error" role="alert">{{ message }}</span>
+          }
+        </label>
+      </div>
+    </fieldset>
+
+    <!--
+      Every refusal with no control to blame lands here, worded by
+      `resource-rejection.ts` — including the concurrency conflict, which tells
+      the admin to reload rather than save again, because saving again is how
+      the other admin's work gets overwritten.
+    -->
+    @if (rejection(); as rejection) {
+      @if (rejection.formMessage) {
+        <p class="form-error" role="alert">{{ rejection.formMessage }}</p>
+      }
+    }
+
+    @if (saved()) {
+      <p class="form-success" role="status">
+        <strong>Changes saved.</strong>
+      </p>
+    }
+
+    @if (timeZoneChange(); as change) {
+      <!--
+        The one thing an edit does that its own fields do not show. A window is
+        stored as resource-local wall-clock time (decision 0003), so changing
+        the timezone **reinterprets** every window rather than shifting it:
+        09:00–17:00 stays 09:00–17:00 and starts meaning a different instant.
+        Defensible, and surprising enough that the server reports it rather than
+        leaving it to be discovered from a booking that lands hours off.
+      -->
+      <p class="form-notice" role="status">
+        <strong>Timezone changed</strong> from {{ change.previousTimeZoneId }} to
+        {{ change.newTimeZoneId }}.
+        @if (change.reinterpretedAvailabilityWindowCount > 0) {
+          {{ change.reinterpretedAvailabilityWindowCount }} availability
+          {{ change.reinterpretedAvailabilityWindowCount === 1 ? 'window' : 'windows' }} now
+          {{ change.reinterpretedAvailabilityWindowCount === 1 ? 'means' : 'mean' }} the same
+          wall-clock hours in the new timezone — check them if that isn't what you wanted.
+        } @else {
+          This resource has no availability windows, so nothing was reinterpreted.
+        }
+      </p>
+    }
+
+    @if (!isArchived()) {
+      <div class="form-actions">
+        <button type="submit" class="primary-action" [disabled]="!canSubmit()">
+          {{ submitting() ? 'Saving…' : mode === 'create' ? 'Create resource' : 'Save changes' }}
+        </button>
+        <button type="button" class="secondary-action" [disabled]="submitting()" (click)="goToList()">
+          Cancel
+        </button>
+      </div>
+    } @else {
+      <div class="form-actions">
+        <a class="secondary-action" routerLink="/admin/resources">Back to resources</a>
+      </div>
+    }
+  </form>
+
+  @if (mode === 'edit') {
+    <!--
+      Phase 4's screen, reachable only from here. It exists for a resource that
+      exists, so it is deliberately absent on the create form — the outcome
+      panel after creating points at this page instead.
+
+      Offered on an archived resource too: the editor renders read-only there,
+      and an admin looking at what a retired room's hours *were* is a reasonable
+      thing to want.
+    -->
+    <section class="related">
+      <h2 class="related-heading">Opening hours</h2>
+      <p class="related-detail">
+        When members can book this resource, written in its own timezone. A resource with no
+        opening hours cannot be booked at all.
+      </p>
+      <a class="secondary-action" [routerLink]="['/admin/resources', resourceIdOrNull(), 'availability-windows']">
+        Edit opening hours
+      </a>
+    </section>
+
+    <section class="related">
+      <h2 class="related-heading">Approvers</h2>
+      <p class="related-detail">
+        Who decides on booking requests for this resource.
+        @if (approverCount() === 0) {
+          Nobody is assigned, so requests go to your organization's administrators.
+        } @else {
+          {{ approverCount() }} assigned.
+        }
+      </p>
+      <a class="secondary-action" [routerLink]="['/admin/resources', resourceIdOrNull(), 'approvers']">
+        Manage approvers
+      </a>
+    </section>
+
+    <section class="related">
+      <h2 class="related-heading">Blackouts</h2>
+      <p class="related-detail">
+        Periods when this resource is closed. A blackout takes priority over everything —
+        <strong>bookings that overlap one are cancelled</strong>.
+      </p>
+      <a class="secondary-action" [routerLink]="['/admin/resources', resourceIdOrNull(), 'blackout-periods']">
+        Manage blackouts
+      </a>
+    </section>
+  }
+
+  @if (mode === 'edit' && !isArchived()) {
+    <section class="danger-zone">
+      <h2 class="danger-heading">Archive this resource</h2>
+
+      @if (!confirmingArchive()) {
+        <p class="danger-detail">
+          An archived resource stops being bookable and can no longer be edited. It keeps its
+          booking history, and <strong>existing bookings are not cancelled</strong>.
+        </p>
+        <button type="button" class="danger-button" (click)="startConfirmingArchive()">
+          Archive resource
+        </button>
+      } @else {
+        <!--
+          The hard confirmation `docs/admin-plan.md` §3 asked for. Two things it
+          has to say, because they are the two an admin actually worries about:
+          that there is no way back, and what happens to bookings that already
+          exist. The second is the reassuring one, and leaving it out would make
+          this look more destructive than it is.
+
+          An acknowledgement tick rather than typing the resource's name:
+          nothing is deleted here and no booking is cancelled, so type-to-
+          confirm would be friction out of proportion to the act. What the tick
+          buys is that "cannot be undone" was read rather than scrolled past.
+        -->
+        <p class="danger-detail">
+          <strong>Archiving {{ heading() }} cannot be undone.</strong> There is no way to bring a
+          resource back. It will stop accepting new bookings immediately, and it will disappear from
+          the resource list unless "Include archived" is on.
+        </p>
+        <p class="danger-detail">
+          Bookings that already exist are <strong>not</strong> cancelled — they stay on their
+          owners' calendars and run as scheduled.
+        </p>
+
+        <label class="checkbox-line">
+          <input
+            type="checkbox"
+            [checked]="archiveAcknowledged()"
+            [disabled]="archiving()"
+            (change)="onArchiveAcknowledgedChange($event)"
+          />
+          <span>I understand this cannot be undone.</span>
+        </label>
+
+        <div class="danger-actions">
+          <button
+            type="button"
+            class="danger-button"
+            [disabled]="!archiveAcknowledged() || archiving()"
+            (click)="confirmArchive()"
+          >
+            {{ archiving() ? 'Archiving…' : 'Archive it' }}
+          </button>
+          <button type="button" class="secondary-action" [disabled]="archiving()" (click)="cancelConfirmingArchive()">
+            Keep it
+          </button>
+        </div>
+      }
+    </section>
+  }
+}

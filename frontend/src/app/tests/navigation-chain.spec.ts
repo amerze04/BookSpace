@@ -30,15 +30,17 @@ import { buildFakeAccessToken } from '../core/auth/testing/jwt-fixture';
 const ROLE_CLAIM = 'http://schemas.microsoft.com/ws/2008/06/identity/claims/role';
 const API = 'http://localhost:5270';
 
-function seedSession(role: 'Member' | 'Approver'): void {
+const SESSIONS = {
+  Member: { sub: 'u1', email: 'member1@acme.test' },
+  Approver: { sub: 'approver-1', email: 'approver@acme.test' },
+  // Admin console phase 2.
+  TenantAdmin: { sub: 'admin-1', email: 'admin@acme.test' },
+} as const;
+
+function seedSession(role: keyof typeof SESSIONS): void {
   localStorage.setItem(
     'bookspace.accessToken',
-    buildFakeAccessToken({
-      sub: role === 'Approver' ? 'approver-1' : 'u1',
-      email: role === 'Approver' ? 'approver@acme.test' : 'member1@acme.test',
-      orgId: 'org-1',
-      [ROLE_CLAIM]: role,
-    }),
+    buildFakeAccessToken({ ...SESSIONS[role], orgId: 'org-1', [ROLE_CLAIM]: role }),
   );
   localStorage.setItem('bookspace.refreshToken', 'refresh-1');
 }
@@ -365,6 +367,227 @@ describe('navigation chain (WP-7 Phase 7 step 1)', () => {
 
       httpMock.expectOne((r) => r.url === `${API}/bookings`).flush(pageOf([]));
       expect(router.url).toBe('/approvals');
+    });
+  });
+
+  // Admin console phase 2. The console's entry seam, tested the same way as
+  // every other one here: follow the href the shell actually rendered.
+  //
+  // This is the assertion the shell's own spec cannot make. That one reads
+  // `primaryNavItems()`, a signal — which stays green if the nav item exists in
+  // the array but the template never renders it, which is precisely how a
+  // missing `@case` in the icon switch or a mistyped `routerLink` would fail.
+  // WP-7 shipped two bugs of exactly that shape, both found by the owner
+  // clicking rather than by the suite.
+  describe("the administrator's path", () => {
+    beforeEach(() => seedSession('TenantAdmin'));
+
+    // Starts on /settings rather than the calendar deliberately: that route
+    // fetches nothing, so this test is about the nav seam and not about
+    // answering a calendar window request that has no bearing on it.
+    it('renders an Admin link in the shell and follows it into the console', async () => {
+      harness = await RouterTestingHarness.create('/settings');
+
+      const toAdmin = await follow('a[href="/admin/resources"]');
+
+      expect(toAdmin).toBe('/admin/resources');
+      expect(router.url).toBe('/admin/resources');
+      flushResourceList();
+    });
+
+    // Phase 3's two seams, each followed from the link the previous screen
+    // rendered. The row title has to lead to the *admin* form — a row that led
+    // to the member-facing detail screen would be a detour on every single use,
+    // and only a rendered-href test notices which one it is.
+    it('walks the console into the create form and into a resource', async () => {
+      harness = await RouterTestingHarness.create('/admin/resources');
+      flushResourceList();
+
+      const toNew = await follow('a[href="/admin/resources/new"]');
+      expect(toNew).toBe('/admin/resources/new');
+      expect(router.url).toBe('/admin/resources/new');
+
+      // Back to the list, then into the row itself.
+      await harness.navigateByUrl('/admin/resources');
+      flushResourceList();
+
+      const toResource = await follow('.row-title-link');
+      expect(toResource).toBe('/admin/resources/r1');
+      flushResource();
+      expect(router.url).toBe('/admin/resources/r1');
+
+      // Phase 4's editor is reachable only from the resource form, so this is
+      // the only seam it has — and the one a typo in the routerLink array would
+      // break silently, since the route itself resolves either way.
+      const toWindows = await follow('a[href="/admin/resources/r1/availability-windows"]');
+      expect(toWindows).toBe('/admin/resources/r1/availability-windows');
+      flushResource();
+      expect(router.url).toBe('/admin/resources/r1/availability-windows');
+
+      // Back to the resource, then into phase 5's picker. It reads *two*
+      // endpoints, so both have to be answered or the spec leaves one open and
+      // poisons every file after it.
+      await harness.navigateByUrl('/admin/resources/r1');
+      flushResource();
+
+      const toApprovers = await follow('a[href="/admin/resources/r1/approvers"]');
+      expect(toApprovers).toBe('/admin/resources/r1/approvers');
+      flushResource();
+      httpMock
+        .expectOne((r) => r.url === `${API}/users`)
+        .flush(pageOf([], { pageSize: 50 }));
+      expect(router.url).toBe('/admin/resources/r1/approvers');
+
+      // And phase 6, the last of the three per-resource admin screens.
+      await harness.navigateByUrl('/admin/resources/r1');
+      flushResource();
+
+      const toBlackouts = await follow('a[href="/admin/resources/r1/blackout-periods"]');
+      expect(toBlackouts).toBe('/admin/resources/r1/blackout-periods');
+      flushResource();
+      httpMock
+        .expectOne((r) => r.url === `${API}/resources/r1/blackout-periods`)
+        .flush(pageOf([], { pageSize: 100 }));
+      expect(router.url).toBe('/admin/resources/r1/blackout-periods');
+    });
+
+    // **Regression, phase 3.** The admin routes were briefly declared as a
+    // componentless `resources` group nested under `admin`. Angular's default
+    // `paramsInheritanceStrategy` ('emptyOnly') copies a parent's `data` onto
+    // any child with an empty path *or no component*, so that group inherited
+    // `title: 'Admin'` and the breadcrumb read "Admin > Admin > Resources" —
+    // and then crashed the whole shell with NG0955, because the crumb loop
+    // tracked by the crumb's own text and two of them were now identical.
+    //
+    // Both halves are fixed (flat sibling routes; tracking by position), and
+    // this asserts the rendered crumbs rather than the route config, because
+    // the route config is exactly what looked correct.
+    it('renders one Admin crumb, not two', async () => {
+      harness = await RouterTestingHarness.create('/admin/resources');
+      flushResourceList();
+      harness.detectChanges();
+
+      const crumbs = (harness.fixture.nativeElement as HTMLElement).querySelector('.breadcrumb');
+      const text = crumbs?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+
+      expect(text).toBe('Admin > Resources');
+    });
+
+    // The other half, and the one that matters for a role-gated link: a Member
+    // is not merely bounced by the guard, they are never shown the way in.
+    it('renders no Admin link at all for a member', async () => {
+      seedSession('Member');
+      harness = await RouterTestingHarness.create('/settings');
+      harness.detectChanges();
+
+      const shell = harness.fixture.nativeElement as HTMLElement;
+      expect(shell.querySelector('a[href="/admin/resources"]')).toBeNull();
+      expect(shell.querySelector('a[href="/resources"]')).not.toBeNull();
+    });
+
+    // **Admin console phase 7 — the return legs, and this is what found them.**
+    //
+    // All three per-resource editors are reachable *only* from the resource
+    // form, so their way back is the one navigation each of them has. Until
+    // phase 7 every one was a `<button (click)="goToResource()">` — which
+    // works when clicked, cannot be ctrl-clicked or opened in a new tab, and
+    // cannot be *followed* here, because `hrefOf` has nothing to read. The
+    // chain could not be walked back, and nothing in the suite said so: each
+    // editor's own spec asserted the component, and no component's spec is
+    // about where the next screen is.
+    //
+    // They are real anchors now, and this walks the whole loop rather than
+    // each hop in isolation — resource → editor → resource, three times —
+    // because a link that goes back to the *list* instead of the resource
+    // also passes a "does it navigate" test while costing two extra hops on
+    // every single use.
+    it('walks back out of each editor onto the resource, not the list', async () => {
+      harness = await RouterTestingHarness.create('/admin/resources/r1');
+      flushResource();
+
+      const editors: [string, () => void][] = [
+        ['/admin/resources/r1/availability-windows', () => flushResource()],
+        [
+          '/admin/resources/r1/approvers',
+          () => {
+            flushResource();
+            httpMock.expectOne((r) => r.url === `${API}/users`).flush(pageOf([], { pageSize: 50 }));
+          },
+        ],
+        [
+          '/admin/resources/r1/blackout-periods',
+          () => {
+            flushResource();
+            httpMock
+              .expectOne((r) => r.url === `${API}/resources/r1/blackout-periods`)
+              .flush(pageOf([], { pageSize: 100 }));
+          },
+        ],
+      ];
+
+      for (const [href, flushEditor] of editors) {
+        await follow(`a[href="${href}"]`);
+        flushEditor();
+        expect(router.url).toBe(href);
+
+        // The return leg, read off the editor rather than built here. Before
+        // phase 7 this threw — the element existed and was a `<button>`.
+        const back = await follow('a[href="/admin/resources/r1"]');
+        expect(back).toBe('/admin/resources/r1');
+        flushResource();
+        expect(router.url).toBe('/admin/resources/r1');
+      }
+    });
+
+    // Decision `0028`'s loose end, as a seam. A gated resource with no
+    // approvers renders a warning, and phase 5 gave that warning a link — it
+    // deliberately pointed nowhere in phases 3 and 4, because the screen did
+    // not exist yet and WP-7 Phase 6 had already taught this project what
+    // linking into a 404 costs. This asserts the link is there *and* that it
+    // resolves, which is the pair that matters.
+    it('follows the gated-without-approvers warning onto the approvers screen', async () => {
+      harness = await RouterTestingHarness.create('/admin/resources/r1');
+      flushResource('r1', resourceDetail({ requiresApproval: true, approvers: [] }));
+
+      const toApprovers = await follow('.field-warning a.inline-link');
+      expect(toApprovers).toBe('/admin/resources/r1/approvers');
+
+      flushResource('r1', resourceDetail({ requiresApproval: true, approvers: [] }));
+      httpMock.expectOne((r) => r.url === `${API}/users`).flush(pageOf([], { pageSize: 50 }));
+
+      expect(router.url).toBe('/admin/resources/r1/approvers');
+    });
+
+    // The console has one entrance and the guard is on the parent, so a role
+    // that should not be here is bounced from *every* screen in it, not only
+    // the list. An Approver is the interesting case rather than a Member:
+    // they hold a privileged role, have their own nav item, and are the most
+    // likely person to try the URL.
+    it('bounces an approver off every admin screen, not just the entrance', async () => {
+      seedSession('Approver');
+      harness = await RouterTestingHarness.create('/settings');
+
+      for (const url of [
+        '/admin/resources',
+        '/admin/resources/new',
+        '/admin/resources/r1',
+        '/admin/resources/r1/availability-windows',
+        '/admin/resources/r1/approvers',
+        '/admin/resources/r1/blackout-periods',
+      ]) {
+        await harness.navigateByUrl(url);
+
+        // The bounce lands on the calendar, which fetches its window — but
+        // only when it is newly created, so the count is 1 on the first
+        // iteration and 0 on the rest. `match` rather than `expectOne`
+        // because what is asserted here is where the approver ends up, not
+        // how many times the calendar re-instantiates on the way.
+        for (const req of httpMock.match((r) => r.url === `${API}/bookings`)) {
+          req.flush(pageOf([]));
+        }
+
+        expect(router.url).toBe('/calendar');
+      }
     });
   });
 });

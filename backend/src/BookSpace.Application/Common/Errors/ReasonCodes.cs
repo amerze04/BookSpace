@@ -43,10 +43,13 @@ public static class ReasonCodes
     // constrains neither way.
     public const string OverlappingAvailabilityWindow = "OverlappingAvailabilityWindow";
 
-    // ErrorKind.RuleViolation. FR-3.3 reads "marked RequiresApproval, with one
-    // or more assigned approvers", so RequiresApproval with an empty approver
-    // list is not a valid resting state.
-    public const string ApproversRequired = "ApproversRequired";
+    // ApproversRequired was here and was **deleted 2026-09-23 (decision 0028)**.
+    // FR-3.3 read "marked RequiresApproval, with one or more assigned approvers",
+    // and that invariant is gone: a resource may require approval with an empty
+    // approver list, with its requests falling to the tenant admins. Nothing can
+    // throw the code any more, and this catalogue describes what the API can
+    // actually return (docs/decisions/0016) — the same reason ApprovalRequired
+    // was deleted in WP-4 Phase 1a rather than left as a reserved word.
 
     // ErrorKind.RuleViolation. The assigned user is in another tenant or lacks
     // the Approver role. Not NotFound: within the tenant the user genuinely

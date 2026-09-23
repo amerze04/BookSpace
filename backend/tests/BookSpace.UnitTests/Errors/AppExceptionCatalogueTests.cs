@@ -31,7 +31,6 @@ public class AppExceptionCatalogueTests
         [typeof(ResourceNotFoundException)] = (ReasonCodes.ResourceNotFound, ErrorKind.NotFound),
         [typeof(ResourceArchivedException)] = (ReasonCodes.ResourceArchived, ErrorKind.RuleViolation),
         [typeof(InvalidTimeZoneIdException)] = (ReasonCodes.InvalidTimeZone, ErrorKind.Validation),
-        [typeof(ApproversRequiredException)] = (ReasonCodes.ApproversRequired, ErrorKind.RuleViolation),
         [typeof(CapacityBelowExistingBookingsException)] =
             (ReasonCodes.CapacityBelowExistingBookings, ErrorKind.RuleViolation),
         [typeof(OverlappingAvailabilityWindowException)] =

@@ -4,7 +4,13 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { firstValueFrom } from 'rxjs';
 import { ResourcesService } from '../services/resources.service';
 import { PagedResult } from '../../../core/http/paged-result';
-import { ResourceDetail, ResourceSummary } from '../models/resources.models';
+import {
+  CreateResourceRequest,
+  ResourceDetail,
+  ResourceSummary,
+  UpdateResourceRequest,
+} from '../models/resources.models';
+import { SKIP_ERROR_TOAST } from '../../../core/http/skip-error-toast';
 
 const API = 'http://localhost:5270';
 
@@ -114,5 +120,89 @@ describe('ResourcesService', () => {
     req.flush(detail);
 
     expect(await resultPromise).toEqual(detail);
+  });
+
+  // ---- Writes (admin console phase 3) ----
+
+  it('creates through POST /resources and skips the global toast', async () => {
+    const request: CreateResourceRequest = {
+      name: '3D Printer',
+      description: null,
+      resourceType: 'Equipment',
+      capacity: 2,
+      timeZoneId: 'UTC',
+      requiresApproval: false,
+      minDurationMinutes: null,
+      maxDurationMinutes: null,
+    };
+
+    const resultPromise = firstValueFrom(service.create(request));
+
+    const req = httpMock.expectOne(`${API}/resources`);
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toEqual(request);
+    // The admin form renders every one of these failures inline, worded by
+    // `resource-rejection.ts`, so a generic toast on top would be noise over
+    // the one explanation that actually helps.
+    expect(req.request.context.get(SKIP_ERROR_TOAST)).toBe(true);
+
+    req.flush({ ...request, id: 'new-1', isArchived: false, createdAtUtc: 'x', updatedAtUtc: 'x' });
+
+    expect((await resultPromise).id).toBe('new-1');
+  });
+
+  // **PUT, not PATCH.** The body is a full representation and an omitted
+  // nullable field means cleared (decision `0015`), so the request has to carry
+  // every mutable field even when only one of them changed.
+  it('updates through PUT /resources/{id} with the whole representation', async () => {
+    const request: UpdateResourceRequest = {
+      name: 'Conference Room A',
+      description: 'Main conference room',
+      resourceType: 'Room',
+      capacity: 1,
+      timeZoneId: 'Europe/Warsaw',
+      requiresApproval: false,
+      minDurationMinutes: 30,
+      maxDurationMinutes: 240,
+    };
+
+    const resultPromise = firstValueFrom(service.update('r1', request));
+
+    const req = httpMock.expectOne(`${API}/resources/r1`);
+    expect(req.request.method).toBe('PUT');
+    expect(req.request.body).toEqual(request);
+    expect(req.request.context.get(SKIP_ERROR_TOAST)).toBe(true);
+
+    req.flush({ ...request, id: 'r1', isArchived: false, createdAtUtc: 'x', updatedAtUtc: 'y', timeZoneChange: null });
+
+    expect((await resultPromise).timeZoneChange).toBeNull();
+  });
+
+  // **POST to the transition, never DELETE /resources/{id}.** Nothing in this
+  // system is deleted (CLAUDE.md §4.5), and a DELETE that silently meant
+  // "archive, irreversibly" would invite a client to assume the row was gone.
+  it('archives through POST /resources/{id}/archive, not DELETE', async () => {
+    const resultPromise = firstValueFrom(service.archive('r1'));
+
+    const req = httpMock.expectOne(`${API}/resources/r1/archive`);
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toEqual({});
+
+    req.flush({
+      id: 'r1',
+      name: 'Conference Room A',
+      description: null,
+      resourceType: 'Room',
+      capacity: 1,
+      timeZoneId: 'UTC',
+      requiresApproval: false,
+      minDurationMinutes: null,
+      maxDurationMinutes: null,
+      isArchived: true,
+      createdAtUtc: 'x',
+      updatedAtUtc: 'y',
+    });
+
+    expect((await resultPromise).isArchived).toBe(true);
   });
 });

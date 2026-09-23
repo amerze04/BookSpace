@@ -29,6 +29,12 @@ public class CreateBookingCommandRequestHandlerTests
     private static readonly Guid ActorId = Guid.NewGuid();
     private static readonly Guid ApproverId = Guid.NewGuid();
 
+    // Decision 0028's fallback recipients — the tenant's admins, who can decide
+    // on any resource in the tenant (BookingApprovalReach) and are therefore who
+    // an approval request falls to when no approvers are assigned.
+    private static readonly Guid AdminOne = Guid.NewGuid();
+    private static readonly Guid AdminTwo = Guid.NewGuid();
+
     // A Thursday, comfortably ahead of the clock below.
     private static DateTime At(int hour, int minute = 0) =>
         new(2027, 3, 11, hour, minute, 0, DateTimeKind.Utc);
@@ -41,7 +47,8 @@ public class CreateBookingCommandRequestHandlerTests
         int? minDurationMinutes = null,
         int? maxDurationMinutes = null,
         bool archived = false,
-        bool open = true)
+        bool open = true,
+        bool withApprovers = true)
     {
         var resource = new Resource(
             Guid.NewGuid(), OrgId, "Conference Room A", ResourceType.Room, capacity,
@@ -62,7 +69,15 @@ public class CreateBookingCommandRequestHandlerTests
 
         if (requiresApproval)
         {
-            resource.ReplaceApprovers([ApproverId], ActorId, NowUtc);
+            // withApprovers: false builds decision 0028's new state — gated with
+            // an empty approver list, which FR-3.3 used to forbid and which is
+            // now what a resource looks like between being created gated and
+            // having its approvers assigned.
+            if (withApprovers)
+            {
+                resource.ReplaceApprovers([ApproverId], ActorId, NowUtc);
+            }
+
             resource.SetRequiresApproval(true, ActorId, NowUtc);
         }
 
@@ -88,7 +103,8 @@ public class CreateBookingCommandRequestHandlerTests
         IReadOnlyList<UtcInterval>? blackouts = null,
         IReadOnlyList<BookedQuantity>? bookings = null,
         Guid? currentUserId = null,
-        BookingStatus? actualStatusOverride = null)
+        BookingStatus? actualStatusOverride = null,
+        FakeUserRepository? users = null)
     {
         var availability = new FakeAvailabilityRepository(resource, blackouts, bookings);
         var bookingRepository = new FakeBookingRepository(
@@ -98,6 +114,7 @@ public class CreateBookingCommandRequestHandlerTests
         var handler = new CreateBookingCommandRequestHandler(
             availability,
             bookingRepository,
+            users ?? new FakeUserRepository(),
             new FakeTimeZoneCatalog("UTC"),
             unitOfWork,
             new FixedCurrentUser(currentUserId ?? ActorId),
@@ -320,6 +337,54 @@ public class CreateBookingCommandRequestHandlerTests
         Assert.Equal(NotificationKind.ApprovalRequested, notification.Kind);
         Assert.Equal(ApproverId, notification.RecipientUserId);
         Assert.DoesNotContain(harness.Bookings.AddedNotifications, n => n.RecipientUserId == ActorId);
+    }
+
+    // **Decision 0028's load-bearing consequence.** A gated resource may now
+    // have no approvers, and this used to be impossible — NotificationsFor read
+    // resource.ApproverUserIds directly, on the written assumption that the list
+    // could never be empty. Left alone it would have built no notification at
+    // all, and FR-9.3's stale-approval job would then have expired a request no
+    // human was ever told about.
+    //
+    // The tenant's admins are the fallback because they are exactly who
+    // BookingApprovalReach says can decide on any resource in the tenant.
+    [Fact]
+    public async Task EnqueuesAnApprovalRequestForTheTenantAdminsWhenNoApproversAreAssigned()
+    {
+        var resource = Room(requiresApproval: true, withApprovers: false);
+        var users = new FakeUserRepository();
+        users.TenantAdminUserIds.AddRange([AdminOne, AdminTwo]);
+
+        var harness = Build(resource, users: users);
+
+        var response = await harness.Handler.Handle(Request(resource), default);
+
+        Assert.Equal(BookingStatus.Pending, response.Status);
+        Assert.Equal(2, harness.Bookings.AddedNotifications.Count);
+        Assert.All(
+            harness.Bookings.AddedNotifications,
+            n => Assert.Equal(NotificationKind.ApprovalRequested, n.Kind));
+        Assert.Equal(
+            new[] { AdminOne, AdminTwo }.OrderBy(id => id),
+            harness.Bookings.AddedNotifications.Select(n => n.RecipientUserId).OrderBy(id => id));
+    }
+
+    // The fallback is a fallback, not an addition: an assigned approver list
+    // wins outright, so turning 0028 on does not start copying every approval
+    // request to every administrator in the tenant.
+    [Fact]
+    public async Task DoesNotNotifyTenantAdminsWhenApproversAreAssigned()
+    {
+        var resource = Room(requiresApproval: true);
+        var users = new FakeUserRepository();
+        users.TenantAdminUserIds.AddRange([AdminOne, AdminTwo]);
+
+        var harness = Build(resource, users: users);
+
+        await harness.Handler.Handle(Request(resource), default);
+
+        var notification = Assert.Single(harness.Bookings.AddedNotifications);
+        Assert.Equal(ApproverId, notification.RecipientUserId);
     }
 
     // ---- Rejections the handler decides ------------------------------------
@@ -571,6 +636,7 @@ public class CreateBookingCommandRequestHandlerTests
         var handler = new CreateBookingCommandRequestHandler(
             availability,
             new FakeBookingRepository(),
+            new FakeUserRepository(),
             new FakeTimeZoneCatalog("UTC"),
             new PassThroughUnitOfWork(),
             new FixedCurrentUser(null),

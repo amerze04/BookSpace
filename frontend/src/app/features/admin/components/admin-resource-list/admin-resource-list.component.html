@@ -1,0 +1,106 @@
+<div class="admin-resource-list">
+  <div class="list-header">
+    <p class="intro">Create and manage the resources your organization publishes.</p>
+
+    <a class="primary-action" routerLink="/admin/resources/new">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+      </svg>
+      New resource
+    </a>
+  </div>
+
+  <div class="filter-bar">
+    <input
+      type="search"
+      class="search-input"
+      placeholder="Search resources…"
+      aria-label="Search resources by name"
+      [value]="searchText()"
+      (input)="onSearchInput($event)"
+    />
+
+    <!--
+      Maps straight onto GET /resources' own `includeArchived` parameter. There
+      is deliberately no "archived only" option: the endpoint cannot answer it,
+      and narrowing a fetched page client-side would leave the page count and
+      total describing a different set than the rows below them.
+    -->
+    <label class="checkbox-field">
+      <input type="checkbox" [checked]="includeArchived()" (change)="onIncludeArchivedChange($event)" />
+      Include archived
+    </label>
+  </div>
+
+  @if (loading()) {
+    <p class="state-message">Loading resources…</p>
+  } @else if (loadError()) {
+    <div class="state-message state-message--error">
+      <p>Couldn't load resources.</p>
+      <button type="button" class="retry-button" (click)="retry()">Try again</button>
+    </div>
+  } @else if (items().length === 0) {
+    <div class="state-message">
+      @if (searchText().trim()) {
+        <p>No resources match “{{ searchText().trim() }}”.</p>
+      } @else {
+        <p>No resources yet. Create the first one to make it bookable.</p>
+      }
+    </div>
+  } @else {
+    <ul class="resource-rows">
+      @for (resource of items(); track resource.id) {
+        <li class="resource-row" [class.resource-row--archived]="resource.isArchived">
+          <span class="row-icon">
+            <app-resource-type-icon [type]="resource.resourceType" />
+          </span>
+
+          <div class="row-main">
+            <!--
+              The title is the link, and it goes to the admin edit form rather
+              than the member-facing detail screen: this list exists to change
+              things, and a row that led somewhere read-only would be a detour
+              on every single use.
+            -->
+            <a class="row-title-link" [routerLink]="['/admin/resources', resource.id]">
+              <h3>{{ resource.name }}</h3>
+            </a>
+
+            <div class="row-meta">
+              <span>{{ typeLabel(resource.resourceType) }}</span>
+              <span class="meta-dot" aria-hidden="true">·</span>
+              <span>{{ capacityLabel(resource) }}</span>
+              <span class="meta-dot" aria-hidden="true">·</span>
+              <span class="timezone">{{ resource.timeZoneId }}</span>
+            </div>
+          </div>
+
+          <div class="row-badges">
+            @if (resource.requiresApproval) {
+              <span class="badge badge--approval">Approval required</span>
+            }
+            @if (resource.isArchived) {
+              <span class="badge badge--archived">Archived</span>
+            }
+          </div>
+
+          <a class="row-action" [routerLink]="['/admin/resources', resource.id]">
+            {{ resource.isArchived ? 'View' : 'Edit' }}
+          </a>
+        </li>
+      }
+    </ul>
+
+    @if (totalPages() > 1) {
+      <nav class="pagination" aria-label="Resource list pages">
+        <button type="button" class="pagination-button" [disabled]="!hasPreviousPage()" (click)="goToPreviousPage()">
+          Previous
+        </button>
+        <span class="pagination-status">Page {{ page() }} of {{ totalPages() }} ({{ totalCount() }} resources)</span>
+        <button type="button" class="pagination-button" [disabled]="!hasNextPage()" (click)="goToNextPage()">
+          Next
+        </button>
+      </nav>
+    }
+  }
+</div>

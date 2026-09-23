@@ -1,5 +1,5 @@
 import { Routes } from '@angular/router';
-import { approverGuard, authGuard, guestOnlyGuard } from './core/auth/auth.guard';
+import { adminGuard, approverGuard, authGuard, guestOnlyGuard } from './core/auth/auth.guard';
 
 export const routes: Routes = [
   {
@@ -109,6 +109,109 @@ export const routes: Routes = [
           import('./features/approvals/components/approval-queue/approval-queue.component').then(
             (m) => m.ApprovalQueueComponent,
           ),
+      },
+      {
+        // Admin console phase 2 (docs/admin-plan.md). The tenant administration
+        // screens live on their own route tree rather than as an "admin mode"
+        // on /resources, which was the phase-2 call the plan left open (§7).
+        //
+        // Three reasons, in order of weight. The two lists answer different
+        // questions — /resources is "find something to book" and hides archived
+        // rows by design (FR-3.5), while this one is "manage the catalogue" and
+        // has to show them. WP-7's booking detail screen is the cautionary tale
+        // for the alternative: one screen serving two audiences needed
+        // `viewerIsOwner` threaded through every string, and shipped telling an
+        // approver "the time is not held for *you* yet" about someone else's
+        // request. And a separate tree means adminGuard protects the whole
+        // console once, instead of every button re-deciding who may see it.
+        //
+        // The guard is on the parent, so it covers every child added in phases
+        // 3-6 without each remembering to ask for it.
+        path: 'admin',
+        data: { title: 'Admin' },
+        canActivate: [adminGuard],
+        children: [
+          // **Flat siblings, not a nested `resources` group**, and that is a
+          // correctness constraint rather than a style choice. Angular's
+          // default `paramsInheritanceStrategy` ('emptyOnly') copies a parent's
+          // `data` onto any child that has an empty path *or no component* — so
+          // a componentless `resources` grouping route would inherit this
+          // parent's `title: 'Admin'` and the breadcrumb walk would read
+          // "Admin > Admin > Resources". The member-facing `resources` group
+          // gets away with the same shape only because its parent carries no
+          // title to inherit. Every route below loads a component, so none of
+          // them inherits anything.
+          {
+            // Phase 3: the placeholder this route carried since phase 2 is now
+            // the real admin resource list.
+            path: 'resources',
+            data: { title: 'Resources' },
+            loadComponent: () =>
+              import('./features/admin/components/admin-resource-list/admin-resource-list.component').then(
+                (m) => m.AdminResourceListComponent,
+              ),
+          },
+          {
+            // **Before `resources/:id`, and the order is load-bearing**: the
+            // router matches in declaration order, so the parameterised route
+            // declared first would swallow `/admin/resources/new` and try to
+            // load a resource whose id is the string "new".
+            path: 'resources/new',
+            data: { title: 'New resource' },
+            loadComponent: () =>
+              import('./features/admin/components/admin-resource-form/admin-resource-form.component').then(
+                (m) => m.AdminResourceFormComponent,
+              ),
+          },
+          {
+            // The same component as `resources/new`. Its mode comes from
+            // whether this `:id` is present — see the component for why one
+            // form serves both.
+            //
+            // 'Resource' is only the fallback crumb: the form replaces it with
+            // the resource's own name through BreadcrumbService once it has
+            // loaded, the way the member-facing detail screen does.
+            path: 'resources/:id',
+            data: { title: 'Resource' },
+            loadComponent: () =>
+              import('./features/admin/components/admin-resource-form/admin-resource-form.component').then(
+                (m) => m.AdminResourceFormComponent,
+              ),
+          },
+          {
+            // Phase 4. A sibling of `resources/:id` rather than a child, mirroring
+            // how the member-facing availability screen sits beside the resource
+            // detail — so the crumb chain ends in "Availability" and the resource's
+            // own name is *inserted* before it rather than replacing it.
+            path: 'resources/:id/availability-windows',
+            data: { title: 'Availability' },
+            loadComponent: () =>
+              import(
+                './features/admin/components/admin-availability-windows/admin-availability-windows.component'
+              ).then((m) => m.AdminAvailabilityWindowsComponent),
+          },
+          {
+            // Phase 5. A sibling of `resources/:id` for the same reason the
+            // schedule is — the crumb chain ends in "Approvers" and the
+            // resource's name is inserted before it.
+            path: 'resources/:id/approvers',
+            data: { title: 'Approvers' },
+            loadComponent: () =>
+              import('./features/admin/components/admin-approvers/admin-approvers.component').then(
+                (m) => m.AdminApproversComponent,
+              ),
+          },
+          {
+            // Phase 6, the last screen. Same sibling shape as the two above.
+            path: 'resources/:id/blackout-periods',
+            data: { title: 'Blackouts' },
+            loadComponent: () =>
+              import('./features/admin/components/admin-blackouts/admin-blackouts.component').then(
+                (m) => m.AdminBlackoutsComponent,
+              ),
+          },
+          { path: '', pathMatch: 'full', redirectTo: 'resources' },
+        ],
       },
       {
         path: 'settings',

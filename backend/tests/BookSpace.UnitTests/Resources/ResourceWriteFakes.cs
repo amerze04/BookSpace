@@ -2,6 +2,7 @@ using BookSpace.Application.Abstractions;
 using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.Resources.GetResource;
 using BookSpace.Application.Features.Resources.ListResources;
+using BookSpace.Application.Features.Users.ListUsers;
 using BookSpace.Domain.Availability;
 using BookSpace.Domain.Entities;
 using BookSpace.Domain.Enums;
@@ -176,6 +177,15 @@ internal sealed class FakeUserRepository : IUserRepository
             candidateUserIds.Where(_eligible.Contains).ToList());
     }
 
+    // Decision 0028: who an ApprovalRequested notification falls back to when
+    // a gated resource has no approvers. Settable so a test can say "this tenant
+    // has these admins" without a database; empty by default, which is the
+    // least-privileged answer and matches this file's other defaults.
+    public List<Guid> TenantAdminUserIds { get; } = new();
+
+    public Task<IReadOnlyCollection<Guid>> FindTenantAdminUserIdsAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyCollection<Guid>>(TenantAdminUserIds.ToList());
+
     public Task<IReadOnlyList<ApproverSummary>> FindApproverSummariesAsync(
         IReadOnlyCollection<Guid> userIds,
         CancellationToken cancellationToken) =>
@@ -184,4 +194,17 @@ internal sealed class FakeUserRepository : IUserRepository
                 .Select(id => new ApproverSummary(id, _names[id]))
                 .OrderBy(a => a.FullName, StringComparer.Ordinal)
                 .ToList());
+
+    // GET /users' read, deliberately unimplemented here. Nothing in this file's
+    // tests lists users, and a hand-written paging/search/sort fake would be a
+    // second implementation of decision `0018`'s eligibility rule — the exact
+    // duplication UserRepository states the predicate once to avoid. The real
+    // one is exercised where it can be: against SQL Server, in
+    // UserReadEndpointTests.
+    public Task<PagedResult<ListUsersQueryResponse>> ListEligibleApproversAsync(
+        ListUsersQueryRequest query,
+        SortOption? sort,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException(
+            "FakeUserRepository does not list users; see UserReadEndpointTests.");
 }

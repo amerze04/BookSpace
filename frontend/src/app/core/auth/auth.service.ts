@@ -60,6 +60,23 @@ export class AuthService {
     return roles.includes('Approver') || roles.includes('TenantAdmin');
   });
 
+  // Admin console phase 2. Who the tenant administration screens are for.
+  //
+  // **`TenantAdmin` only — SysAdmin is deliberately excluded**, and it is worth
+  // knowing why, because the backend's own `AuthorizationPolicies.TenantAdmin`
+  // *does* admit SysAdmin by role and it would be easy to mirror that here.
+  // Every admin endpoint also carries the `TenantMember` policy, which requires
+  // the `orgId` claim — and a SysAdmin has no organization at all
+  // (decisions/0009, PRD §2: the platform operator must never see tenant
+  // content in routine operation). So a SysAdmin admitted here would be shown a
+  // console on which every single request answers 403. Matching the *effective*
+  // permission rather than the role name is what keeps the UI honest.
+  //
+  // Like canApproveBookings, this is a UI convenience only — which nav items
+  // and routes are reachable. The backend enforces the real rule independently
+  // on every request, so nothing here can grant anything.
+  readonly isTenantAdmin = computed(() => (this.claimsSignal()?.roles ?? []).includes('TenantAdmin'));
+
   // Bumped by clearSession(). A refresh that was already in flight when the
   // session ended (logout, or a terminal refresh failure) captures the
   // generation at its own start and checks it again before ever writing a

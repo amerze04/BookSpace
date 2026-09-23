@@ -101,27 +101,25 @@ public class ReplaceApproversCommandRequestHandlerTests
         Assert.False(users.EligibilityWasQueried);
     }
 
-    // The other half of the invariant Phase 2 built. Without this an admin could
-    // set RequiresApproval with an approver assigned, then empty the list here,
-    // and land in exactly the state FR-3.3 rules out.
+    // **Reversed by decision 0028.** Emptying the list on a gated resource used
+    // to be refused, which meant the only way to remove the last approver was to
+    // un-gate the resource first — turning a staffing change into a window where
+    // anyone could book it unapproved. The resource now stays gated and its
+    // requests fall back to the tenant's admins.
     [Fact]
-    public async Task Handle_EmptyList_OnAResourceThatRequiresApproval_ThrowsApproversRequired()
+    public async Task Handle_EmptyList_OnAResourceThatRequiresApproval_ClearsAndStaysGated()
     {
         var resource = ExistingResource(requiresApproval: true);
         resource.AddApprover(EligibleOne, ActorId, CreatedUtc);
         var repository = new FakeResourceRepository(resource);
 
-        var exception = await Assert.ThrowsAsync<ApproversRequiredException>(() =>
-            Handler(repository, EligibleUsers()).Handle(
-                new ReplaceApproversCommandRequest(resource.Id, Array.Empty<Guid>()),
-                CancellationToken.None));
+        await Handler(repository, EligibleUsers()).Handle(
+            new ReplaceApproversCommandRequest(resource.Id, Array.Empty<Guid>()),
+            CancellationToken.None);
 
-        Assert.Equal(ReasonCodes.ApproversRequired, exception.ReasonCode);
-        Assert.Equal(ErrorKind.RuleViolation, exception.Kind);
-
-        // And the existing approver survived — rule checks run before any mutator.
-        Assert.Equal(new[] { EligibleOne }, resource.ApproverUserIds);
-        Assert.Equal(0, repository.SaveChangesCount);
+        Assert.Empty(resource.ApproverUserIds);
+        Assert.True(resource.RequiresApproval);
+        Assert.Equal(1, repository.SaveChangesCount);
     }
 
     [Fact]

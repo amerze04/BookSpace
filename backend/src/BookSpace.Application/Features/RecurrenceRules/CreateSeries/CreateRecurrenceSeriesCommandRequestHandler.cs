@@ -30,6 +30,7 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
 {
     private readonly IAvailabilityRepository _availability;
     private readonly IBookingRepository _bookings;
+    private readonly IUserRepository _users;
     private readonly IRecurrenceRuleRepository _recurrenceRules;
     private readonly ITimeZoneCatalog _timeZones;
     private readonly IUnitOfWork _unitOfWork;
@@ -39,6 +40,7 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
     public CreateRecurrenceSeriesCommandRequestHandler(
         IAvailabilityRepository availability,
         IBookingRepository bookings,
+        IUserRepository users,
         IRecurrenceRuleRepository recurrenceRules,
         ITimeZoneCatalog timeZones,
         IUnitOfWork unitOfWork,
@@ -47,6 +49,7 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
     {
         _availability = availability;
         _bookings = bookings;
+        _users = users;
         _recurrenceRules = recurrenceRules;
         _timeZones = timeZones;
         _unitOfWork = unitOfWork;
@@ -135,6 +138,15 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
         // configured expiry still has to apply. The cost is one extra cheap
         // read on a series that turns out fully Confirmed.
         var expiryHours = await _bookings.FindApprovalExpiryHoursAsync(resource.OrgId, cancellationToken);
+
+        // Decision 0028's fallback recipients, resolved **once for the whole
+        // series** rather than per occurrence: the approver list belongs to the
+        // resource, not to the occurrence, so it cannot differ between them. A
+        // two-year weekly series is 104 occurrences, and a query inside that
+        // loop would be 104 round trips for one unchanging answer.
+        var approvalRecipients = resource.ApproverUserIds.Count > 0
+            ? resource.ApproverUserIds
+            : await _users.FindTenantAdminUserIdsAsync(cancellationToken);
 
         // One snapshot read across the whole series' span, not one per
         // occurrence — safe because occurrences of *one* rule never overlap
@@ -244,7 +256,7 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
                 }
 
                 var (bookingId, reasonCode) = await CreateOccurrenceAsync(
-                    resource, rule.Id, userId, occurrence.OccurrenceDate, interval, request.Quantity, request.Title,
+                    resource, approvalRecipients, rule.Id, userId, occurrence.OccurrenceDate, interval, request.Quantity, request.Title,
                     status, expiryHours, nowUtc, cancellationToken);
 
                 reports.Add(bookingId is { } id
@@ -520,6 +532,7 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
     // ActualStatus actually names is staged into the DbContext.
     private async Task<(Guid? BookingId, string? ReasonCode)> CreateOccurrenceAsync(
         Resource resource,
+        IReadOnlyCollection<Guid> approvalRecipients,
         Guid recurrenceRuleId,
         Guid userId,
         DateOnly occurrenceDate,
@@ -543,8 +556,8 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
             nowUtc,
             expiryHours is null ? null : nowUtc.AddHours(expiryHours.Value));
 
-        var confirmedNotifications = NotificationsFor(resource, bookingId, userId, BookingStatus.Confirmed, nowUtc);
-        var pendingNotifications = NotificationsFor(resource, bookingId, userId, BookingStatus.Pending, nowUtc);
+        var confirmedNotifications = NotificationsFor(approvalRecipients, bookingId, userId, BookingStatus.Confirmed, nowUtc);
+        var pendingNotifications = NotificationsFor(approvalRecipients, bookingId, userId, BookingStatus.Pending, nowUtc);
 
         return await _unitOfWork.ExecuteAsync(
             async token =>
@@ -610,7 +623,7 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
     // not sharing its own instant rules: two call sites and no third in
     // sight.
     private static IReadOnlyList<Notification> NotificationsFor(
-        Resource resource, Guid bookingId, Guid userId, BookingStatus status, DateTime nowUtc)
+        IReadOnlyCollection<Guid> approvalRecipients, Guid bookingId, Guid userId, BookingStatus status, DateTime nowUtc)
     {
         if (status == BookingStatus.Confirmed)
         {
@@ -621,9 +634,12 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
             ];
         }
 
-        return resource.ApproverUserIds
-            .Select(approverId => Notification.ForBooking(
-                Guid.NewGuid(), bookingId, approverId, NotificationKind.ApprovalRequested, nowUtc, userId, nowUtc))
+        // Decision 0028: the recipients are the approvers when there are any,
+        // and the tenant admins when there are not. See the equivalent in
+        // CreateBookingCommandRequestHandler for why the list can now be empty.
+        return approvalRecipients
+            .Select(recipientId => Notification.ForBooking(
+                Guid.NewGuid(), bookingId, recipientId, NotificationKind.ApprovalRequested, nowUtc, userId, nowUtc))
             .ToList();
     }
 

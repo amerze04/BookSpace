@@ -318,7 +318,6 @@ public class ResourceAcceptanceTests
     [Theory]
     [InlineData("ResourceNotFound", HttpStatusCode.NotFound)]
     [InlineData("InvalidTimeZone", HttpStatusCode.BadRequest)]
-    [InlineData("ApproversRequired", HttpStatusCode.UnprocessableEntity)]
     [InlineData("ResourceArchived", HttpStatusCode.UnprocessableEntity)]
     [InlineData("OverlappingAvailabilityWindow", HttpStatusCode.Conflict)]
     [InlineData("ApproverNotEligible", HttpStatusCode.UnprocessableEntity)]
@@ -417,18 +416,6 @@ public class ResourceAcceptanceTests
                         capacity = 1,
                         timeZoneId = "Eastern Standard Time",
                         requiresApproval = false,
-                    }),
-                    Guid.Empty);
-
-            case "ApproversRequired":
-                return (
-                    await client.PostAsJsonAsync("/resources", new
-                    {
-                        name = "Needs Approval",
-                        resourceType = "Room",
-                        capacity = 1,
-                        timeZoneId = "America/New_York",
-                        requiresApproval = true,
                     }),
                     Guid.Empty);
 

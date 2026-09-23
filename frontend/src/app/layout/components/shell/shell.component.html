@@ -35,6 +35,25 @@
                   />
                 </svg>
               }
+              @case ('admin') {
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M12 3.5 19 6.5v5c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9v-5Z"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linejoin="round"
+                  />
+                  <path
+                    d="M9.2 12.2 11 14l3.8-4"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              }
             }
           </span>
           {{ item.label }}
@@ -84,7 +103,16 @@
       <div class="page-heading">
         <h1>{{ title() }}</h1>
         <p class="breadcrumb">
-          @for (crumb of breadcrumb(); track crumb; let last = $last) {
+          <!--
+            **Tracked by position, not by the crumb's own text.** A breadcrumb
+            is a list of plain strings with no identity of their own, and two
+            levels can legitimately read the same — which is not a rendering
+            preference but a crash: Angular throws NG0955 on a duplicate track
+            key and the whole shell fails to render. Found in admin console
+            phase 3, when route-data inheritance briefly produced
+            "Admin > Admin > Resources".
+          -->
+          @for (crumb of breadcrumb(); track $index; let last = $last) {
             {{ crumb }}
             @if (!last) {
               <span class="separator">&gt;</span>

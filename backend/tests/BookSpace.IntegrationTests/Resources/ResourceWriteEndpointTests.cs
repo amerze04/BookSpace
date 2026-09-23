@@ -351,19 +351,39 @@ public class ResourceWriteEndpointTests
         await AssertReasonCodeAsync(response, "InvalidTimeZone");
     }
 
-    // ErrorKind.RuleViolation, so 422: the request was well-formed and a rule
-    // refused it (FR-3.3). Approver assignment is Phase 3, so there is no way to
-    // supply one here — which is exactly why creating in this state is refused
-    // rather than allowed "temporarily".
+    // **Reversed by decision 0028.** This asserted 422 ApproversRequired until
+    // 2026-09-23: FR-3.3 refused a resource created already requiring approval,
+    // because approvers are assigned through a second endpoint and a brand-new
+    // resource has none.
+    //
+    // The rule's effect was the opposite of its intent. It forced every gated
+    // resource through a window in which it existed, was published, and was
+    // freely bookable — the exact state it was meant to prevent, reached by the
+    // only route it left open. A gated resource is now gated from creation, and
+    // its requests fall to the tenant's admins until approvers are assigned.
     [Fact]
-    public async Task Create_WithRequiresApprovalAndNoApprovers_Returns422ApproversRequired()
+    public async Task Create_WithRequiresApprovalAndNoApprovers_IsAllowed()
     {
         var client = await AuthenticatedClientAsync(AcmeAdmin);
+        var created = await PostAndReadAsync(
+            client, ValidPayload(name: "Gated From Birth", requiresApproval: true));
 
-        var response = await client.PostAsJsonAsync("/resources", ValidPayload(requiresApproval: true));
+        try
+        {
+            Assert.True(created.RequiresApproval);
 
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
-        await AssertReasonCodeAsync(response, "ApproversRequired");
+            // And it reads back gated with nobody assigned — the state the old
+            // rule existed to make unreachable.
+            var detail = await client.GetFromJsonAsync<GetResourceQueryResponse>(
+                $"/resources/{created.Id}", TestJson.Options);
+
+            Assert.True(detail!.RequiresApproval);
+            Assert.Empty(detail.Approvers);
+        }
+        finally
+        {
+            await DeleteResourceAsync(created.Id);
+        }
     }
 
     // ---- PUT ----

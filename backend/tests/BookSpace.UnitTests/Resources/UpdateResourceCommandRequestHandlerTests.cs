@@ -124,22 +124,25 @@ public class UpdateResourceCommandRequestHandlerTests
         Assert.Equal(0, repository.SaveChangesCount);
     }
 
+    // **Reversed by decision 0028.** Turning the flag on with an empty approver
+    // list used to be ApproversRequired; it is now the ordinary way to gate a
+    // resource, with the tenant's admins deciding its requests until approvers
+    // are assigned.
     [Fact]
-    public async Task Handle_RequiresApprovalWithNoApprovers_ThrowsApproversRequired()
+    public async Task Handle_RequiresApprovalWithNoApprovers_IsAllowed()
     {
         var resource = ExistingResource();
         var repository = new FakeResourceRepository(resource);
 
-        var exception = await Assert.ThrowsAsync<ApproversRequiredException>(() =>
-            Handler(repository).Handle(
-                Command(resource.Id, requiresApproval: true), CancellationToken.None));
+        var response = await Handler(repository).Handle(
+            Command(resource.Id, requiresApproval: true), CancellationToken.None);
 
-        Assert.Equal(ReasonCodes.ApproversRequired, exception.ReasonCode);
-        Assert.False(resource.RequiresApproval);
+        Assert.True(response.RequiresApproval);
+        Assert.True(resource.RequiresApproval);
+        Assert.Equal(1, repository.SaveChangesCount);
     }
 
-    // The same edit succeeds once an approver exists — which is what makes the
-    // flag reachable at all before Phase 3 adds the assignment endpoint.
+    // And it still succeeds with an approver, which is the unremarkable case.
     [Fact]
     public async Task Handle_RequiresApprovalWithAnApprover_Succeeds()
     {

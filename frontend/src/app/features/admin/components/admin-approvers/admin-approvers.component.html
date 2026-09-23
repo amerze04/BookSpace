@@ -1,0 +1,156 @@
+@if (notFound()) {
+  <div class="state-message state-message--error">
+    <p><strong>That resource doesn't exist, or it isn't yours to manage.</strong></p>
+    <a class="secondary-action" routerLink="/admin/resources">Back to resources</a>
+  </div>
+} @else if (loading()) {
+  <p class="state-message">Loading approvers…</p>
+} @else if (loadError()) {
+  <div class="state-message state-message--error">
+    <p>Couldn't load this resource's approvers.</p>
+    <button type="button" class="retry-button" (click)="retryLoad()">Try again</button>
+  </div>
+} @else {
+  <!--
+    Decision 0018: the list below is the eligible set — active people in this
+    organization holding an approving role — and nothing else can be assigned.
+    The picker offers only these because a refusal cannot say *why* somebody is
+    ineligible, so offering someone who would be refused is a dead end.
+  -->
+  <p class="intro">
+    Approvers decide on booking requests for this resource. Only active people with an approving
+    role can be assigned, so this list is everyone available.
+  </p>
+
+  @if (isArchived()) {
+    <p class="archived-banner" role="status">
+      <strong>This resource is archived.</strong> Its approvers can no longer be changed.
+    </p>
+  }
+
+  @if (stranded().length > 0) {
+    <!--
+      Somebody assigned here is no longer in the eligible set — deactivated, or
+      their approving role was removed. They still show on the resource because
+      the read does not filter by eligibility, but the server will not accept
+      their id back, so saving necessarily removes them.
+
+      Said out loud rather than handled quietly: a picker that simply omitted
+      them would drop an approver on the next save without ever asking.
+    -->
+    <div class="stranded" role="status">
+      <p class="stranded-title"><strong>No longer able to approve</strong></p>
+      <ul class="stranded-list">
+        @for (person of stranded(); track person.userId) {
+          <li>{{ person.fullName }}</li>
+        }
+      </ul>
+      <p class="stranded-detail">
+        They are still assigned, but can no longer approve — their account or role has changed
+        since they were added. Saving will remove them.
+      </p>
+    </div>
+  }
+
+  <div class="picker-header">
+    <input
+      type="search"
+      class="search-input"
+      placeholder="Search by name or email…"
+      aria-label="Search people by name or email"
+      [value]="searchText()"
+      [disabled]="saving()"
+      (input)="onSearchInput($event)"
+    />
+    <span class="selected-count">
+      {{ selectedCount() }} selected
+    </span>
+  </div>
+
+  @if (searchingUsers()) {
+    <p class="state-message">Searching…</p>
+  } @else if (options().length === 0) {
+    <div class="state-message">
+      @if (searchText().trim()) {
+        <p>Nobody available matches “{{ searchText().trim() }}”.</p>
+      } @else {
+        <!--
+          An empty eligible set is a real state: a tenant whose only accounts are
+          Members. The fix is not on this screen, so the message says where it is
+          rather than implying this page can do something about it.
+        -->
+        <p>
+          Nobody in this organization can approve bookings yet. Someone needs the Approver or
+          Administrator role before they can be assigned here.
+        </p>
+      }
+    </div>
+  } @else {
+    <ul class="people" role="group" aria-label="People who can approve">
+      @for (person of options(); track person.userId) {
+        <li class="person" [class.person--selected]="person.selected">
+          <label class="person-label">
+            <input
+              type="checkbox"
+              [checked]="person.selected"
+              [disabled]="saving() || isArchived()"
+              (change)="toggle(person.userId)"
+            />
+            <span class="person-text">
+              <span class="person-name">{{ person.fullName }}</span>
+              <span class="person-meta">{{ person.email }} · {{ roleLabel(person.roles) }}</span>
+            </span>
+          </label>
+        </li>
+      }
+    </ul>
+  }
+
+  @if (gatedWithNobody()) {
+    <!--
+      Decision 0028's state, reached deliberately from this screen. The resource
+      stays gated; what changes is who picks the requests up.
+    -->
+    <p class="notice" role="status">
+      This resource requires approval and would have nobody assigned. Requests will go to your
+      organization's administrators until you assign someone — bookings are still held as pending,
+      so nothing is confirmed without a decision.
+    </p>
+  }
+
+  @if (rejection(); as rejection) {
+    @if (rejection.formMessage) {
+      <p class="form-error" role="alert">{{ rejection.formMessage }}</p>
+    }
+  }
+
+  @if (saved()) {
+    <p class="form-success" role="status"><strong>Approvers saved.</strong></p>
+  }
+
+  @if (!isArchived()) {
+    <div class="form-actions">
+      <button type="button" class="primary-action" [disabled]="!canSave()" (click)="save()">
+        {{ saving() ? 'Saving…' : 'Save approvers' }}
+      </button>
+      <!--
+        A real link rather than a click handler — see the identical note in the
+        availability-windows editor. Disabled-button shape only while saving,
+        because leaving mid-save means never learning whether it landed.
+      -->
+      @if (saving()) {
+        <button type="button" class="secondary-action" disabled>Back to resource</button>
+      } @else {
+        <a class="secondary-action" [routerLink]="['/admin/resources', resourceId]">Back to resource</a>
+      }
+      @if (!dirty()) {
+        <span class="actions-hint">No changes to save.</span>
+      }
+    </div>
+  } @else {
+    <div class="form-actions">
+      <!-- Archived: read-only, but the resource itself is still there. Phase 7. -->
+      <a class="secondary-action" [routerLink]="['/admin/resources', resourceId]">Back to resource</a>
+    </div>
+  }
+}

@@ -17,12 +17,15 @@ import { buildFakeAccessToken } from '../core/auth/testing/jwt-fixture';
 const ROLE_CLAIM = 'http://schemas.microsoft.com/ws/2008/06/identity/claims/role';
 const API = 'http://localhost:5270';
 
-function seedSession(expUnixSeconds?: number): void {
+// `roles` gained a parameter in admin console phase 2 (it was always 'Member')
+// so the /admin route tree can be driven from both sides. Defaulted, so every
+// pre-existing caller means exactly what it used to.
+function seedSession(expUnixSeconds?: number, roles: string | string[] = 'Member'): void {
   const token = buildFakeAccessToken({
     sub: 'u1',
     email: 'a@acme.test',
     orgId: 'org-1',
-    [ROLE_CLAIM]: 'Member',
+    [ROLE_CLAIM]: roles,
     ...(expUnixSeconds !== undefined ? { exp: expUnixSeconds } : {}),
   });
   localStorage.setItem('bookspace.accessToken', token);
@@ -151,9 +154,91 @@ describe('shell route guarding (canActivateChild)', () => {
     flushCalendarWindow();
   });
 
+  // ---- /admin (admin console phase 2) ----
+
+  // The guard sits on the `admin` parent, not on each child, so every screen
+  // phases 3-6 add is covered without remembering to ask. This drives the real
+  // route config to prove that placement actually protects a *child* path —
+  // which a guard on the children alone would also do, and a guard on the
+  // parent alone would not if canActivate were the wrong hook.
+  it('keeps a Member out of an /admin child route', async () => {
+    seedSession();
+    const harness = await RouterTestingHarness.create('/settings');
+
+    await harness.navigateByUrl('/admin/resources');
+
+    expect(router.url).toBe('/calendar');
+    flushCalendarWindow();
+  });
+
+  // An Approver reaches /approvals and must not reach /admin. The two guards
+  // are genuinely different rules, and this is the navigation that tells them
+  // apart.
+  it('keeps an Approver out of /admin, even though /approvals admits them', async () => {
+    seedSession(undefined, 'Approver');
+    const harness = await RouterTestingHarness.create('/settings');
+
+    await harness.navigateByUrl('/admin/resources');
+
+    expect(router.url).toBe('/calendar');
+    flushCalendarWindow();
+  });
+
+  it('lets a TenantAdmin into /admin/resources', async () => {
+    seedSession(undefined, 'TenantAdmin');
+    const harness = await RouterTestingHarness.create('/settings');
+
+    await harness.navigateByUrl('/admin/resources');
+
+    expect(router.url).toBe('/admin/resources');
+    flushAdminResourceList();
+  });
+
+  // /admin itself is a redirect, so a typed or bookmarked bare /admin lands
+  // somewhere real rather than on an empty outlet.
+  it('redirects a bare /admin to the resources list', async () => {
+    seedSession(undefined, 'TenantAdmin');
+    const harness = await RouterTestingHarness.create('/settings');
+
+    await harness.navigateByUrl('/admin');
+
+    expect(router.url).toBe('/admin/resources');
+    flushAdminResourceList();
+  });
+
+  // The redirect must not become a way around the guard: a Member asking for
+  // the parent is refused before the child is ever resolved.
+  it('refuses a Member at the bare /admin redirect too', async () => {
+    seedSession();
+    const harness = await RouterTestingHarness.create('/settings');
+
+    await harness.navigateByUrl('/admin');
+
+    expect(router.url).toBe('/calendar');
+    flushCalendarWindow();
+  });
+
   // The calendar fetches its visible window as soon as it renders; these tests
   // are about routing, so the response is answered and discarded rather than
   // asserted on (calendar.component.spec.ts owns what the request looks like).
+  // The admin resource list fetches its first page as soon as it renders, the
+  // same way the calendar does. These tests are about routing, so the response
+  // is answered and discarded — leaving it open fails verify() and, worse,
+  // corrupts the shared TestBed for every spec file after this one.
+  function flushAdminResourceList(): void {
+    httpMock
+      .expectOne((r) => r.url === `${API}/resources`)
+      .flush({
+        items: [],
+        page: 1,
+        pageSize: 50,
+        totalCount: 0,
+        totalPages: 0,
+        hasPreviousPage: false,
+        hasNextPage: false,
+      });
+  }
+
   function flushCalendarWindow(): void {
     httpMock
       .expectOne((r) => r.url === `${API}/bookings`)

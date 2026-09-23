@@ -41,3 +41,21 @@ export const approverGuard: CanActivateFn = () => {
   // hop, so the resulting URL is the one the visitor actually ends up on.
   return auth.canApproveBookings() ? true : router.createUrlTree(['/calendar']);
 };
+
+// Admin console phase 2. The same job approverGuard does, for /admin: typing
+// the URL directly is still a route, and this is what stops a Member or an
+// Approver reaching the tenant administration screens that way.
+//
+// UI-only enforcement, exactly as above — every admin endpoint independently
+// refuses anyone but a TenantAdmin (WP-3's acceptance criterion, "non-admins
+// cannot create or edit resources"), guard or not. What this actually buys is
+// that nobody is shown a console whose every request would come back 403.
+//
+// It deliberately does **not** admit a SysAdmin, even though the backend's
+// TenantAdmin policy does by role — see AuthService.isTenantAdmin for why.
+export const adminGuard: CanActivateFn = () => {
+  const auth = inject(AuthService);
+  const router = inject(Router);
+
+  return auth.isTenantAdmin() ? true : router.createUrlTree(['/calendar']);
+};

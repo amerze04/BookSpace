@@ -101,14 +101,16 @@ public class Resource : IAuditable, ITenantOwned
     // contract-and-pagination.md), so a write handler calls several of these
     // in sequence against one loaded aggregate.
     //
-    // Two rules FR-3.1/FR-3.5 do impose are deliberately NOT enforced here:
-    // an archived resource refusing edits (ReasonCodes.ResourceArchived) and
-    // RequiresApproval needing at least one approver
-    // (ReasonCodes.ApproversRequired). Both have to reach the client as a
-    // machine-readable reason code (FR-4.5), which only an AppException from
-    // the Application layer carries — a domain throw would surface as a 500.
-    // They are tier-4 rules under CLAUDE.md §6, and Phase 2's write handlers
-    // own them.
+    // One rule FR-3.5 does impose is deliberately NOT enforced here: an
+    // archived resource refusing edits (ReasonCodes.ResourceArchived). It has to
+    // reach the client as a machine-readable reason code (FR-4.5), which only an
+    // AppException from the Application layer carries — a domain throw would
+    // surface as a 500. It is a tier-4 rule under CLAUDE.md §6, and the write
+    // handlers own it.
+    //
+    // "RequiresApproval needs at least one approver" used to sit alongside it
+    // and is gone entirely — decision 0028. The entity was already free to hold
+    // that state; now so is the system.
 
     public void UpdateDetails(
         string name,
@@ -209,8 +211,10 @@ public class Resource : IAuditable, ITenantOwned
         return MaxDurationMinutes is not { } maximum || duration <= TimeSpan.FromMinutes(maximum);
     }
 
-    // FR-3.3. Setting this true with an empty approver list is refused by the
-    // Application layer (ApproversRequired), not here — see the note above.
+    // FR-3.3. Setting this true with an empty approver list is allowed, here
+    // and everywhere else, since decision 0028: the resource is gated and its
+    // approval requests fall back to the tenant's admins until approvers are
+    // assigned.
     public void SetRequiresApproval(bool requiresApproval, Guid actorUserId, DateTime nowUtc)
     {
         RequiresApproval = requiresApproval;
@@ -235,11 +239,9 @@ public class Resource : IAuditable, ITenantOwned
     // oversized pageSize: quietly accepting a payload and storing something else
     // is the behaviour being avoided.
     //
-    // An empty set is refused by the Application layer when the resource requires
-    // approval (ReasonCodes.ApproversRequired), not here — the entity can hold
-    // that state transiently while a handler is mid-edit, and a domain throw
-    // reaches the client as a 500 with no reason code. Whether each id is even
-    // eligible is likewise not knowable here: it is a query over Users.
+    // An empty set is a legitimate request, on a gated resource as much as any
+    // other (decision 0028). Whether each id is even eligible is not knowable
+    // here: it is a query over Users, so the Application layer owns it.
     public void ReplaceApprovers(IEnumerable<Guid> userIds, Guid actorUserId, DateTime nowUtc)
     {
         var replacement = userIds.Distinct().Select(id => new ApproverAssignment(id)).ToList();
@@ -278,7 +280,7 @@ public class Resource : IAuditable, ITenantOwned
     // has to reach the client as ReasonCodes.OverlappingAvailabilityWindow, and
     // a domain throw arrives as a 500 carrying no code at all (see the note
     // above the edit methods). AvailabilityWindowRules owns it, exactly as the
-    // Application layer owns ApproversRequired.
+    // Application layer owns approver eligibility.
     public IReadOnlyCollection<AvailabilityWindow> ReplaceAvailabilityWindows(
         IEnumerable<AvailabilityWindowDefinition> windows,
         Guid actorUserId,

@@ -399,6 +399,7 @@ added, add its one-liner to both places.
 25. [`0025`](docs/decisions/0025-recurrence-rule-tenant-scoping.md) — `RecurrenceRules` gets its own `OrgId` and all three §4.2 mechanisms (a gap found building WP-5 Phase 2).
 26. [`0026`](docs/decisions/0026-notifications-series-anchor.md) — `CK_Notifications_HasContext` now also accepts `RecurrenceRuleId` alone, for the whole-series-cancel notification.
 27. [`0027`](docs/decisions/0027-approver-booking-detail-reach.md) — an Approver may read a booking by id when it is **their own or** on a resource they gate; the union, not the list's intersection.
+28. [`0028`](docs/decisions/0028-approval-gating-without-approvers.md) — a resource may require approval with **no approvers assigned**; FR-3.3's implies-approvers invariant is removed, `ApproversRequired` is deleted, and the request falls back to the tenant's admins.
 
 If a task needs a decision that isn't listed above and isn't in this log,
 **stop and ask** rather than picking silently.
@@ -916,6 +917,357 @@ What is true before touching this area:
   package's bug history — ten deliberate wrong turns get as much space as the
   happy path — and it found a real bug on its first walk. Re-walk it after any
   change to the booking or approval flows.
+
+### Admin console — tenant administration UI — **Done** (2026-09-23)
+Plan: [`docs/admin-plan.md`](docs/admin-plan.md). Click-through script:
+[`docs/admin-clickthrough.md`](docs/admin-clickthrough.md). **Owner-initiated, not a
+mentor work package** — the same standing as the hardening pass below and the
+resource-list-filters entry, and deliberately *not* numbered as a WP, because
+§12's rule is that this roadmap mirrors the packages the mentor issues rather
+than an invented build order.
+
+Raised by the owner after WP-7 closed: the remaining work packages barely touch
+the frontend, and **tenant admin CRUD is the largest thing still missing from
+the application** — resource create/edit/archive, availability windows,
+approvers, and blackout periods. It is not new scope; it has been flagged as a
+gap in `docs/wp7-plan.md` §7 and `STATE-OF-THE-APP.md` §4 since WP-7 Phase 1,
+with the buttons left absent rather than shown disabled.
+
+**All seven phases are done, and the owner walked
+[`docs/admin-clickthrough.md`](docs/admin-clickthrough.md) end to end on
+2026-09-23 — paths A to E, everything passing, no defects reported.** That walk
+is what closes this, not the suite and not the API probes; the claim is that an
+administrator can run their tenant without being misled, and no amount of
+request/response evidence converts into it (the same rule WP-7 applied to its
+first acceptance criterion). Each phase was built in one go rather than split
+into steps (owner's call, 2026-09-22). Three things settled before planning:
+
+- **Scope is resources, windows, approvers and blackouts** — what the backend
+  already supports. **User management is out**: inviting, deactivating and
+  assigning roles have no backend at all. `UsersController` exists since phase 1
+  but is a single eligibility-filtered read — it is not the start of a user
+  directory, and nothing should treat it as one.
+- **The one backend addition, `GET /users`, is built** (phase 1, 2026-09-22).
+  `PUT /resources/{id}/approvers` takes user ids and nothing in the API listed
+  users, so an admin could see who was assigned and could not discover who they
+  could assign. Tenant-scoped, TenantAdmin-only, paged, filtered to decision
+  `0018`'s eligible set. See the "Phase 1" paragraph below before using it — the
+  route is deliberately broader than the answer.
+- **Archive stays irreversible and the UI exposes it anyway**, behind a hard
+  confirmation. There is no unarchive and `ResourcesController` argues in writing
+  against adding one.
+
+Two things worth knowing before touching this area, both audited 2026-09-22
+rather than assumed:
+
+- **The API forces two different interaction models.** Availability windows and
+  approvers are `PUT` replace-the-set; blackout periods are per-row CRUD with a
+  real hard delete (decision `0019`). Making the three screens look alike would
+  misrepresent one of them.
+- **Replace-the-set has no concurrency protection on the wire.** `Resources` has
+  a `RowVersion` (decision `0023`'s amendment) but **no Resources DTO carries
+  it**, so two admins editing one resource's windows silently last-write-wins.
+  Tolerable for a small admin team; closing it is a backend change.
+
+**Phase 1 — `GET /users` — Done 2026-09-22.** 1073 unit + 536 integration tests
+(25 new), plus a live probe of the running API. What is true before using it:
+
+- **The route is broader than the answer, deliberately.** `GET /users` returns
+  the decision `0018` eligible-approver set — own-tenant, active, `Approver` or
+  `TenantAdmin` — not the tenant's users, and there is no parameter that widens
+  it. A Member is absent by design, not by a bug. Said so in
+  `ListUsersQueryRequest`'s own header, because a route named `/users` that
+  answers with a subset is exactly the thing someone later reads as broken.
+- **The eligibility rule now lives in SQL, and had to.** It used to run in memory
+  in `UserRepository.FindEligibleApproverIdsAsync`, deliberately, to avoid an
+  `EF.Property` expression over the private `_roleAssignments` backing field.
+  That trade does not survive paging: filtering after `OFFSET`/`FETCH` pages over
+  the wrong set and returns a `TotalCount` counting people the write path would
+  refuse. It is now one `Expression<Func<User, bool>>` used by **both** repository
+  methods — two copies could disagree, and the disagreement would show up as an
+  admin being offered somebody `ReplaceApprovers` then rejects, with `0018`
+  collapsing every reason into `ApproverNotEligible` so no screen can say why.
+- **`UsersController` stacks both policies**, unlike `ResourcesController` where
+  the class-level policy is the weaker one so a forgotten attribute can only
+  narrow a write. There is no member-facing read here to be weaker for, and
+  `TenantAdmin` alone admits SysAdmin by role — who carries no `orgId` claim, so
+  the tenant filter would answer them `200` with an empty page. `TenantMember`
+  alongside it turns that into the 403 it should be. Verified live.
+- **No migration, no new reason code, and no existing contract changed.** The
+  only behavioural change outside the new endpoint is that approver eligibility
+  is evaluated by SQL Server rather than by C# — same rule, same answers, proven
+  by the existing `ApproverEndpointTests` still passing untouched.
+
+**Phase 2 — the admin shell — Done 2026-09-23.** 894 vitest tests (33 new),
+production build clean. Two open questions settled, and three facts every later
+phase builds on:
+
+- **The console is its own route tree at `/admin`, not an "admin mode" on
+  `/resources`.** The two lists answer different questions — the member list is
+  "find something to book" and hides archived rows by design (FR-3.5), the admin
+  one is "manage the catalogue" and must show them. WP-7's booking detail screen
+  is the cautionary tale for the alternative: one screen for two audiences
+  needed `viewerIsOwner` threaded through every string and still shipped telling
+  an approver "the time is not held for *you* yet" about someone else's request.
+  `adminGuard` sits on the `admin` parent, so every screen phases 3–6 add is
+  covered without remembering to ask for it.
+- **The console follows the app's existing card vocabulary rather than waiting
+  for the outstanding design pass**, as the approval queue did. Recorded in
+  `docs/admin-plan.md` §7.
+- **`AuthService.isTenantAdmin` admits `TenantAdmin` and nothing else, and
+  excluding SysAdmin is deliberate.** `AuthorizationPolicies.TenantAdmin` admits
+  them *by role*, so a guard written from the policy name would let them in —
+  onto a console where every request answers 403, because every admin endpoint
+  also requires the `orgId` claim a SysAdmin does not have (decision `0009`,
+  PRD §2). The UI matches the effective permission, not the policy name. Same
+  rule in `adminGuard` and in the nav, each with its own test.
+- **The rejection machinery now lives in `core/http/rejection.ts` and is generic
+  over its field-name type.** It was never booking-specific — it reads a
+  ProblemDetails and maps a reason code onto copy — and the admin forms need it
+  over a different vocabulary of controls. `features/booking/rejection/
+  booking-rejection.ts` keeps the one-off dialect and the booking field union,
+  and re-exports `RejectionDialect`/`RejectionCopy` already bound to that union,
+  so its three sibling dialects are untouched and their specs are the proof the
+  move changed no behaviour. **A new feature's dialect imports from `core/http`
+  and binds its own field union; it does not widen `BookingFieldName`.**
+- **`ConcurrencyConflict` is reachable on `PUT /resources/{id}`** — `Resources`
+  has had a `RowVersion` since the 2026-09-15 hardening pass — and the admin
+  dialect tells the admin to reload rather than re-send, because re-sending is
+  exactly how the other admin's work gets overwritten. This does **not** close
+  `docs/admin-plan.md` §4.2, which is about the replace-the-set child
+  collections, where no version reaches the wire at all.
+
+`/admin/resources` rendered the placeholder component until phase 3 replaced it
+with the real list, exactly as `/approvals` did from WP-6 until WP-7 Phase 6.
+
+**Phase 3 — resources: create, edit, archive — Done 2026-09-23.** 955 vitest
+tests (61 new), production build clean, and the whole flow probed against the
+running API. What is true before touching this area:
+
+- **`docs/admin-plan.md` §4.3 is settled, and the answer is structural.** A
+  resource that does not exist cannot have approvers, and approvers are assigned
+  by a *different* endpoint, so `requiresApproval` can only ever be false at
+  creation — `POST /resources` with it true answers **422 `ApproversRequired`**,
+  verified live. The control is rendered **disabled with the reason beside it**
+  rather than hidden, and opens on the edit form once `approvers` is non-empty.
+  **Until phase 5 lands, no resource can be made approval-gated through the UI
+  at all**, and nothing links to the approvers screen because it does not exist
+  yet. A phase boundary, not a gap.
+- **One component serves create and edit** (`AdminResourceFormComponent`). Every
+  field and every refusal is shared; the differences are a heading, a CTA, and
+  two sections that exist only in edit mode. Splitting it would be two copies of
+  the field vocabulary, and the first to drift would be the unwatched one.
+- **Archive lives on the form, never on a list row**, because it cannot be
+  undone and the one thing worth buying is that the admin is looking at the
+  resource when they decide. The confirmation says both things that matter: there
+  is no way back, **and** existing bookings are not cancelled (`Resource.Archive`
+  flips a flag and nothing else). An acknowledgement tick, not type-the-name —
+  nothing is deleted, so type-to-confirm would be disproportionate. The form goes
+  read-only once archived, because `PUT` then answers 422 `ResourceArchived`.
+- **The timezone picker is `Intl.supportedValuesOf('timeZone')`**, since §4.3
+  refuses a resolvable-but-non-canonical id. **That list omits `"UTC"`** — it is
+  a tz database *link*, not a zone — so it is added explicitly, after verifying
+  against the running API that the backend accepts it. `InvalidTimeZone` stays
+  handled: the browser's ICU data and the server's can disagree at the edges.
+- **`GET /resources` has `includeArchived` and nothing that narrows *to*
+  archived**, so the admin list has a toggle and no archived-only view. Filtering
+  a fetched page client-side would leave `totalCount` and the page boundaries
+  describing a different set than the rows under them.
+
+**Two bugs found while building this, both outside phase 3's own code and both
+now covered:**
+
+- **The shell's breadcrumb crashed on a repeated crumb.** `@for` tracked by the
+  crumb's own text, and Angular throws NG0955 on a duplicate track key — which
+  takes the entire shell down, not just the breadcrumb. Now tracked by `$index`,
+  the only honest key for a list of plain strings.
+- **Route `data` inherits further than it looks.** Angular's default
+  `paramsInheritanceStrategy` ('emptyOnly') copies a parent's `data` onto any
+  child with an empty path **or no component**. A componentless `resources`
+  grouping route under `admin` therefore inherited `title: 'Admin'` and the
+  breadcrumb read "Admin > Admin > Resources". **The admin routes are flat
+  siblings for this reason** — `resources`, `resources/new`, `resources/:id`,
+  each with its own component. The member-facing `resources` group has the same
+  shape and escapes it only because its parent carries no title to inherit; keep
+  that in mind before giving any grouping route a title.
+
+**Decision `0028` — approval gating no longer needs approvers — 2026-09-23.**
+Owner's call, raised while reviewing phase 3, and it reverses an FR-3.3
+invariant this codebase had enforced since WP-3. Full reasoning in
+[`docs/decisions/0028-approval-gating-without-approvers.md`](docs/decisions/0028-approval-gating-without-approvers.md).
+What is true now:
+
+- **A resource may require approval with an empty approver list**, and the
+  create form offers the flag. The old rule produced the state it existed to
+  prevent: the flag and the list are set by different endpoints, so the only
+  route to a gated resource was create-ungated → assign → flip, leaving it
+  published and **freely bookable** throughout.
+- **`ReasonCodes.ApproversRequired` and `ApproversRequiredException` are
+  deleted**, as `ApprovalRequired` was in WP-4 Phase 1a — nothing can throw
+  them, and §6 keeps the catalogue describing what the API can actually return.
+  `ResourceWriteRules.EnsureApproversWhenRequired` is gone with them.
+- **Clearing an approver list on a gated resource is now allowed.** Previously
+  the only way to drop the last approver was to un-gate the resource first,
+  which turned a staffing change into a window where anyone could book it.
+- **`NotificationsFor` no longer reads the approver list directly**, in either
+  creation handler. Both built one `ApprovalRequested` row per approver on the
+  written assumption that the list could never be empty; left alone, a gated
+  resource with no approvers would have created Pending bookings notifying
+  **nobody**, and FR-9.3's expiry job would have decided them unseen. The
+  recipients are the approvers when there are any and
+  `IUserRepository.FindTenantAdminUserIdsAsync` when there are not — mirroring
+  `BookingApprovalReach`, so whoever can decide is who gets told. It is a
+  fallback, not an addition: an assigned list wins outright.
+
+### Phase 4 — Availability windows editor — **Done 2026-09-23**
+`/admin/resources/:id/availability-windows`, reachable only from the resource
+form. FR-3.2, replace-the-set.
+
+- **An "edit everything, save once" form**, because `PUT /resources/{id}/
+  availability-windows` replaces the whole set and an omitted window is a
+  deleted one. Blackout periods (phase 6) are per-row CRUD and will look
+  different on purpose — `docs/admin-plan.md` §4.1.
+- **Decision `0022` is a control, not a value.** `ClosesAt = 23:59:59` means the
+  *following midnight*, so the editor renders it as an "Until midnight" tick and
+  keeps the flag separate from the time — a stored 23:59:59 and a deliberate
+  one-second-to-midnight are indistinguishable on the wire and must not be on
+  screen. The minute arithmetic reads it as 1440, never 1439.
+- **Overlaps are refused client-side before the request goes out**, per row, and
+  the rule is the server's restated exactly — **including that adjacency is not
+  overlap**: `ClosesAt` is exclusive, so 09:00–12:00 and 12:00–17:00 coexist.
+  Verified against the live API, which accepts that pair and answers 409 for a
+  genuine overlap. Being stricter than the API it writes to would be a bug.
+- **The rules live in `windows/window-editor.ts` as pure functions**, the way
+  `recurrence-form.ts` holds the booking form's. The interesting part is
+  arithmetic over times, and arithmetic is worth testing without a TestBed.
+- **Save is disabled until something changes**, compared over the payload shape
+  rather than the rows — a row deleted and re-added identically is not an edit,
+  because the endpoint replaces the set.
+- **An empty schedule is a real, saveable state** ("closed"), not a gap to fill.
+  The backend validator says the same about an empty array: a resource open at
+  no time is one taken out of circulation without archiving it.
+- **`availability-rejection.ts` is the sixth dialect**, and the only one that
+  offers a retry — replace-the-set is idempotent by construction, so sending the
+  same schedule twice is harmless and the copy can say so.
+
+**Phase 5 — approvers editor — Done 2026-09-23.** 1044 vitest tests (37 new),
+production build clean, whole flow probed live. What is true before touching it:
+
+- **The picker only ever offers eligible people, and that is forced rather than
+  polite.** Decision `0018` collapses every ineligibility reason into one code
+  because naming the cause would confirm a cross-tenant id exists (AC-4) — so a
+  picker that let an admin type an id could only ever answer "no" without saying
+  why. `GET /users` (phase 1) finally has the caller it was built for.
+- **`GET /resources/{id}` and `GET /users` do not agree, and the screen has to
+  reconcile them.** `FindApproverSummariesAsync` does **not** filter by
+  `IsActive`, so somebody assigned and later deactivated still comes back on the
+  resource read but *not* from `/users`. A picker built the obvious way — render
+  the eligible, tick the assigned — would never show them and **the next save
+  would silently drop them**; they cannot be kept either, since re-sending the id
+  is refused. They are therefore rendered as a separate "no longer able to
+  approve" group that says saving removes them. `strandedApprovers` has its own
+  tests because it is empty in every healthy tenant and nothing would exercise it
+  by accident.
+- **"Stranded" is only trusted when the picker is showing everyone** — no search
+  term, one page. A searched picker shows a subset, so absence proves nothing.
+- **The selection is held as ids in its own signal**, never as flags on the
+  option objects, which are replaced wholesale on every search. A tick lost
+  because somebody scrolled out of view would be the same silent removal.
+- **Decision `0028`'s loose end is closed**: the resource form's "no approvers
+  assigned" warning now links here. It deliberately pointed nowhere in phases 3
+  and 4, because the screen did not exist.
+- **Test gotcha worth knowing before writing anything against this screen**:
+  the two reads go through `forkJoin`, which **cancels its remaining sources the
+  instant one errors**. A spec that flushes the failing request first leaves the
+  sibling cancelled and unflushable ("Cannot flush a cancelled request"). Answer
+  the succeeding one first.
+
+**Phase 6 — blackout periods — Done 2026-09-23.** 1094 vitest tests (49 new),
+production build clean, the cascade probed end to end against the running API.
+The last screen. What is true before touching it:
+
+- **It is the one genuinely per-row CRUD screen, with the one real hard
+  delete.** Blackouts overlap freely (`0019`), each is an independent fact, and
+  DELETE removes a row. `docs/admin-plan.md` §4.1 is explicit that making it look
+  like the replace-the-set editors would misrepresent all three.
+- **§4.4 is settled, and better than the question assumed.** The *response*
+  already reports exactly what the cascade cancelled
+  (`CancelledBookingSummary`), and `GET /bookings`' `from`/`to` are the identical
+  overlap predicate `FindBookingsToCancelAsync` uses — so an accurate pre-flight
+  preview is obtainable. The screen does **both**: an opt-in preview labelled as
+  decided-at-save-time, and the authoritative record from the response. Only the
+  first would be a promise it cannot keep; only the second means an admin learns
+  what they cancelled afterwards.
+- **An admin types in the resource's timezone, not their own** (decision `0003`).
+  A blackout is an *instant*, unlike an availability window, so
+  `blackouts/blackout-form.ts` owns a two-pass local→UTC inverse correcting
+  against `utcToResourceLocal` — the same technique `availability-grid.ts` uses,
+  generalized to an arbitrary date. Tested on both sides of a real Warsaw DST
+  transition and on the gap/ambiguity cases, which have no unique inverse and
+  must not throw. Both zones are shown in the list.
+- **`BlackoutPeriodElapsed` is about the *end*, not the start**, so a blackout
+  that began this morning and runs through tomorrow is legal — what an admin
+  needs when a room floods. It is a **422**, not the 400 its wording suggests;
+  confirmed against the running API rather than inferred.
+- **Deleting a blackout is not an undo.** `0019`'s cascade is forwards-only, so
+  bookings it cancelled stay cancelled and nobody is notified. The delete
+  confirmation says so, because nothing else on the screen would correct an admin
+  who assumed otherwise.
+- **Nothing on this path offers a retry** — the strictest of the eight dialects.
+  Repeating a create makes a *second* blackout (`0019` allows overlaps, so
+  nothing refuses it) and the first attempt may already have cancelled bookings
+  that never come back.
+
+**Phase 7 — wiring, coverage sweep, click-through — Done 2026-09-23.** 1114
+vitest tests (20 new), production build clean, the console's contract re-probed
+against the running API. No new screens. What is true before touching this area:
+
+- **All three editors' return legs were `<button (click)="goToResource()">` and
+  are real anchors now.** A button works when clicked and fails at everything
+  else: no ctrl-click, no new tab, and **`navigation-chain.spec.ts` cannot
+  follow it**, because that file's whole discipline is reading the `href` the
+  previous screen rendered. Nothing in the suite said so — each editor's spec is
+  about its component, and no component spec is about where the next screen is.
+  The in-flight guard survives as a shape change rather than a class: an anchor
+  cannot be disabled, so while a save is in flight the windows and approvers
+  editors render a disabled `<button>` instead. The **archived** branches now
+  point at the resource too (it exists, read-only); the **not-found** branches
+  still go to the list, because there it genuinely does not.
+- **The coverage sweep enumerated files rather than scanning names**, which is
+  WP-7 Phase 7's lesson, and found two: `rejection/approver-rejection.ts` (the
+  only one of the eight dialects without a spec) and `services/users.service.ts`
+  (the client for the one endpoint this console owns). `core/http/rejection.ts`
+  is deliberately left without one — all nine of its branches are exercised
+  through the eight dialects, including a non-`HttpErrorResponse` input and a
+  4xx whose body is not a ProblemDetails.
+- **`ApproverNotEligible`'s copy is a security property, not a matter of tone**,
+  and now has tests saying so. Decision `0018` collapses all three ineligibility
+  causes into one code precisely so that naming one cannot confirm a cross-tenant
+  id exists (AC-4) — so the message names neither the person nor the reason, and
+  says what is both true and useful instead.
+- **The click-through has been walked, and stays a live artefact**
+  ([`docs/admin-clickthrough.md`](docs/admin-clickthrough.md)), built the same
+  way WP-7's was. Five paths, and path E's deliberate wrong turns are where this
+  project's bugs have actually lived. **The owner walked A to E on 2026-09-23
+  and everything passed** — unlike WP-7's first walk, which found a real bug.
+  That is evidence about this console, not about the method: **re-walk it after
+  any change to the admin flows**, because these screens have exactly the
+  property that produced WP-7's bugs — what determines what you see is not what
+  the assertions are about. Three of its items check behaviour that is
+  **known and accepted rather than correct** — the silent last-write-wins on the
+  replace-the-set editors, the empty "no longer able to approve" group that no
+  UI can produce without a user-management backend, and an archived resource
+  that stays in the list forever — and each says so on the page, so finding them
+  is not mistaken for finding a bug.
+- **The numbers in that script are live, not illustrative** (probed 2026-09-23):
+  `GET /users` answers Acme with exactly two eligible people and no Member;
+  `GET /resources?includeArchived=true` returns six, three archived; an archived
+  `PUT` is 422, a genuine window overlap 409, an elapsed blackout 422; Member and
+  Approver are 403 on `GET /users` and `POST /resources`, anonymous 401. Two
+  rules are already proven *in the seeded data* and the script uses them rather
+  than manufacturing cases: the 3D Printer's adjacent `09:00–12:00` /
+  `12:00–17:00` windows (adjacency is not overlap) and the Audi A5's Monday
+  window closing at `23:59:59` (decision `0022`'s midnight convention).
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across

@@ -47,11 +47,12 @@ public sealed class CreateResourceCommandRequestHandler
 
         ResourceWriteRules.EnsureKnownTimeZone(_timeZones, request.TimeZoneId);
 
-        // A resource being created has no approvers yet, and none can be
-        // supplied here (FR-3.3's assignment endpoint is Phase 3) — so
-        // RequiresApproval = true is refused rather than silently accepted into
-        // the state FR-3.3 rules out. See EnsureApproversWhenRequired.
-        ResourceWriteRules.EnsureApproversWhenRequired(request.RequiresApproval, approverCount: 0);
+        // RequiresApproval is accepted here with no approvers, deliberately —
+        // decision 0028. A resource that is meant to be gated is gated from the
+        // moment it exists, rather than passing through a freely-bookable window
+        // while its approver list is filled in through a second endpoint. A
+        // TenantAdmin can decide on its requests meanwhile (ApprovalReach), and
+        // is who ApprovalRequested notifies until approvers are assigned.
 
         var nowUtc = _clock.UtcNow;
         var resource = new Resource(

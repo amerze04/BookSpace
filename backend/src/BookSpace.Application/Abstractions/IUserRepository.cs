@@ -1,3 +1,6 @@
+using BookSpace.Application.Common.Pagination;
+using BookSpace.Application.Features.Users.ListUsers;
+
 namespace BookSpace.Application.Abstractions;
 
 // Reads over Users for callers that are inside a tenant context — as opposed to
@@ -35,4 +38,36 @@ public interface IUserRepository
     Task<IReadOnlyList<ApproverSummary>> FindApproverSummariesAsync(
         IReadOnlyCollection<Guid> userIds,
         CancellationToken cancellationToken);
+
+    // Admin console phase 1: the same eligible set as a paged list, for the
+    // approvers picker (GET /users). The rule above asked the other way round —
+    // FindEligibleApproverIdsAsync narrows a set of ids the caller already has,
+    // this one produces the set in the first place.
+    //
+    // Deliberately on this interface rather than a new one, because they are one
+    // rule. If the two ever disagreed, an admin would be offered somebody the
+    // write path then refuses, with ApproverNotEligible and no explanation
+    // available (decision `0018` collapses every reason into that one code). The
+    // implementation states the predicate once and both methods use it.
+    Task<PagedResult<ListUsersQueryResponse>> ListEligibleApproversAsync(
+        ListUsersQueryRequest query,
+        SortOption? sort,
+        CancellationToken cancellationToken);
+
+    // The current tenant's active TenantAdmins (decision 0028).
+    //
+    // **Who is told about an approval request on a gated resource that has no
+    // approvers assigned.** Since 0028 removed FR-3.3's implies-approvers
+    // invariant, that state is legal and expected — it is what a resource looks
+    // like between being created gated and having its approver list filled in.
+    // `ApprovalRequested` used to be built one-per-approver on the assumption
+    // that the list could never be empty; without this it would now be built
+    // for nobody, and FR-9.3's stale-approval job would quietly expire requests
+    // no human was ever told about.
+    //
+    // TenantAdmin only, not the wider eligible-approver set: this mirrors
+    // `BookingApprovalReach`, where a TenantAdmin reaches any resource and an
+    // Approver reaches only the ones listing them. Notifying an Approver about a
+    // resource they cannot act on would be worse than notifying nobody.
+    Task<IReadOnlyCollection<Guid>> FindTenantAdminUserIdsAsync(CancellationToken cancellationToken);
 }
