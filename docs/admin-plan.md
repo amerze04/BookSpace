@@ -8,7 +8,7 @@ frontend and this is the largest thing still missing from the application.
 
 ## Status
 
-**In progress.** Phase 1 is done; phases 2–7 below. The owner asked on
+**In progress.** Phases 1 and 2 are done; phases 3–7 below. The owner asked on
 2026-09-22 that each phase be built in one go rather than split into separately
 reviewable steps, on the judgment that they are individually small enough —
 so unlike WP-7, there is no per-phase step breakdown written ahead of the work.
@@ -16,7 +16,7 @@ so unlike WP-7, there is no per-phase step breakdown written ahead of the work.
 | Phase | State |
 |---|---|
 | 1 — `GET /users` (backend only) | **Done 2026-09-22** |
-| 2 — The admin shell | Not started |
+| 2 — The admin shell | **Done 2026-09-23** |
 | 3 — Resources: create, edit, archive | Not started |
 | 4 — Availability windows editor | Not started |
 | 5 — Approvers editor | Not started |
@@ -228,12 +228,64 @@ approvers picker is built against them:
 
 No new reason code, no migration, no change to any existing endpoint's contract.
 
-### Phase 2 — The admin shell
-`isTenantAdmin` on `AuthService` (only `canApproveBookings` exists today), an
-`adminGuard` mirroring `approverGuard`, the admin routes, a nav section that
-appears for a TenantAdmin only, and the admin rejection dialect over
-`booking-rejection.ts`'s machinery. No management screens yet — this is the
-scaffolding, and it is where the role plumbing is proven.
+### Phase 2 — The admin shell — **Done 2026-09-23**
+`isTenantAdmin` on `AuthService`, an `adminGuard` mirroring `approverGuard`, the
+admin routes, a nav item that appears for a TenantAdmin only, and the admin
+rejection dialect. No management screens yet — this was the scaffolding, and it
+is where the role plumbing got proven.
+
+**§7's open question is settled: the console follows the app's existing card
+vocabulary**, as the approval queue did, rather than waiting for a design pass.
+Nothing else in the app is blocked on that pass, and a console built to the
+established vocabulary can be restyled later; a console not built at all cannot.
+
+**The phase-2 call §4.4 left open is settled too: the console is its own route
+tree at `/admin`, not an "admin mode" on `/resources`.** Three reasons, in order
+of weight:
+
+- The two lists answer different questions. `/resources` is "find something to
+  book" and hides archived rows by design (FR-3.5); the admin list is "manage
+  the catalogue" and has to show them.
+- WP-7's booking detail screen is the cautionary tale for the alternative. One
+  screen serving two audiences needed `viewerIsOwner` threaded through every
+  string, and it still shipped telling an approver "the time is not held for
+  *you* yet" about somebody else's request.
+- A separate tree lets `adminGuard` protect the console once, on the parent, so
+  every screen phases 3–6 add is covered without remembering to ask.
+
+Four things are true now that were not, and phases 3–6 are built on them:
+
+- **`isTenantAdmin` admits `TenantAdmin` and nothing else — SysAdmin is
+  deliberately excluded**, even though the backend's own
+  `AuthorizationPolicies.TenantAdmin` admits them by role. Every admin endpoint
+  also carries `TenantMember`, which requires the `orgId` claim a SysAdmin does
+  not have, so a SysAdmin admitted to the console would meet a 403 on every
+  request in it. The UI matches the *effective* permission, not the policy name.
+- **The rejection machinery moved to `core/http/rejection.ts` and became generic
+  over its field-name type.** It was never booking-specific — it reads a
+  ProblemDetails and maps a reason code onto copy — and the admin forms need it
+  over an entirely different vocabulary of controls. `booking-rejection.ts` is
+  now the one-off dialect plus the booking field union, and re-exports
+  `RejectionDialect`/`RejectionCopy` already bound to that union so its three
+  sibling dialects are untouched. Their specs are the proof the move changed no
+  behaviour.
+- **`resource-rejection.ts` is the fifth dialect**, covering all three resource
+  writes (`POST /resources`, `PUT /resources/{id}`,
+  `POST /resources/{id}/archive`) because they share a vocabulary and an
+  audience. Two of its messages carry information no other screen has: that
+  `CapacityBelowExistingBookings` counts Pending requests (decision `0005` — a
+  pending booking reserves its units in full), and that `ApproversRequired` is
+  fixed on a *different* screen, since the flag and the approver list are set by
+  two different endpoints (§4.3).
+- **`ConcurrencyConflict` is reachable on `PUT /resources/{id}`** and is handled.
+  `Resources` has carried a `RowVersion` since the 2026-09-15 hardening pass, so
+  two admins saving the same resource at once is caught rather than silently
+  last-write-wins, and the copy says to reload rather than re-send. This does
+  **not** close §4.2 — that is about the replace-the-set child collections, where
+  no version reaches the wire at all.
+
+`/admin/resources` renders the placeholder component for now, exactly as
+`/approvals` did from WP-6 until WP-7 Phase 6 replaced it. Phase 3 replaces it.
 
 ### Phase 3 — Resources: create, edit, archive
 The create and edit forms, with §4.5's three refusals rendered in place, and
@@ -273,14 +325,18 @@ says that is where the bugs are — and the write-up.
   parameter would need widening. Check during phase 3 rather than assuming.
 - **User management stays out of scope** (§3) and has no backend whatever.
 
-## 7. Screens to design
+## 7. Screens to design — **settled, phase 2**
 
-None of these has a provided design, and the outstanding design pass already
-covers four member-facing screens. Worth deciding early whether this console
-waits for designs or follows the app's existing card vocabulary as the approval
-queue did.
+None of these had a provided design, and the outstanding design pass already
+covers four member-facing screens. **Settled 2026-09-23: this console follows
+the app's existing card vocabulary rather than waiting**, exactly as the
+approval queue did. Nothing else is blocked on that design pass, and a console
+built to the established vocabulary can be restyled later; one not built at all
+cannot. Each screen below is still worth a look whenever the pass happens.
 
-- Admin resource list (or an admin mode on the existing one — a phase-2 call)
+- Admin resource list — **a separate screen at `/admin/resources`**, not a mode
+  on the member-facing one. Settled in phase 2; reasoning in the Phase 2
+  section above.
 - Resource create / edit form
 - Availability windows editor
 - Approvers picker

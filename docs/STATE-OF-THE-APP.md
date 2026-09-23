@@ -46,6 +46,7 @@ today.
 | Booking detail | `/bookings/:id` | Done. Cancel one occurrence or a whole series |
 | Approvals | `/approvals` | Done. Tenant-scoped pending queue, oldest first; approve/reject with a note, also on the booking screen |
 | Settings, Help | `/settings`, `/help` | **Placeholder** — never scoped |
+| Admin console | `/admin/resources` | **Placeholder** — shell only (phase 2). Route, `adminGuard` and a TenantAdmin-only nav item exist; the list lands in phase 3 |
 
 A member can, today, sign in → browse resources → check availability → pick a
 slot → book it (one-off or recurring) → see it on their calendar → open it →
@@ -59,7 +60,7 @@ cancel it, or cancel the whole series.
 |---|---|---|
 | Backend unit | 1073 | |
 | Backend integration | 536 | Needs a real SQL Server — the in-memory provider has no locking and no RLS |
-| Frontend (vitest) | 861 | |
+| Frontend (vitest) | 894 | |
 
 Production build clean. The five named acceptance-criteria tests all pass:
 concurrency (AC-1), isolation (AC-4), DST (AC-3), approval re-check (AC-5),
@@ -124,7 +125,10 @@ Each of these is a decision with a reason, not an oversight.
   WP-3 and the provided designs assume it, but WP-7's task list is member-facing
   only. Buttons are absent rather than shown disabled. **Now being built** —
   [`docs/admin-plan.md`](admin-plan.md); phase 1 (`GET /users`) landed
-  2026-09-22, the six frontend phases have not started.
+  2026-09-22 and phase 2 (the admin shell — `/admin`, `adminGuard`, the nav
+  item, the admin rejection dialect) on 2026-09-23. `/admin/resources` is a
+  placeholder until phase 3 puts the real list there; the five management
+  screens are still unbuilt.
 - **A "My Bookings" list** — cancelled on 2026-09-18. The calendar answers the
   same question, and the source work package never asked for the screen.
 - **Cancelled and rejected bookings on the calendar** — neither holds any time,
@@ -198,19 +202,24 @@ backlog as it stands, in the order it is worth picking up.
 
 1. **The admin console** — tenant admin CRUD for resources, availability
    windows, approvers and blackout periods. **In progress**:
-   [`docs/admin-plan.md`](admin-plan.md), seven phases, of which **phase 1 is
-   done** (2026-09-22) and the remaining six are all frontend. Owner-initiated
-   rather than mentor-issued, and the largest thing still missing from the
-   application — flagged as a gap since WP-7 Phase 1 (§4). Phase 1 was the one
-   backend addition the plan could not avoid: **`GET /users`**, without which
-   approvers cannot be assigned from a UI at all, because nothing in the API
-   listed users. It answers the decision `0018` eligible set only, not a user
-   directory.
+   [`docs/admin-plan.md`](admin-plan.md), seven phases, of which **phases 1 and
+   2 are done** (2026-09-22 and 2026-09-23). Owner-initiated rather than
+   mentor-issued, and the largest thing still missing from the application —
+   flagged as a gap since WP-7 Phase 1 (§4). Phase 1 was the one backend
+   addition the plan could not avoid: **`GET /users`**, without which approvers
+   cannot be assigned from a UI at all, because nothing in the API listed
+   users — it answers the decision `0018` eligible set only, not a user
+   directory. Phase 2 put the shell in place: `/admin` behind an `adminGuard`,
+   a nav item for a TenantAdmin only, and the rejection machinery moved to
+   `core/http` so the admin forms reuse it rather than inventing a second
+   error-handling scheme. **Phases 3–6 are the five management screens**, all
+   still unbuilt.
 2. **The design pass** the owner has flagged — the calendar, the booking detail,
    the cancel confirmation, and the approval queue with its decision panel were
    all built without a provided design, to the app's existing card vocabulary.
-   The admin console will add five more screens in the same position, so it is
-   worth deciding whether that console waits for designs or follows suit.
+   The admin console adds five more screens in the same position: settled on
+   2026-09-23 to follow suit rather than wait, so this pass now covers nine
+   screens and blocks nothing.
 3. **A backend package to close the two API gaps WP-7 raised and could not fix**
    (§5): an idempotency key on `POST /bookings`, mirroring the one
    `POST /recurrence-rules` already has, and a `GET /recurrence-rules/{id}` so

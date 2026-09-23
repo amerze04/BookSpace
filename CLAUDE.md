@@ -931,9 +931,9 @@ approvers, and blackout periods. It is not new scope; it has been flagged as a
 gap in `docs/wp7-plan.md` §7 and `STATE-OF-THE-APP.md` §4 since WP-7 Phase 1,
 with the buttons left absent rather than shown disabled.
 
-Seven phases; **phase 1 is done**, phases 2–7 are frontend. Each phase is built
-in one go rather than split into steps (owner's call, 2026-09-22). Three things
-settled before planning:
+Seven phases; **phases 1 and 2 are done**, and phases 3–7 are all frontend. Each
+phase is built in one go rather than split into steps (owner's call,
+2026-09-22). Three things settled before planning:
 
 - **Scope is resources, windows, approvers and blackouts** — what the backend
   already supports. **User management is out**: inviting, deactivating and
@@ -990,6 +990,48 @@ rather than assumed:
   only behavioural change outside the new endpoint is that approver eligibility
   is evaluated by SQL Server rather than by C# — same rule, same answers, proven
   by the existing `ApproverEndpointTests` still passing untouched.
+
+**Phase 2 — the admin shell — Done 2026-09-23.** 894 vitest tests (33 new),
+production build clean. Two open questions settled, and three facts every later
+phase builds on:
+
+- **The console is its own route tree at `/admin`, not an "admin mode" on
+  `/resources`.** The two lists answer different questions — the member list is
+  "find something to book" and hides archived rows by design (FR-3.5), the admin
+  one is "manage the catalogue" and must show them. WP-7's booking detail screen
+  is the cautionary tale for the alternative: one screen for two audiences
+  needed `viewerIsOwner` threaded through every string and still shipped telling
+  an approver "the time is not held for *you* yet" about someone else's request.
+  `adminGuard` sits on the `admin` parent, so every screen phases 3–6 add is
+  covered without remembering to ask for it.
+- **The console follows the app's existing card vocabulary rather than waiting
+  for the outstanding design pass**, as the approval queue did. Recorded in
+  `docs/admin-plan.md` §7.
+- **`AuthService.isTenantAdmin` admits `TenantAdmin` and nothing else, and
+  excluding SysAdmin is deliberate.** `AuthorizationPolicies.TenantAdmin` admits
+  them *by role*, so a guard written from the policy name would let them in —
+  onto a console where every request answers 403, because every admin endpoint
+  also requires the `orgId` claim a SysAdmin does not have (decision `0009`,
+  PRD §2). The UI matches the effective permission, not the policy name. Same
+  rule in `adminGuard` and in the nav, each with its own test.
+- **The rejection machinery now lives in `core/http/rejection.ts` and is generic
+  over its field-name type.** It was never booking-specific — it reads a
+  ProblemDetails and maps a reason code onto copy — and the admin forms need it
+  over a different vocabulary of controls. `features/booking/rejection/
+  booking-rejection.ts` keeps the one-off dialect and the booking field union,
+  and re-exports `RejectionDialect`/`RejectionCopy` already bound to that union,
+  so its three sibling dialects are untouched and their specs are the proof the
+  move changed no behaviour. **A new feature's dialect imports from `core/http`
+  and binds its own field union; it does not widen `BookingFieldName`.**
+- **`ConcurrencyConflict` is reachable on `PUT /resources/{id}`** — `Resources`
+  has had a `RowVersion` since the 2026-09-15 hardening pass — and the admin
+  dialect tells the admin to reload rather than re-send, because re-sending is
+  exactly how the other admin's work gets overwritten. This does **not** close
+  `docs/admin-plan.md` §4.2, which is about the replace-the-set child
+  collections, where no version reaches the wire at all.
+
+`/admin/resources` renders the placeholder component until phase 3, exactly as
+`/approvals` did from WP-6 until WP-7 Phase 6 replaced it.
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across

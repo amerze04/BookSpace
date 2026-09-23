@@ -5,12 +5,14 @@ import { ActivatedRoute, ActivatedRouteSnapshot, NavigationEnd, Router } from '@
 import { Subject } from 'rxjs';
 import { ShellComponent } from '../components/shell/shell.component';
 import { BreadcrumbService } from '../breadcrumb.service';
+import { buildFakeAccessToken } from '../../core/auth/testing/jwt-fixture';
 
 // The signals this spec drives are `protected` at compile time only — same
 // widened-type pattern every other component spec in this app uses.
 type TestableShellComponent = ShellComponent & {
   breadcrumb: () => string[];
   title: () => string;
+  primaryNavItems: () => Array<{ label: string; path: string }>;
 };
 
 // Builds a linked list of bare ActivatedRouteSnapshot-shaped objects — only
@@ -146,5 +148,119 @@ describe('ShellComponent breadcrumb', () => {
     breadcrumbService.setInsertBeforeLast('Conference Room A');
 
     expect(component.breadcrumb()).toEqual([]);
+  });
+});
+
+// Admin console phase 2. The nav is where the role plumbing becomes visible,
+// and it is the half a guard cannot cover: adminGuard stops someone reaching
+// /admin by typing it, and this is what stops them being *invited* to.
+//
+// Driven through real (fake-signed) tokens in localStorage rather than a
+// stubbed AuthService, because what is actually under test is the chain
+// token -> decodeAccessToken -> roles -> isTenantAdmin -> nav item. A stub
+// would skip the two steps most likely to be wrong: the role claim's full URI
+// key, and a single-role claim arriving as a string rather than an array.
+describe('ShellComponent primary nav', () => {
+  const ROLE_CLAIM = 'http://schemas.microsoft.com/ws/2008/06/identity/claims/role';
+
+  function seedSession(roles: string | string[]): void {
+    localStorage.setItem(
+      'bookspace.accessToken',
+      buildFakeAccessToken({ sub: 'u1', email: 'a@acme.test', orgId: 'org-1', [ROLE_CLAIM]: roles }),
+    );
+    localStorage.setItem('bookspace.refreshToken', 'refresh-1');
+  }
+
+  function createShell(): TestableShellComponent {
+    TestBed.configureTestingModule({
+      imports: [ShellComponent],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        {
+          provide: Router,
+          useValue: {
+            events: new Subject<NavigationEnd>(),
+            routerState: { snapshot: { root: { data: {}, firstChild: null } as ActivatedRouteSnapshot } },
+            navigateByUrl: () => Promise.resolve(true),
+          },
+        },
+        { provide: ActivatedRoute, useValue: {} },
+      ],
+    });
+
+    return TestBed.createComponent(ShellComponent).componentInstance as TestableShellComponent;
+  }
+
+  function labels(): string[] {
+    return createShell()
+      .primaryNavItems()
+      .map((item) => item.label);
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+    TestBed.resetTestingModule();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it('shows a Member only the two screens they can use', () => {
+    seedSession('Member');
+
+    expect(labels()).toEqual(['Calendar', 'Resources']);
+  });
+
+  // An Approver gets Approvals and must not get Admin — the distinction
+  // adminGuard enforces, shown here at the point where it is visible.
+  it('adds Approvals for an Approver, and nothing else', () => {
+    seedSession('Approver');
+
+    expect(labels()).toEqual(['Calendar', 'Resources', 'Approvals']);
+  });
+
+  // A TenantAdmin satisfies both predicates — canApproveBookings admits the
+  // role (decision 0018: the set that may be assigned as an approver and the
+  // set that may approve have to be the same one), and isTenantAdmin is what
+  // adds the console.
+  it('gives a TenantAdmin both Approvals and Admin, in that order', () => {
+    seedSession('TenantAdmin');
+
+    expect(labels()).toEqual(['Calendar', 'Resources', 'Approvals', 'Admin']);
+  });
+
+  it('handles a multi-role claim arriving as an array', () => {
+    seedSession(['Approver', 'TenantAdmin']);
+
+    expect(labels()).toEqual(['Calendar', 'Resources', 'Approvals', 'Admin']);
+  });
+
+  // The same rule adminGuard applies, at the other end: a SysAdmin has no
+  // orgId claim, so every admin endpoint would refuse them. Offering the link
+  // would be an invitation to a console that answers 403 throughout.
+  it('never offers Admin to a SysAdmin', () => {
+    seedSession('SysAdmin');
+
+    expect(labels()).not.toContain('Admin');
+  });
+
+  it('shows no role-gated items at all when there is no session', () => {
+    expect(labels()).toEqual(['Calendar', 'Resources']);
+  });
+
+  // The link has to point where the visitor actually lands. /admin redirects to
+  // /admin/resources, and a nav item pointing at the redirect would leave
+  // routerLinkActive comparing against a URL that no longer exists after the
+  // hop — the same reason approverGuard targets /calendar rather than /home.
+  it('points Admin straight at /admin/resources, not at the redirect', () => {
+    seedSession('TenantAdmin');
+
+    const admin = createShell()
+      .primaryNavItems()
+      .find((item) => item.label === 'Admin');
+
+    expect(admin?.path).toBe('/admin/resources');
   });
 });

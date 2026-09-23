@@ -1,5 +1,5 @@
 import { Routes } from '@angular/router';
-import { approverGuard, authGuard, guestOnlyGuard } from './core/auth/auth.guard';
+import { adminGuard, approverGuard, authGuard, guestOnlyGuard } from './core/auth/auth.guard';
 
 export const routes: Routes = [
   {
@@ -109,6 +109,41 @@ export const routes: Routes = [
           import('./features/approvals/components/approval-queue/approval-queue.component').then(
             (m) => m.ApprovalQueueComponent,
           ),
+      },
+      {
+        // Admin console phase 2 (docs/admin-plan.md). The tenant administration
+        // screens live on their own route tree rather than as an "admin mode"
+        // on /resources, which was the phase-2 call the plan left open (§7).
+        //
+        // Three reasons, in order of weight. The two lists answer different
+        // questions — /resources is "find something to book" and hides archived
+        // rows by design (FR-3.5), while this one is "manage the catalogue" and
+        // has to show them. WP-7's booking detail screen is the cautionary tale
+        // for the alternative: one screen serving two audiences needed
+        // `viewerIsOwner` threaded through every string, and shipped telling an
+        // approver "the time is not held for *you* yet" about someone else's
+        // request. And a separate tree means adminGuard protects the whole
+        // console once, instead of every button re-deciding who may see it.
+        //
+        // The guard is on the parent, so it covers every child added in phases
+        // 3-6 without each remembering to ask for it.
+        path: 'admin',
+        data: { title: 'Admin' },
+        canActivate: [adminGuard],
+        children: [
+          {
+            // Phase 3 replaces this placeholder with the real admin resource
+            // list — the same way /approvals carried one from WP-6 until WP-7
+            // Phase 6 step 3 replaced it. The route and its nav item exist now
+            // so the role plumbing is provable end to end before any screen
+            // depends on it.
+            path: 'resources',
+            data: { title: 'Resources' },
+            loadComponent: () =>
+              import('./features/placeholder/components/placeholder/placeholder.component').then((m) => m.PlaceholderComponent),
+          },
+          { path: '', pathMatch: 'full', redirectTo: 'resources' },
+        ],
       },
       {
         path: 'settings',

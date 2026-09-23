@@ -3,7 +3,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ActivatedRouteSnapshot, Router, RouterStateSnapshot, UrlTree, provideRouter } from '@angular/router';
 import { firstValueFrom, isObservable } from 'rxjs';
-import { approverGuard, authGuard, guestOnlyGuard } from '../auth.guard';
+import { adminGuard, approverGuard, authGuard, guestOnlyGuard } from '../auth.guard';
 import { buildFakeAccessToken } from '../testing/jwt-fixture';
 
 const ROLE_CLAIM = 'http://schemas.microsoft.com/ws/2008/06/identity/claims/role';
@@ -143,6 +143,49 @@ describe('route guards', () => {
   it('approverGuard redirects a Member to /calendar', () => {
     seedSession('Member');
     const blocked = TestBed.runInInjectionContext(() => approverGuard({} as ActivatedRouteSnapshot, {} as RouterStateSnapshot));
+    expect(router.serializeUrl(blocked as UrlTree)).toBe('/calendar');
+  });
+
+  // ---- adminGuard (admin console phase 2) ----
+
+  it('adminGuard admits a TenantAdmin', () => {
+    seedSession('TenantAdmin');
+    expect(TestBed.runInInjectionContext(() => adminGuard({} as ActivatedRouteSnapshot, {} as RouterStateSnapshot))).toBe(true);
+  });
+
+  // The difference from approverGuard, and the reason both exist: an Approver
+  // reaches /approvals and must not reach /admin. A single "elevated" guard
+  // would have conflated the two.
+  it('adminGuard redirects an Approver to /calendar', () => {
+    seedSession('Approver');
+    const blocked = TestBed.runInInjectionContext(() => adminGuard({} as ActivatedRouteSnapshot, {} as RouterStateSnapshot));
+    expect(router.serializeUrl(blocked as UrlTree)).toBe('/calendar');
+  });
+
+  it('adminGuard redirects a Member to /calendar', () => {
+    seedSession('Member');
+    const blocked = TestBed.runInInjectionContext(() => adminGuard({} as ActivatedRouteSnapshot, {} as RouterStateSnapshot));
+    expect(router.serializeUrl(blocked as UrlTree)).toBe('/calendar');
+  });
+
+  // **The one that is easy to get wrong by mirroring the backend's policy
+  // name.** AuthorizationPolicies.TenantAdmin admits SysAdmin by role, so a
+  // guard written from the policy would let them in — onto a console where
+  // every request answers 403, because every admin endpoint also requires the
+  // orgId claim a SysAdmin does not have (decisions/0009, PRD §2).
+  it('adminGuard redirects a SysAdmin to /calendar, despite the backend policy admitting the role', () => {
+    seedSession('SysAdmin');
+    const blocked = TestBed.runInInjectionContext(() => adminGuard({} as ActivatedRouteSnapshot, {} as RouterStateSnapshot));
+    expect(router.serializeUrl(blocked as UrlTree)).toBe('/calendar');
+  });
+
+  it('adminGuard admits a TenantAdmin who also holds Approver', () => {
+    seedSession(['Approver', 'TenantAdmin']);
+    expect(TestBed.runInInjectionContext(() => adminGuard({} as ActivatedRouteSnapshot, {} as RouterStateSnapshot))).toBe(true);
+  });
+
+  it('adminGuard redirects a visitor with no session at all', () => {
+    const blocked = TestBed.runInInjectionContext(() => adminGuard({} as ActivatedRouteSnapshot, {} as RouterStateSnapshot));
     expect(router.serializeUrl(blocked as UrlTree)).toBe('/calendar');
   });
 });

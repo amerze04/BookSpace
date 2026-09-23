@@ -30,15 +30,17 @@ import { buildFakeAccessToken } from '../core/auth/testing/jwt-fixture';
 const ROLE_CLAIM = 'http://schemas.microsoft.com/ws/2008/06/identity/claims/role';
 const API = 'http://localhost:5270';
 
-function seedSession(role: 'Member' | 'Approver'): void {
+const SESSIONS = {
+  Member: { sub: 'u1', email: 'member1@acme.test' },
+  Approver: { sub: 'approver-1', email: 'approver@acme.test' },
+  // Admin console phase 2.
+  TenantAdmin: { sub: 'admin-1', email: 'admin@acme.test' },
+} as const;
+
+function seedSession(role: keyof typeof SESSIONS): void {
   localStorage.setItem(
     'bookspace.accessToken',
-    buildFakeAccessToken({
-      sub: role === 'Approver' ? 'approver-1' : 'u1',
-      email: role === 'Approver' ? 'approver@acme.test' : 'member1@acme.test',
-      orgId: 'org-1',
-      [ROLE_CLAIM]: role,
-    }),
+    buildFakeAccessToken({ ...SESSIONS[role], orgId: 'org-1', [ROLE_CLAIM]: role }),
   );
   localStorage.setItem('bookspace.refreshToken', 'refresh-1');
 }
@@ -365,6 +367,43 @@ describe('navigation chain (WP-7 Phase 7 step 1)', () => {
 
       httpMock.expectOne((r) => r.url === `${API}/bookings`).flush(pageOf([]));
       expect(router.url).toBe('/approvals');
+    });
+  });
+
+  // Admin console phase 2. The console's entry seam, tested the same way as
+  // every other one here: follow the href the shell actually rendered.
+  //
+  // This is the assertion the shell's own spec cannot make. That one reads
+  // `primaryNavItems()`, a signal — which stays green if the nav item exists in
+  // the array but the template never renders it, which is precisely how a
+  // missing `@case` in the icon switch or a mistyped `routerLink` would fail.
+  // WP-7 shipped two bugs of exactly that shape, both found by the owner
+  // clicking rather than by the suite.
+  describe("the administrator's path", () => {
+    beforeEach(() => seedSession('TenantAdmin'));
+
+    // Starts on /settings rather than the calendar deliberately: that route
+    // fetches nothing, so this test is about the nav seam and not about
+    // answering a calendar window request that has no bearing on it.
+    it('renders an Admin link in the shell and follows it into the console', async () => {
+      harness = await RouterTestingHarness.create('/settings');
+
+      const toAdmin = await follow('a[href="/admin/resources"]');
+
+      expect(toAdmin).toBe('/admin/resources');
+      expect(router.url).toBe('/admin/resources');
+    });
+
+    // The other half, and the one that matters for a role-gated link: a Member
+    // is not merely bounced by the guard, they are never shown the way in.
+    it('renders no Admin link at all for a member', async () => {
+      seedSession('Member');
+      harness = await RouterTestingHarness.create('/settings');
+      harness.detectChanges();
+
+      const shell = harness.fixture.nativeElement as HTMLElement;
+      expect(shell.querySelector('a[href="/admin/resources"]')).toBeNull();
+      expect(shell.querySelector('a[href="/resources"]')).not.toBeNull();
     });
   });
 });

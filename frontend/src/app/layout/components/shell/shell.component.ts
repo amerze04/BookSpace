@@ -16,7 +16,7 @@ import { BreadcrumbService } from '../../breadcrumb.service';
 interface NavItem {
   label: string;
   path: string;
-  icon: 'calendar' | 'resources' | 'approvals' | 'settings' | 'help';
+  icon: 'calendar' | 'resources' | 'approvals' | 'admin' | 'settings' | 'help';
 }
 
 // WP-7 Phase 4 (2026-09-18): "Home" and "My Bookings" were both removed and
@@ -31,6 +31,18 @@ const BASE_PRIMARY_NAV_ITEMS: NavItem[] = [
 ];
 
 const APPROVALS_NAV_ITEM: NavItem = { label: 'Approvals', path: '/approvals', icon: 'approvals' };
+
+// Admin console phase 2. One entry point, not a group: every other
+// administration screen (availability windows, approvers, blackout periods) is
+// reached *through* a resource, because that is how the endpoints are shaped —
+// all of them are sub-resources of /resources/{id}. A flat list of four admin
+// nav items would promise four destinations the API cannot address without a
+// resource in hand.
+//
+// It points at /admin/resources rather than /admin so the active-link
+// highlighting matches the URL the visitor actually lands on, the same reason
+// approverGuard redirects to /calendar rather than through /home.
+const ADMIN_NAV_ITEM: NavItem = { label: 'Admin', path: '/admin/resources', icon: 'admin' };
 
 @Component({
   selector: 'app-shell',
@@ -52,10 +64,27 @@ export class ShellComponent {
   // A signal, not a plain array: it has to react to who's actually logged
   // in. "Approvals" only belongs in the list for an eligible approver
   // (AuthService.canApproveBookings) — everyone else never sees a link to a
-  // route they'd just be bounced out of by approverGuard anyway.
-  protected readonly primaryNavItems = computed<NavItem[]>(() =>
-    this.auth.canApproveBookings() ? [...BASE_PRIMARY_NAV_ITEMS, APPROVALS_NAV_ITEM] : BASE_PRIMARY_NAV_ITEMS,
-  );
+  // route they'd just be bounced out of by approverGuard anyway. "Admin" works
+  // the same way against adminGuard.
+  //
+  // The two are independent, and both orderings of the pair occur: a TenantAdmin
+  // sees Approvals *and* Admin, a plain Approver sees only Approvals, and a
+  // TenantAdmin who somehow held neither would still see Resources. Built by
+  // appending in a fixed order rather than filtering a master list, so the
+  // sequence is the one written here rather than an accident of predicate order.
+  protected readonly primaryNavItems = computed<NavItem[]>(() => {
+    const items = [...BASE_PRIMARY_NAV_ITEMS];
+
+    if (this.auth.canApproveBookings()) {
+      items.push(APPROVALS_NAV_ITEM);
+    }
+
+    if (this.auth.isTenantAdmin()) {
+      items.push(ADMIN_NAV_ITEM);
+    }
+
+    return items;
+  });
 
   protected readonly secondaryNavItems: NavItem[] = [
     { label: 'Settings', path: '/settings', icon: 'settings' },
