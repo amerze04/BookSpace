@@ -133,16 +133,24 @@
       <button type="button" class="primary-action" [disabled]="!canSave()" (click)="save()">
         {{ saving() ? 'Saving…' : 'Save approvers' }}
       </button>
-      <button type="button" class="secondary-action" [disabled]="saving()" (click)="goToResource()">
-        Back to resource
-      </button>
+      <!--
+        A real link rather than a click handler — see the identical note in the
+        availability-windows editor. Disabled-button shape only while saving,
+        because leaving mid-save means never learning whether it landed.
+      -->
+      @if (saving()) {
+        <button type="button" class="secondary-action" disabled>Back to resource</button>
+      } @else {
+        <a class="secondary-action" [routerLink]="['/admin/resources', resourceId]">Back to resource</a>
+      }
       @if (!dirty()) {
         <span class="actions-hint">No changes to save.</span>
       }
     </div>
   } @else {
     <div class="form-actions">
-      <a class="secondary-action" routerLink="/admin/resources">Back to resources</a>
+      <!-- Archived: read-only, but the resource itself is still there. Phase 7. -->
+      <a class="secondary-action" [routerLink]="['/admin/resources', resourceId]">Back to resource</a>
     </div>
   }
 }

@@ -1,6 +1,6 @@
 import { Component, DestroyRef, computed, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { ActivatedRoute, RouterLink } from '@angular/router';
 import { Subject, debounceTime, distinctUntilChanged, forkJoin } from 'rxjs';
 import { BreadcrumbService } from '../../../../layout/breadcrumb.service';
 import { ResourcesService } from '../../../resources/services/resources.service';
@@ -48,13 +48,15 @@ export class AdminApproversComponent {
   private readonly resourcesService = inject(ResourcesService);
   private readonly usersService = inject(UsersService);
   private readonly route = inject(ActivatedRoute);
-  private readonly router = inject(Router);
   private readonly breadcrumbService = inject(BreadcrumbService);
   private readonly destroyRef = inject(DestroyRef);
 
   protected readonly roleLabel = roleLabel;
 
-  private readonly resourceId = this.route.snapshot.paramMap.get('id')!;
+  // `protected`, not `private`, because the template reads it: admin console
+  // phase 7 made the return leg a real `routerLink` rather than a click
+  // handler, so the id has to be reachable from the markup.
+  protected readonly resourceId = this.route.snapshot.paramMap.get('id')!;
 
   protected readonly resource = signal<ResourceDetail | null>(null);
   protected readonly eligible = signal<EligibleUser[]>([]);
@@ -196,10 +198,6 @@ export class AdminApproversComponent {
           }
         },
       });
-  }
-
-  protected goToResource(): void {
-    void this.router.navigate(['/admin/resources', this.resourceId]);
   }
 
   // Both reads in one go. `forkJoin` rather than two independent subscriptions

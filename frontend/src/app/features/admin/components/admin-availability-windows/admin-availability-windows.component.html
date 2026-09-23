@@ -143,9 +143,25 @@
         <button type="submit" class="primary-action" [disabled]="!canSave()">
           {{ saving() ? 'Saving…' : 'Save opening hours' }}
         </button>
-        <button type="button" class="secondary-action" [disabled]="saving()" (click)="goToResource()">
-          Back to resource
-        </button>
+        <!--
+          **A real link, not a click handler** — admin console phase 7. This is
+          the only way back to the resource from here, and as a `<button>` it
+          could not be ctrl-clicked, could not be opened in a new tab, and could
+          not be *followed* by `navigation-chain.spec.ts`, which reads the href
+          the previous screen rendered. An untestable return leg is exactly the
+          seam WP-7 shipped broken into a 404.
+
+          It becomes a disabled button only while a save is in flight, because
+          navigating away then means never seeing whether the save landed — the
+          same rule WP-7 Phase 3 established for every control on a submitting
+          form. An anchor cannot be disabled, so the two shapes are rendered
+          separately rather than faked with a class.
+        -->
+        @if (saving()) {
+          <button type="button" class="secondary-action" disabled>Back to resource</button>
+        } @else {
+          <a class="secondary-action" [routerLink]="['/admin/resources', resourceId]">Back to resource</a>
+        }
 
         @if (errors().length > 0) {
           <span class="actions-hint">Fix the highlighted windows before saving.</span>
@@ -155,7 +171,12 @@
       </div>
     } @else {
       <div class="form-actions">
-        <a class="secondary-action" [routerLink]="['/admin/resources']">Back to resources</a>
+        <!--
+          Archived, so there is nothing to save — but the resource still
+          exists and its form still renders (read-only), so the way back is
+          there rather than all the way out to the list. Phase 7.
+        -->
+        <a class="secondary-action" [routerLink]="['/admin/resources', resourceId]">Back to resource</a>
       </div>
     }
   </form>

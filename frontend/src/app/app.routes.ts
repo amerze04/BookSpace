@@ -201,6 +201,15 @@ export const routes: Routes = [
                 (m) => m.AdminApproversComponent,
               ),
           },
+          {
+            // Phase 6, the last screen. Same sibling shape as the two above.
+            path: 'resources/:id/blackout-periods',
+            data: { title: 'Blackouts' },
+            loadComponent: () =>
+              import('./features/admin/components/admin-blackouts/admin-blackouts.component').then(
+                (m) => m.AdminBlackoutsComponent,
+              ),
+          },
           { path: '', pathMatch: 'full', redirectTo: 'resources' },
         ],
       },

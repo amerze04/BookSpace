@@ -4,7 +4,13 @@ import { Observable } from 'rxjs';
 import { environment } from '../../../../environments/environment';
 import { PagedResult } from '../../../core/http/paged-result';
 import { skipErrorToast } from '../../../core/http/skip-error-toast';
-import { BlackoutPeriodSummary, ListBlackoutPeriodsParams } from '../models/blackout-periods.models';
+import {
+  BlackoutPeriodInput,
+  BlackoutPeriodSummary,
+  CreateBlackoutPeriodResponse,
+  ListBlackoutPeriodsParams,
+  UpdateBlackoutPeriodResponse,
+} from '../models/blackout-periods.models';
 
 // Thin wrapper over GET /resources/{id}/blackout-periods — same "bind and
 // dispatch" thinness as ResourcesService and AvailabilityService.
@@ -25,6 +31,48 @@ export class BlackoutPeriodsService {
     return this.http.get<PagedResult<BlackoutPeriodSummary>>(
       `${environment.apiBaseUrl}/resources/${resourceId}/blackout-periods`,
       { params: buildParams(params), context: skipErrorToast() },
+    );
+  }
+
+  // ---- Writes (admin console phase 6), TenantAdmin-only ----
+  //
+  // **Genuine per-row CRUD, unlike the two replace-the-set editors next door.**
+  // Blackouts overlap freely (decision `0019`), each one is an independent fact
+  // about a period, and DELETE is a real hard delete — the one place in this
+  // system where something is actually removed. Making this screen look like the
+  // windows editor would misrepresent all three.
+
+  create(resourceId: string, body: BlackoutPeriodInput): Observable<CreateBlackoutPeriodResponse> {
+    return this.http.post<CreateBlackoutPeriodResponse>(
+      `${environment.apiBaseUrl}/resources/${resourceId}/blackout-periods`,
+      body,
+      { context: skipErrorToast() },
+    );
+  }
+
+  update(
+    resourceId: string,
+    blackoutId: string,
+    body: BlackoutPeriodInput,
+  ): Observable<UpdateBlackoutPeriodResponse> {
+    return this.http.put<UpdateBlackoutPeriodResponse>(
+      `${environment.apiBaseUrl}/resources/${resourceId}/blackout-periods/${blackoutId}`,
+      body,
+      { context: skipErrorToast() },
+    );
+  }
+
+  // **Deliberately not idempotent**: a second DELETE of the same id answers 404,
+  // not 204, because the endpoint cannot tell "already deleted" from "another
+  // tenant's" (AC-4) and a blanket 204 would silently accept a cross-tenant id.
+  // So nothing on this path ever offers a retry.
+  //
+  // It also restores nothing — decision `0019`'s cascade is forwards-only, so
+  // bookings the blackout cancelled stay cancelled.
+  delete(resourceId: string, blackoutId: string): Observable<void> {
+    return this.http.delete<void>(
+      `${environment.apiBaseUrl}/resources/${resourceId}/blackout-periods/${blackoutId}`,
+      { context: skipErrorToast() },
     );
   }
 }

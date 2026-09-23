@@ -918,8 +918,9 @@ What is true before touching this area:
   happy path — and it found a real bug on its first walk. Re-walk it after any
   change to the booking or approval flows.
 
-### Admin console — tenant administration UI — **In progress** (started 2026-09-22)
-Plan: [`docs/admin-plan.md`](docs/admin-plan.md). **Owner-initiated, not a
+### Admin console — tenant administration UI — **Done** (2026-09-23)
+Plan: [`docs/admin-plan.md`](docs/admin-plan.md). Click-through script:
+[`docs/admin-clickthrough.md`](docs/admin-clickthrough.md). **Owner-initiated, not a
 mentor work package** — the same standing as the hardening pass below and the
 resource-list-filters entry, and deliberately *not* numbered as a WP, because
 §12's rule is that this roadmap mirrors the packages the mentor issues rather
@@ -932,9 +933,14 @@ approvers, and blackout periods. It is not new scope; it has been flagged as a
 gap in `docs/wp7-plan.md` §7 and `STATE-OF-THE-APP.md` §4 since WP-7 Phase 1,
 with the buttons left absent rather than shown disabled.
 
-Seven phases; **phases 1–5 are done**, and phases 6–7 are all frontend. Each
-phase is built in one go rather than split into steps (owner's call,
-2026-09-22). Three things settled before planning:
+**All seven phases are done, and the owner walked
+[`docs/admin-clickthrough.md`](docs/admin-clickthrough.md) end to end on
+2026-09-23 — paths A to E, everything passing, no defects reported.** That walk
+is what closes this, not the suite and not the API probes; the claim is that an
+administrator can run their tenant without being misled, and no amount of
+request/response evidence converts into it (the same rule WP-7 applied to its
+first acceptance criterion). Each phase was built in one go rather than split
+into steps (owner's call, 2026-09-22). Three things settled before planning:
 
 - **Scope is resources, windows, approvers and blackouts** — what the backend
   already supports. **User management is out**: inviting, deactivating and
@@ -1175,6 +1181,93 @@ production build clean, whole flow probed live. What is true before touching it:
   instant one errors**. A spec that flushes the failing request first leaves the
   sibling cancelled and unflushable ("Cannot flush a cancelled request"). Answer
   the succeeding one first.
+
+**Phase 6 — blackout periods — Done 2026-09-23.** 1094 vitest tests (49 new),
+production build clean, the cascade probed end to end against the running API.
+The last screen. What is true before touching it:
+
+- **It is the one genuinely per-row CRUD screen, with the one real hard
+  delete.** Blackouts overlap freely (`0019`), each is an independent fact, and
+  DELETE removes a row. `docs/admin-plan.md` §4.1 is explicit that making it look
+  like the replace-the-set editors would misrepresent all three.
+- **§4.4 is settled, and better than the question assumed.** The *response*
+  already reports exactly what the cascade cancelled
+  (`CancelledBookingSummary`), and `GET /bookings`' `from`/`to` are the identical
+  overlap predicate `FindBookingsToCancelAsync` uses — so an accurate pre-flight
+  preview is obtainable. The screen does **both**: an opt-in preview labelled as
+  decided-at-save-time, and the authoritative record from the response. Only the
+  first would be a promise it cannot keep; only the second means an admin learns
+  what they cancelled afterwards.
+- **An admin types in the resource's timezone, not their own** (decision `0003`).
+  A blackout is an *instant*, unlike an availability window, so
+  `blackouts/blackout-form.ts` owns a two-pass local→UTC inverse correcting
+  against `utcToResourceLocal` — the same technique `availability-grid.ts` uses,
+  generalized to an arbitrary date. Tested on both sides of a real Warsaw DST
+  transition and on the gap/ambiguity cases, which have no unique inverse and
+  must not throw. Both zones are shown in the list.
+- **`BlackoutPeriodElapsed` is about the *end*, not the start**, so a blackout
+  that began this morning and runs through tomorrow is legal — what an admin
+  needs when a room floods. It is a **422**, not the 400 its wording suggests;
+  confirmed against the running API rather than inferred.
+- **Deleting a blackout is not an undo.** `0019`'s cascade is forwards-only, so
+  bookings it cancelled stay cancelled and nobody is notified. The delete
+  confirmation says so, because nothing else on the screen would correct an admin
+  who assumed otherwise.
+- **Nothing on this path offers a retry** — the strictest of the eight dialects.
+  Repeating a create makes a *second* blackout (`0019` allows overlaps, so
+  nothing refuses it) and the first attempt may already have cancelled bookings
+  that never come back.
+
+**Phase 7 — wiring, coverage sweep, click-through — Done 2026-09-23.** 1114
+vitest tests (20 new), production build clean, the console's contract re-probed
+against the running API. No new screens. What is true before touching this area:
+
+- **All three editors' return legs were `<button (click)="goToResource()">` and
+  are real anchors now.** A button works when clicked and fails at everything
+  else: no ctrl-click, no new tab, and **`navigation-chain.spec.ts` cannot
+  follow it**, because that file's whole discipline is reading the `href` the
+  previous screen rendered. Nothing in the suite said so — each editor's spec is
+  about its component, and no component spec is about where the next screen is.
+  The in-flight guard survives as a shape change rather than a class: an anchor
+  cannot be disabled, so while a save is in flight the windows and approvers
+  editors render a disabled `<button>` instead. The **archived** branches now
+  point at the resource too (it exists, read-only); the **not-found** branches
+  still go to the list, because there it genuinely does not.
+- **The coverage sweep enumerated files rather than scanning names**, which is
+  WP-7 Phase 7's lesson, and found two: `rejection/approver-rejection.ts` (the
+  only one of the eight dialects without a spec) and `services/users.service.ts`
+  (the client for the one endpoint this console owns). `core/http/rejection.ts`
+  is deliberately left without one — all nine of its branches are exercised
+  through the eight dialects, including a non-`HttpErrorResponse` input and a
+  4xx whose body is not a ProblemDetails.
+- **`ApproverNotEligible`'s copy is a security property, not a matter of tone**,
+  and now has tests saying so. Decision `0018` collapses all three ineligibility
+  causes into one code precisely so that naming one cannot confirm a cross-tenant
+  id exists (AC-4) — so the message names neither the person nor the reason, and
+  says what is both true and useful instead.
+- **The click-through has been walked, and stays a live artefact**
+  ([`docs/admin-clickthrough.md`](docs/admin-clickthrough.md)), built the same
+  way WP-7's was. Five paths, and path E's deliberate wrong turns are where this
+  project's bugs have actually lived. **The owner walked A to E on 2026-09-23
+  and everything passed** — unlike WP-7's first walk, which found a real bug.
+  That is evidence about this console, not about the method: **re-walk it after
+  any change to the admin flows**, because these screens have exactly the
+  property that produced WP-7's bugs — what determines what you see is not what
+  the assertions are about. Three of its items check behaviour that is
+  **known and accepted rather than correct** — the silent last-write-wins on the
+  replace-the-set editors, the empty "no longer able to approve" group that no
+  UI can produce without a user-management backend, and an archived resource
+  that stays in the list forever — and each says so on the page, so finding them
+  is not mistaken for finding a bug.
+- **The numbers in that script are live, not illustrative** (probed 2026-09-23):
+  `GET /users` answers Acme with exactly two eligible people and no Member;
+  `GET /resources?includeArchived=true` returns six, three archived; an archived
+  `PUT` is 422, a genuine window overlap 409, an elapsed blackout 422; Member and
+  Approver are 403 on `GET /users` and `POST /resources`, anonymous 401. Two
+  rules are already proven *in the seeded data* and the script uses them rather
+  than manufacturing cases: the 3D Printer's adjacent `09:00–12:00` /
+  `12:00–17:00` windows (adjacency is not overlap) and the Audi A5's Monday
+  window closing at `23:59:59` (decision `0022`'s midnight convention).
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across

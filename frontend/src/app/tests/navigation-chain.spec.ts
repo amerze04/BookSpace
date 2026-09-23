@@ -437,6 +437,18 @@ describe('navigation chain (WP-7 Phase 7 step 1)', () => {
         .expectOne((r) => r.url === `${API}/users`)
         .flush(pageOf([], { pageSize: 50 }));
       expect(router.url).toBe('/admin/resources/r1/approvers');
+
+      // And phase 6, the last of the three per-resource admin screens.
+      await harness.navigateByUrl('/admin/resources/r1');
+      flushResource();
+
+      const toBlackouts = await follow('a[href="/admin/resources/r1/blackout-periods"]');
+      expect(toBlackouts).toBe('/admin/resources/r1/blackout-periods');
+      flushResource();
+      httpMock
+        .expectOne((r) => r.url === `${API}/resources/r1/blackout-periods`)
+        .flush(pageOf([], { pageSize: 100 }));
+      expect(router.url).toBe('/admin/resources/r1/blackout-periods');
     });
 
     // **Regression, phase 3.** The admin routes were briefly declared as a
@@ -471,6 +483,111 @@ describe('navigation chain (WP-7 Phase 7 step 1)', () => {
       const shell = harness.fixture.nativeElement as HTMLElement;
       expect(shell.querySelector('a[href="/admin/resources"]')).toBeNull();
       expect(shell.querySelector('a[href="/resources"]')).not.toBeNull();
+    });
+
+    // **Admin console phase 7 — the return legs, and this is what found them.**
+    //
+    // All three per-resource editors are reachable *only* from the resource
+    // form, so their way back is the one navigation each of them has. Until
+    // phase 7 every one was a `<button (click)="goToResource()">` — which
+    // works when clicked, cannot be ctrl-clicked or opened in a new tab, and
+    // cannot be *followed* here, because `hrefOf` has nothing to read. The
+    // chain could not be walked back, and nothing in the suite said so: each
+    // editor's own spec asserted the component, and no component's spec is
+    // about where the next screen is.
+    //
+    // They are real anchors now, and this walks the whole loop rather than
+    // each hop in isolation — resource → editor → resource, three times —
+    // because a link that goes back to the *list* instead of the resource
+    // also passes a "does it navigate" test while costing two extra hops on
+    // every single use.
+    it('walks back out of each editor onto the resource, not the list', async () => {
+      harness = await RouterTestingHarness.create('/admin/resources/r1');
+      flushResource();
+
+      const editors: [string, () => void][] = [
+        ['/admin/resources/r1/availability-windows', () => flushResource()],
+        [
+          '/admin/resources/r1/approvers',
+          () => {
+            flushResource();
+            httpMock.expectOne((r) => r.url === `${API}/users`).flush(pageOf([], { pageSize: 50 }));
+          },
+        ],
+        [
+          '/admin/resources/r1/blackout-periods',
+          () => {
+            flushResource();
+            httpMock
+              .expectOne((r) => r.url === `${API}/resources/r1/blackout-periods`)
+              .flush(pageOf([], { pageSize: 100 }));
+          },
+        ],
+      ];
+
+      for (const [href, flushEditor] of editors) {
+        await follow(`a[href="${href}"]`);
+        flushEditor();
+        expect(router.url).toBe(href);
+
+        // The return leg, read off the editor rather than built here. Before
+        // phase 7 this threw — the element existed and was a `<button>`.
+        const back = await follow('a[href="/admin/resources/r1"]');
+        expect(back).toBe('/admin/resources/r1');
+        flushResource();
+        expect(router.url).toBe('/admin/resources/r1');
+      }
+    });
+
+    // Decision `0028`'s loose end, as a seam. A gated resource with no
+    // approvers renders a warning, and phase 5 gave that warning a link — it
+    // deliberately pointed nowhere in phases 3 and 4, because the screen did
+    // not exist yet and WP-7 Phase 6 had already taught this project what
+    // linking into a 404 costs. This asserts the link is there *and* that it
+    // resolves, which is the pair that matters.
+    it('follows the gated-without-approvers warning onto the approvers screen', async () => {
+      harness = await RouterTestingHarness.create('/admin/resources/r1');
+      flushResource('r1', resourceDetail({ requiresApproval: true, approvers: [] }));
+
+      const toApprovers = await follow('.field-warning a.inline-link');
+      expect(toApprovers).toBe('/admin/resources/r1/approvers');
+
+      flushResource('r1', resourceDetail({ requiresApproval: true, approvers: [] }));
+      httpMock.expectOne((r) => r.url === `${API}/users`).flush(pageOf([], { pageSize: 50 }));
+
+      expect(router.url).toBe('/admin/resources/r1/approvers');
+    });
+
+    // The console has one entrance and the guard is on the parent, so a role
+    // that should not be here is bounced from *every* screen in it, not only
+    // the list. An Approver is the interesting case rather than a Member:
+    // they hold a privileged role, have their own nav item, and are the most
+    // likely person to try the URL.
+    it('bounces an approver off every admin screen, not just the entrance', async () => {
+      seedSession('Approver');
+      harness = await RouterTestingHarness.create('/settings');
+
+      for (const url of [
+        '/admin/resources',
+        '/admin/resources/new',
+        '/admin/resources/r1',
+        '/admin/resources/r1/availability-windows',
+        '/admin/resources/r1/approvers',
+        '/admin/resources/r1/blackout-periods',
+      ]) {
+        await harness.navigateByUrl(url);
+
+        // The bounce lands on the calendar, which fetches its window — but
+        // only when it is newly created, so the count is 1 on the first
+        // iteration and 0 on the rest. `match` rather than `expectOne`
+        // because what is asserted here is where the approver ends up, not
+        // how many times the calendar re-instantiates on the way.
+        for (const req of httpMock.match((r) => r.url === `${API}/bookings`)) {
+          req.flush(pageOf([]));
+        }
+
+        expect(router.url).toBe('/calendar');
+      }
     });
   });
 });

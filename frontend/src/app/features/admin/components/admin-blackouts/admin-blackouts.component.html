@@ -1,0 +1,289 @@
+@if (notFound()) {
+  <div class="state-message state-message--error">
+    <p><strong>That resource doesn't exist, or it isn't yours to manage.</strong></p>
+    <a class="secondary-action" routerLink="/admin/resources">Back to resources</a>
+  </div>
+} @else if (loading()) {
+  <p class="state-message">Loading blackouts…</p>
+} @else if (loadError()) {
+  <div class="state-message state-message--error">
+    <p>Couldn't load this resource's blackouts.</p>
+    <button type="button" class="retry-button" (click)="retryLoad()">Try again</button>
+  </div>
+} @else {
+  <!--
+    Decision 0001: a blackout has absolute priority. It does not merely hide
+    availability — it cancels bookings that overlap it, including occurrences of
+    a recurring series. Said at the top because it is the thing an admin has to
+    know before they touch anything on this page.
+  -->
+  <p class="intro">
+    A blackout closes this resource for a period. Times are the resource's own —
+    <strong>{{ timeZoneId() }}</strong>. <strong>Bookings that overlap a blackout are cancelled</strong>,
+    and their owners are told.
+  </p>
+
+  @if (isArchived()) {
+    <p class="archived-banner" role="status">
+      <strong>This resource is archived.</strong> Its blackouts can no longer be changed.
+    </p>
+  }
+
+  <!--
+    The record, from the response. Rendered above the list because it is about
+    what just happened, and because an admin who has cancelled other people's
+    meetings should see whose before anything else.
+  -->
+  @if (cancelled(); as cancelled) {
+    <div class="outcome" role="status" tabindex="-1">
+      <p class="outcome-title">
+        <strong>Blackout {{ cancelledFrom() === 'created' ? 'created' : 'updated' }}.</strong>
+      </p>
+      @if (cancelled.length === 0) {
+        <p class="outcome-detail">No bookings were affected.</p>
+      } @else {
+        <p class="outcome-detail">
+          {{ cancelled.length }} {{ cancelled.length === 1 ? 'booking was' : 'bookings were' }}
+          cancelled. Their owners have been notified.
+        </p>
+        <ul class="cancelled-list">
+          @for (booking of cancelled; track booking.bookingId) {
+            <li>
+              {{ inResourceZone(booking.startsAtUtc) }} – {{ inResourceZone(booking.endsAtUtc) }}
+              @if (booking.recurrenceRuleId) {
+                <!--
+                  Decision 0001 cancels the *occurrence*, never the series. Worth
+                  distinguishing: an admin seeing five of these should know they
+                  have punched holes in a series, not ended it.
+                -->
+                <span class="series-marker">part of a repeating series</span>
+              }
+            </li>
+          }
+        </ul>
+      }
+    </div>
+  }
+
+  @if (mode() === 'list') {
+    <div class="list-header">
+      <h2 class="list-heading">Blackouts</h2>
+      @if (!isArchived()) {
+        <button type="button" class="primary-action" (click)="startCreating()">Add blackout</button>
+      }
+    </div>
+
+    @if (blackouts().length === 0) {
+      <p class="state-message">No blackouts. This resource is bookable whenever it is open.</p>
+    } @else {
+      <ul class="blackout-rows">
+        @for (blackout of blackouts(); track blackout.id) {
+          <li class="blackout-row">
+            <div class="row-main">
+              <p class="row-when">
+                {{ inResourceZone(blackout.startsAtUtc) }} – {{ inResourceZone(blackout.endsAtUtc) }}
+              </p>
+              <p class="row-viewer-when">
+                {{ inViewerZone(blackout.startsAtUtc) }} – {{ inViewerZone(blackout.endsAtUtc) }}
+                in {{ viewerZoneId() }}
+              </p>
+              @if (blackout.reason) {
+                <p class="row-reason">{{ blackout.reason }}</p>
+              } @else {
+                <p class="row-reason row-reason--none">No reason given</p>
+              }
+            </div>
+
+            @if (!isArchived()) {
+              <div class="row-actions">
+                <button type="button" class="row-button" (click)="startEditing(blackout)">Edit</button>
+                <button type="button" class="row-button row-button--danger" (click)="startDeleting(blackout.id)">
+                  Delete
+                </button>
+              </div>
+            }
+          </li>
+        }
+      </ul>
+    }
+  } @else {
+    <form class="blackout-form" (submit)="$event.preventDefault(); submit()">
+      <h2 class="list-heading">{{ mode() === 'create' ? 'Add blackout' : 'Edit blackout' }}</h2>
+
+      <div class="field-row">
+        <label class="field">
+          <span class="field-label">Starts</span>
+          <input
+            type="datetime-local"
+            class="field-input"
+            [value]="startsAt()"
+            [disabled]="submitting()"
+            [attr.aria-invalid]="startsAtError() !== null"
+            (input)="onStartsAtInput($event)"
+          />
+          @if (startsAtError(); as message) {
+            <span class="field-error" role="alert">{{ message }}</span>
+          }
+        </label>
+
+        <label class="field">
+          <span class="field-label">Ends</span>
+          <input
+            type="datetime-local"
+            class="field-input"
+            [value]="endsAt()"
+            [disabled]="submitting()"
+            [attr.aria-invalid]="endsAtError() !== null"
+            (input)="onEndsAtInput($event)"
+          />
+          @if (endsAtError(); as message) {
+            <span class="field-error" role="alert">{{ message }}</span>
+          }
+        </label>
+      </div>
+
+      <p class="field-hint">
+        Entered in the resource's timezone, <strong>{{ timeZoneId() }}</strong> — not yours.
+      </p>
+
+      <label class="field">
+        <span class="field-label">Reason <span class="field-optional">(optional)</span></span>
+        <textarea
+          class="field-input"
+          rows="2"
+          [value]="reason()"
+          [attr.maxlength]="maxReasonLength"
+          [disabled]="submitting()"
+          [attr.aria-invalid]="reasonError() !== null"
+          (input)="onReasonInput($event)"
+        ></textarea>
+        <span class="field-hint">
+          Shown to members on the availability screen, and kept on every booking this cancels.
+        </span>
+        @if (reasonError(); as message) {
+          <span class="field-error" role="alert">{{ message }}</span>
+        }
+      </label>
+
+      <!--
+        §4.4, settled. The preview is a real query over the same window and
+        resource the cascade uses, so it is accurate *as of now* — but the set is
+        decided when the blackout is saved, and a booking made in between will be
+        cancelled too. That race is documented in CLAUDE.md §6 and cannot be
+        closed from a browser, so the wording promises only what it can.
+      -->
+      <div class="impact">
+        <div class="impact-header">
+          <button
+            type="button"
+            class="secondary-action"
+            [disabled]="submitting() || previewing() || startsAtError() !== null || endsAtError() !== null"
+            (click)="checkImpact()"
+          >
+            {{ previewing() ? 'Checking…' : 'Check what this would cancel' }}
+          </button>
+        </div>
+
+        @if (previewFailed()) {
+          <p class="impact-detail impact-detail--warn">
+            Couldn't check. You can still save — the blackout will report exactly what it cancelled.
+          </p>
+        } @else if (preview(); as preview) {
+          @if (preview.length === 0) {
+            <p class="impact-detail">
+              Nothing is booked in this period right now.
+              <span class="impact-caveat">
+                Anything booked between now and saving would still be cancelled.
+              </span>
+            </p>
+          } @else {
+            <p class="impact-detail impact-detail--warn">
+              <strong>
+                {{ preview.length }} {{ preview.length === 1 ? 'booking' : 'bookings' }} would be
+                cancelled.
+              </strong>
+              <span class="impact-caveat">
+                As things stand now — the exact set is decided when you save.
+              </span>
+            </p>
+            <ul class="preview-list">
+              @for (booking of preview; track booking.id) {
+                <li>
+                  {{ inResourceZone(booking.startsAtUtc) }} – {{ inResourceZone(booking.endsAtUtc) }}
+                  · {{ booking.userName }}
+                  @if (booking.status === 'Pending') {
+                    <span class="series-marker">awaiting approval</span>
+                  }
+                </li>
+              }
+            </ul>
+          }
+        }
+      </div>
+
+      @if (rejection(); as rejection) {
+        @if (rejection.formMessage) {
+          <p class="form-error" role="alert">{{ rejection.formMessage }}</p>
+        }
+      }
+
+      <div class="form-actions">
+        <button type="submit" class="primary-action" [disabled]="!canSubmit()">
+          {{ submitting() ? 'Saving…' : mode() === 'create' ? 'Create blackout' : 'Save changes' }}
+        </button>
+        <button type="button" class="secondary-action" [disabled]="submitting()" (click)="cancelForm()">
+          Cancel
+        </button>
+      </div>
+    </form>
+  }
+
+  @if (blackoutBeingDeleted(); as blackout) {
+    <!--
+      The delete confirmation, and it has to say the thing that is *not*
+      symmetrical: decision 0019's cascade is forwards-only, so deleting a
+      blackout does not give anybody their booking back. An admin who thinks
+      delete is an undo would be wrong in a way nothing else on this screen
+      would correct.
+    -->
+    <section class="danger-zone" role="alertdialog" aria-label="Confirm deleting this blackout">
+      <h2 class="danger-heading">Delete this blackout?</h2>
+      <p class="danger-detail">
+        {{ inResourceZone(blackout.startsAtUtc) }} – {{ inResourceZone(blackout.endsAtUtc) }}
+        @if (blackout.reason) {
+          — {{ blackout.reason }}
+        }
+      </p>
+      <p class="danger-detail">
+        <strong>Bookings this blackout already cancelled stay cancelled.</strong> Deleting it only
+        stops it blocking future bookings; it does not restore anything or notify anyone.
+      </p>
+      <p class="danger-detail">This cannot be undone.</p>
+
+      <div class="danger-actions">
+        <button type="button" class="danger-button" [disabled]="deleting()" (click)="confirmDelete()">
+          {{ deleting() ? 'Deleting…' : 'Delete it' }}
+        </button>
+        <button type="button" class="secondary-action" [disabled]="deleting()" (click)="cancelDeleting()">
+          Keep it
+        </button>
+      </div>
+
+      @if (rejection(); as rejection) {
+        @if (rejection.formMessage) {
+          <p class="form-error" role="alert">{{ rejection.formMessage }}</p>
+        }
+      }
+    </section>
+  }
+
+  <div class="footer-actions">
+    <!--
+      A real link rather than a click handler — see the note in the
+      availability-windows editor. No save-in-flight guard here: a blackout
+      create or edit happens in its own inline form, and this footer is not
+      part of it.
+    -->
+    <a class="secondary-action" [routerLink]="['/admin/resources', resourceId]">Back to resource</a>
+  </div>
+}

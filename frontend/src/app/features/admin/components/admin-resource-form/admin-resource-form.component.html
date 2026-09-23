@@ -315,6 +315,17 @@
         Manage approvers
       </a>
     </section>
+
+    <section class="related">
+      <h2 class="related-heading">Blackouts</h2>
+      <p class="related-detail">
+        Periods when this resource is closed. A blackout takes priority over everything —
+        <strong>bookings that overlap one are cancelled</strong>.
+      </p>
+      <a class="secondary-action" [routerLink]="['/admin/resources', resourceIdOrNull(), 'blackout-periods']">
+        Manage blackouts
+      </a>
+    </section>
   }
 
   @if (mode === 'edit' && !isArchived()) {

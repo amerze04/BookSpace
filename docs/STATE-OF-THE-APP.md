@@ -1,6 +1,7 @@
 # BookSpace — state of the app
 
-**As of 2026-09-22**, at the close of **WP-7** — the whole package, not just a phase.
+**As of 2026-09-23**, at the close of the **admin console** — all seven phases,
+built on top of a completed WP-7.
 
 A snapshot of what exists, what is verified, and what is deliberately not built
 yet. Written to be read on its own — if you are picking this up cold, or
@@ -50,10 +51,23 @@ today.
 | Admin — resource form | `/admin/resources/new`, `/admin/resources/:id` | Done (phase 3). Create, edit, and archive behind a hard confirmation |
 | Admin — opening hours | `/admin/resources/:id/availability-windows` | Done (phase 4). Weekly editor, replace-the-set, decision `0022`'s midnight convention |
 | Admin — approvers | `/admin/resources/:id/approvers` | Done (phase 5). Eligibility-filtered picker over `GET /users`, replace-the-set |
+| Admin — blackouts | `/admin/resources/:id/blackout-periods` | Done (phase 6). Per-row CRUD with a real delete; previews and reports the cancellation cascade |
+
+Every seam between those five admin screens is followed by
+`app/tests/navigation-chain.spec.ts` from the link the previous screen actually
+renders (phase 7), and an administrator's click-through script lives at
+[`docs/admin-clickthrough.md`](admin-clickthrough.md) — **walked end to end on
+2026-09-23, everything passing**. Re-walk it after any change to the admin
+flows.
 
 A member can, today, sign in → browse resources → check availability → pick a
 slot → book it (one-off or recurring) → see it on their calendar → open it →
 cancel it, or cancel the whole series.
+
+And a tenant administrator can, today, create a resource → publish its opening
+hours → gate it for approval → staff or unstaff its approvers → black out time
+on it, seeing what that cancels → archive it. Both walks have been done by hand,
+not only proven endpoint by endpoint.
 
 ---
 
@@ -63,7 +77,7 @@ cancel it, or cancel the whole series.
 |---|---|---|
 | Backend unit | 1071 | |
 | Backend integration | 536 | Needs a real SQL Server — the in-memory provider has no locking and no RLS |
-| Frontend (vitest) | 1044 | |
+| Frontend (vitest) | 1114 | |
 
 Production build clean. The five named acceptance-criteria tests all pass:
 concurrency (AC-1), isolation (AC-4), DST (AC-3), approval re-check (AC-5),
@@ -123,13 +137,13 @@ Treat a visual pass as required before signing off any screen.
 
 Each of these is a decision with a reason, not an oversight.
 
-- **Resource administration UI** — **resources, opening hours and approvers are
-  built** (admin console phases 3-5, 2026-09-23); blackout periods are not, and
-  are phase 6 of
-  [`docs/admin-plan.md`](admin-plan.md). The backend has supported all of it
-  since WP-3 and the provided designs assumed it, but every work package's task
-  list was member-facing, so the buttons were left absent rather than shown
-  disabled and flagged each time.
+- **Resource administration UI** — **built** (admin console, phases 3-6 for the
+  screens and phase 7 for the seams between them, 2026-09-23): resources,
+  opening hours, approvers and blackout periods. The backend had supported all
+  of it since WP-3 and the provided designs assumed it, but every work package's
+  task list was member-facing, so the buttons were left absent rather than shown
+  disabled, and flagged each time. **What is still missing is user
+  management** — see §6.
 - **A "My Bookings" list** — cancelled on 2026-09-18. The calendar answers the
   same question, and the source work package never asked for the screen.
 - **Cancelled and rejected bookings on the calendar** — neither holds any time,
@@ -198,22 +212,36 @@ Each of these is a decision with a reason, not an oversight.
 
 ## 6. What's next
 
-**WP-7 is closed and no mentor work package is in flight.** What follows is the
-backlog as it stands, in the order it is worth picking up.
+**WP-7 is closed, the admin console is closed, and no mentor work package is in
+flight.** What follows is the backlog as it stands, in the order it is worth
+picking up.
 
-1. **The admin console** — tenant admin CRUD for resources, availability
-   windows, approvers and blackout periods. **In progress**:
-   [`docs/admin-plan.md`](admin-plan.md), seven phases, of which **phases 1–5
-   are done** (2026-09-22 to 2026-09-23). Owner-initiated rather than
-   mentor-issued, and the largest thing still missing from the application —
-   flagged as a gap since WP-7 Phase 1 (§4). Phase 1 was the one backend
-   addition the plan could not avoid: **`GET /users`**, without which approvers
-   cannot be assigned from a UI at all, because nothing in the API listed
-   users — it answers the decision `0018` eligible set only, not a user
-   directory, and phase 5 is the screen it was built for. Phase 2 put the shell
-   in place; phase 3 built the resource list and the create/edit/archive form;
-   phase 4 the weekly opening-hours editor; phase 5 the approvers picker.
-   **Phase 6, blackout periods, is the one remaining screen.**
+**Just closed, for context on what the next item inherits:** the **admin
+console** — tenant admin CRUD for resources, opening hours, approvers and
+blackout periods, [`docs/admin-plan.md`](admin-plan.md), all seven phases
+2026-09-22 to 2026-09-23, and the owner's own click-through walked end to end on
+the last day. Owner-initiated rather than mentor-issued, and the largest thing
+that had been missing from the application — flagged as a gap since WP-7 Phase 1
+(§4). Its one backend addition was **`GET /users`**, without which approvers
+cannot be assigned from a UI at all, because nothing in the API listed users; it
+answers the decision `0018` eligible set only, and is deliberately **not** the
+start of a user directory. Which is exactly what item 1 now has to build.
+
+1. **User management** — there is no way to add a person, deactivate one, or
+   give somebody the Approver role. Raised by the owner on 2026-09-23 while
+   reviewing the admin console, and confirmed: `User` already has `AddRole`,
+   `RemoveRole`, `Deactivate` and `Reactivate`, and **there is no application or
+   API layer above them at all** — `UsersController` has exactly one action, the
+   eligibility-filtered `GET /users`. It is a backend package on the scale of
+   WP-3 plus a frontend the size of admin phases 3 and 5 combined, not an eighth
+   phase of the console. **The question that decides its shape is how a
+   provisioned user gets a password**: there is no email sender anywhere in
+   `backend/src` and no change-password endpoint, so the options are an
+   admin-set password, a one-time activation token, or building the first email
+   path in the application. Now unblocked — the console it would slot into is
+   built, and the approvers picker is the screen that will show a deactivation
+   immediately (its "no longer able to approve" group exists and has never been
+   reachable, because nothing can deactivate anybody).
 2. **The design pass** the owner has flagged — the calendar, the booking detail,
    the cancel confirmation, and the approval queue with its decision panel were
    all built without a provided design, to the app's existing card vocabulary.
@@ -224,11 +252,18 @@ backlog as it stands, in the order it is worth picking up.
    (§5): an idempotency key on `POST /bookings`, mirroring the one
    `POST /recurrence-rules` already has, and a `GET /recurrence-rules/{id}` so
    the booking screen can stop offering a series cancel optimistically.
-4. **The three background jobs** — reminder dispatch, no-show release, stale
+4. **Concurrency on the replace-the-set editors** — `admin-plan.md` §4.2, and
+   the one thing the console could not fix from the frontend. `Resources` has a
+   `RowVersion`, but no Resources DTO carries it, so two admins editing one
+   resource's opening hours or approvers silently last-write-wins and the loser
+   is never told. Putting the version on the wire is a small backend change;
+   it is listed here rather than folded into the console because nobody asked
+   for it and the admin team is small enough to tolerate it meanwhile.
+5. **The three background jobs** — reminder dispatch, no-show release, stale
    approval expiry. Specified, with their idempotency constraint in the schema,
    but nothing runs them, which is why the approval queue can show requests whose
    slot has already passed.
-5. **The small open items** in §5 — the booking form's `?mode` write-back and the
+6. **The small open items** in §5 — the booking form's `?mode` write-back and the
    all-zero-GUID 400.
 
 ---

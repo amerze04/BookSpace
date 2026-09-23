@@ -8,10 +8,18 @@ frontend and this is the largest thing still missing from the application.
 
 ## Status
 
-**In progress.** Phases 1–5 are done; phases 6–7 below. The owner asked on
-2026-09-22 that each phase be built in one go rather than split into separately
-reviewable steps, on the judgment that they are individually small enough —
-so unlike WP-7, there is no per-phase step breakdown written ahead of the work.
+**Done 2026-09-23.** All seven phases are built, and the owner walked
+[`admin-clickthrough.md`](admin-clickthrough.md) end to end on 2026-09-23 —
+paths A to E, everything passing, no defects reported. That walk is what closes
+this, not the test suite and not the API probes: the claim is that an
+administrator can run their tenant without being misled, and no amount of
+request/response evidence converts into it. Same rule WP-7 applied to its first
+acceptance criterion.
+
+The owner asked on 2026-09-22 that each phase be built in one go rather than
+split into separately reviewable steps, on the judgment that they are
+individually small enough — so unlike WP-7, there is no per-phase step breakdown
+written ahead of the work.
 
 | Phase | State |
 |---|---|
@@ -20,8 +28,8 @@ so unlike WP-7, there is no per-phase step breakdown written ahead of the work.
 | 3 — Resources: create, edit, archive | **Done 2026-09-23** |
 | 4 — Availability windows editor | **Done 2026-09-23** |
 | 5 — Approvers editor | **Done 2026-09-23** |
-| 6 — Blackout periods | Not started |
-| 7 — Wiring, click-through, close | Not started |
+| 6 — Blackout periods | **Done 2026-09-23** |
+| 7 — Wiring, click-through, close | **Done 2026-09-23** |
 
 ---
 
@@ -422,14 +430,212 @@ FR-3.3, and the first screen phase 1's endpoint actually has a caller for.
   warning from the other side: emptying the list on a gated resource is allowed,
   and says the requests will go to the tenant's administrators.
 
-### Phase 6 — Blackout periods
-Per-row CRUD, the one screen with a real delete. Settles §4.4's question about
-what the cancellation confirmation can show.
+### Phase 6 — Blackout periods — **Done 2026-09-23**
+`/admin/resources/:id/blackout-periods`. FR-3.4, decisions `0001` and `0019`.
+The last screen, and the only one that is genuinely per-row CRUD with a real
+hard delete — §4.1 said making it look like the replace-the-set editors would
+misrepresent it, and it does not.
 
-### Phase 7 — Wiring, click-through, close
-No new screens. A navigation-chain spec for the admin paths in the shape WP-7
-Phase 7 step 1 established, a click-through script for an admin — WP-7's history
-says that is where the bugs are — and the write-up.
+**§4.4 is settled, and the answer is better than the question assumed.** The
+open question was whether a confirmation could show which bookings a blackout
+will cancel, given the cascade happens inside the POST. Two things found by
+reading the backend rather than guessing:
+
+- **The response already reports exactly what was cancelled** —
+  `CancelledBookingSummary`, on both the create and the edit bodies, carrying the
+  booking's owner, its interval and its `recurrenceRuleId`.
+- **A pre-flight preview is obtainable and accurate.** `GET /bookings` takes
+  `resourceId`, and its `from`/`to` are an **overlap** filter
+  (`EndsAtUtc > from && StartsAtUtc < to`) — the identical predicate
+  `FindBookingsToCancelAsync` uses.
+
+So the screen does both, and is careful about which is which:
+
+- **Before** — an opt-in preview ("Check what this would cancel"), from a real
+  query, filtered to `Pending`/`Confirmed` and not-yet-ended to match the
+  cascade. Labelled as being decided at save time, because a booking created in
+  between will be cancelled too. That race is documented in CLAUDE.md §6 and
+  cannot be closed from a browser, so the wording promises only what it can.
+- **After** — the record, from the response. Authoritative, and it names the
+  occurrences that belonged to a series, because an admin seeing five should
+  know they have punched holes in a series rather than ended it.
+
+Showing only the first would be a promise the screen cannot keep; only the
+second would mean an admin learns what they cancelled afterwards.
+
+Other things true now:
+
+- **An admin types in the resource's timezone, not their own**, matching decision
+  `0003` and the confusion the WP-7 click-through surfaced. A blackout is an
+  *instant*, unlike an availability window, so `blackouts/blackout-form.ts` owns
+  the conversion — a two-pass inverse correcting against `utcToResourceLocal`,
+  the same technique `availability-grid.ts` uses, generalized to an arbitrary
+  date. Tested on both sides of a real Warsaw DST transition, and for the gap and
+  ambiguity cases, which have no unique inverse and must not throw. The list
+  shows both zones.
+- **`BlackoutPeriodElapsed` is about the *end*, not the start.** A blackout that
+  began this morning and runs through tomorrow is legal — exactly what an admin
+  needs when a room floods. The copy says so, because otherwise the refusal reads
+  as "you cannot black out something that has started". It is a **422**, not the
+  400 its wording suggests; confirmed against the running API.
+- **The delete confirmation's load-bearing sentence is that deleting is not an
+  undo.** Decision `0019`'s cascade is forwards-only, so bookings a blackout
+  cancelled stay cancelled and nobody is notified. An admin who assumed otherwise
+  would be wrong in a way nothing else on the screen corrects.
+- **Nothing on this path ever offers a retry** — the strictest of the eight
+  dialects. A blackout write is not idempotent in any useful sense: repeating a
+  create makes a *second* blackout, `0019` allows overlaps so nothing refuses it,
+  and the first attempt may already have cancelled bookings that will never come
+  back.
+
+### Phase 7 — Wiring, click-through, close — **Done 2026-09-23**
+No new screens. The seams between the six screens, a systematic coverage sweep,
+a click-through script for an admin, and the write-up. 1114 vitest tests (20
+new), production build clean.
+
+**The sweep found two uncovered files and the seam tests found a real defect**,
+which between them is the argument for doing phase 7 at all rather than
+declaring the console done at phase 6.
+
+#### What the coverage sweep found
+
+Files were **enumerated, not scanned by name** — WP-7 Phase 7's lesson, learned
+there when an eyeball audit found two holes and the enumeration found five.
+Two admin files had shipped with no spec of their own:
+
+- **`rejection/approver-rejection.ts`** (phase 5). The seventh dialect, and the
+  only one of the eight without tests — missed because its name sits in the
+  middle of six covered siblings. Now has ten, and two of them are about a
+  security property rather than about copy: `ApproverNotEligible` must name
+  neither the person nor the cause, because decision `0018` collapses all three
+  causes into one code precisely so that naming one cannot confirm a
+  cross-tenant id exists (AC-4).
+- **`services/users.service.ts`** (phase 1). The client for the one endpoint
+  this console owns outright, asserted until now only by component specs that
+  mock it. Seven tests, including that an empty search term is *sent* rather
+  than treated as unset — that is how the picker returns to showing everybody,
+  and `strandedApprovers` refuses to trust an absence without it.
+
+**Deliberately left uncovered, with the reasoning rather than silence:**
+`core/http/rejection.ts` has no spec of its own and does not need one — all nine
+of its branches are exercised through the eight dialects, including the two odd
+ones (a non-`HttpErrorResponse` input and a 4xx whose body is not a
+ProblemDetails, both covered by `booking-rejection.spec.ts`). The rest of the
+sweep's list is wire-type modules with no runtime behaviour, plus
+`paged-result.ts`, `skip-error-toast.ts` and two presentational components.
+
+#### The defect the seam tests found
+
+**All three per-resource editors had a return leg that no test could follow.**
+Each one's "Back to resource" was a `<button (click)="goToResource()">`, which
+works when clicked and fails at everything else: it cannot be ctrl-clicked or
+opened in a new tab, and `navigation-chain.spec.ts` cannot follow it, because
+that file's whole discipline is reading the `href` the previous screen rendered.
+Nothing in the suite said so — each editor's own spec is about the component,
+and no component spec is about where the next screen is.
+
+They are real anchors now. Two details worth keeping:
+
+- **The in-flight guard survives as a shape change, not as a class.** An anchor
+  cannot be disabled, so while a save is in flight the availability-windows and
+  approvers editors render a disabled `<button>` instead, and swap back when it
+  settles. Leaving mid-save means never learning whether it landed, which is the
+  rule WP-7 Phase 3 established for every control on a submitting form. The
+  blackouts footer has no such guard and needs none: a blackout create or edit
+  happens in its own inline form.
+- **The archived branches now point at the resource too**, where they used to
+  send an admin all the way out to the list. An archived resource still exists
+  and its form still renders read-only, so the list is two hops further than the
+  place they came from. The **not-found** branches still go to the list, because
+  there the resource genuinely is not there.
+
+`goToResource()` and the `Router` injection that existed only for it are gone
+from all three components.
+
+#### What the navigation chain covers now
+
+Three tests added to `app/tests/navigation-chain.spec.ts`, in the shape WP-7
+Phase 7 step 1 established — every hop follows a rendered `href`, never a URL
+the test built:
+
+- **The loop, three times**: resource → editor → resource, for each of the three
+  editors. Walking the loop rather than each hop separately is what makes it an
+  assertion about *where* the link goes: a return leg pointing at the list would
+  pass a "does it navigate" test while costing two extra hops on every use.
+- **Decision `0028`'s loose end as a seam** — the gated-without-approvers
+  warning's "Assign approvers" link is followed onto a screen that loads.
+- **An Approver bounced off all six admin URLs**, not just the entrance. The
+  guard is on the parent route, and an approver is the interesting case rather
+  than a member: they hold a privileged role, have their own nav item, and are
+  the most likely person to try the URL.
+
+#### Verified against the running API, 2026-09-23
+
+Not inferred from the controllers — the numbers in the click-through come from
+this probe:
+
+- `GET /users` returns **exactly two** people for Acme (Resource Approver,
+  Tenant Admin) and no Member. Default page size 20.
+- `GET /resources?includeArchived=true` returns six, three archived.
+- `PUT` on an archived resource → **422**; a genuinely overlapping window pair →
+  **409**; a blackout that has already ended → **422**.
+- Member and Approver both → **403** on `GET /users` and `POST /resources`;
+  anonymous → **401**.
+
+Two facts found in the live data are now load-bearing in the click-through,
+because they exercise rules that would otherwise need to be manufactured: the 3D
+Printer has adjacent `09:00–12:00` / `12:00–17:00` windows on every weekday (so
+adjacency-is-not-overlap is already proven in the dataset), and the Audi A5 has
+a Monday window closing at `23:59:59` (decision `0022`'s midnight convention,
+live).
+
+#### The click-through
+
+[`admin-clickthrough.md`](admin-clickthrough.md). Five paths — the catalogue,
+opening hours, approvers, blackouts, and the deliberate wrong turns — shaped by
+this console's own bug history rather than by its feature list. It is a written
+artefact, not a claim: **phase 7 is not closed by it, the owner's walk is.**
+That is the same rule WP-7 applied to its first acceptance criterion, which was
+deliberately not ticked on API evidence that had existed for four days.
+
+Path E exists because that is where this project's bugs have lived. Three of its
+items are checks on behaviour that is **known and accepted rather than correct**
+— the silent last-write-wins on the replace-the-set editors (§4.2), the empty
+"no longer able to approve" group that cannot be produced without a user
+management backend, and an archived resource that will sit in the list forever
+because there is no unarchive. Each says so on the page, so that finding them is
+not mistaken for finding a bug.
+
+#### The walk — paths A to E, 2026-09-23
+
+**The owner walked it end to end and everything passed.** No defects reported,
+no correction needed to the script, nothing deferred out of it. Phase 7 and the
+admin console close here.
+
+That is a different result from WP-7's walk, which found a real bug on its first
+pass (an approver blocked from approving their own request, on a rule I had
+invented and the suite was asserting). Two things are worth writing down rather
+than quietly enjoying, because the difference is the useful part:
+
+- **It is evidence about this console, not about the method.** The click-through
+  earning nothing on one walk does not make the next one optional — WP-7's bugs
+  were found on a first walk too, and the screens here have exactly the same
+  property that produced them: what determines what you see is not what the
+  assertions are about. `admin-clickthrough.md` stays a live artefact, to be
+  **re-walked after any change to the admin flows**, the same way
+  `wp7-clickthrough.md` is re-walked after a change to booking or approvals.
+- **The three known-and-accepted items in path E were confirmed as behaving as
+  written**, rather than being skipped. The silent last-write-wins on the
+  replace-the-set editors (§4.2), the empty "no longer able to approve" group,
+  and an archived resource that stays in the list forever are all still true,
+  still flagged in §6, and are the console's honest edges rather than bugs the
+  walk missed.
+
+What this closes, precisely: **an administrator can create a resource, publish
+opening hours against it, gate it for approval, staff or unstaff its approvers,
+black out time on it and archive it, entirely through the UI** — and can be
+refused, told why, and told what a refusal did or did not change, at every point
+where the API can say no.
 
 ---
 

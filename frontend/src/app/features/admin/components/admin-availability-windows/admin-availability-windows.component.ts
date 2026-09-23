@@ -1,5 +1,5 @@
 import { Component, DestroyRef, computed, inject, signal } from '@angular/core';
-import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { ActivatedRoute, RouterLink } from '@angular/router';
 import { BreadcrumbService } from '../../../../layout/breadcrumb.service';
 import { ResourcesService } from '../../../resources/services/resources.service';
 import { DayOfWeekName, ResourceDetail } from '../../../resources/models/resources.models';
@@ -39,13 +39,15 @@ import {
 export class AdminAvailabilityWindowsComponent {
   private readonly resourcesService = inject(ResourcesService);
   private readonly route = inject(ActivatedRoute);
-  private readonly router = inject(Router);
   private readonly breadcrumbService = inject(BreadcrumbService);
   private readonly destroyRef = inject(DestroyRef);
 
   protected readonly weekdays = EDITOR_WEEKDAYS;
 
-  private readonly resourceId = this.route.snapshot.paramMap.get('id')!;
+  // `protected`, not `private`, because the template reads it: admin console
+  // phase 7 made the return leg a real `routerLink` rather than a click
+  // handler, so the id has to be reachable from the markup.
+  protected readonly resourceId = this.route.snapshot.paramMap.get('id')!;
 
   protected readonly resource = signal<ResourceDetail | null>(null);
   protected readonly rows = signal<WindowRow[]>([]);
@@ -174,10 +176,6 @@ export class AdminAvailabilityWindowsComponent {
         }
       },
     });
-  }
-
-  protected goToResource(): void {
-    void this.router.navigate(['/admin/resources', this.resourceId]);
   }
 
   private updateRow(key: string, update: (row: WindowRow) => WindowRow): void {
