@@ -917,7 +917,7 @@ What is true before touching this area:
   happy path — and it found a real bug on its first walk. Re-walk it after any
   change to the booking or approval flows.
 
-### Admin console — tenant administration UI — **Planned** (2026-09-22)
+### Admin console — tenant administration UI — **In progress** (started 2026-09-22)
 Plan: [`docs/admin-plan.md`](docs/admin-plan.md). **Owner-initiated, not a
 mentor work package** — the same standing as the hardening pass below and the
 resource-list-filters entry, and deliberately *not* numbered as a WP, because
@@ -931,16 +931,21 @@ approvers, and blackout periods. It is not new scope; it has been flagged as a
 gap in `docs/wp7-plan.md` §7 and `STATE-OF-THE-APP.md` §4 since WP-7 Phase 1,
 with the buttons left absent rather than shown disabled.
 
-Seven phases, planned but not started. Three things settled before planning:
+Seven phases; **phase 1 is done**, phases 2–7 are frontend. Each phase is built
+in one go rather than split into steps (owner's call, 2026-09-22). Three things
+settled before planning:
 
 - **Scope is resources, windows, approvers and blackouts** — what the backend
-  already supports. **User management is out**: there is no users controller at
-  all, so it would be a backend package before any UI.
-- **One backend addition is unavoidable: `GET /users`.** `PUT
-  /resources/{id}/approvers` takes user ids and *nothing in the API lists
-  users*, so an admin can see who is assigned and cannot discover who they could
-  assign. It lands tenant-scoped, TenantAdmin-only, filtered to decision
-  `0018`'s eligible set.
+  already supports. **User management is out**: inviting, deactivating and
+  assigning roles have no backend at all. `UsersController` exists since phase 1
+  but is a single eligibility-filtered read — it is not the start of a user
+  directory, and nothing should treat it as one.
+- **The one backend addition, `GET /users`, is built** (phase 1, 2026-09-22).
+  `PUT /resources/{id}/approvers` takes user ids and nothing in the API listed
+  users, so an admin could see who was assigned and could not discover who they
+  could assign. Tenant-scoped, TenantAdmin-only, paged, filtered to decision
+  `0018`'s eligible set. See the "Phase 1" paragraph below before using it — the
+  route is deliberately broader than the answer.
 - **Archive stays irreversible and the UI exposes it anyway**, behind a hard
   confirmation. There is no unarchive and `ResourcesController` argues in writing
   against adding one.
@@ -956,6 +961,35 @@ rather than assumed:
   a `RowVersion` (decision `0023`'s amendment) but **no Resources DTO carries
   it**, so two admins editing one resource's windows silently last-write-wins.
   Tolerable for a small admin team; closing it is a backend change.
+
+**Phase 1 — `GET /users` — Done 2026-09-22.** 1073 unit + 536 integration tests
+(25 new), plus a live probe of the running API. What is true before using it:
+
+- **The route is broader than the answer, deliberately.** `GET /users` returns
+  the decision `0018` eligible-approver set — own-tenant, active, `Approver` or
+  `TenantAdmin` — not the tenant's users, and there is no parameter that widens
+  it. A Member is absent by design, not by a bug. Said so in
+  `ListUsersQueryRequest`'s own header, because a route named `/users` that
+  answers with a subset is exactly the thing someone later reads as broken.
+- **The eligibility rule now lives in SQL, and had to.** It used to run in memory
+  in `UserRepository.FindEligibleApproverIdsAsync`, deliberately, to avoid an
+  `EF.Property` expression over the private `_roleAssignments` backing field.
+  That trade does not survive paging: filtering after `OFFSET`/`FETCH` pages over
+  the wrong set and returns a `TotalCount` counting people the write path would
+  refuse. It is now one `Expression<Func<User, bool>>` used by **both** repository
+  methods — two copies could disagree, and the disagreement would show up as an
+  admin being offered somebody `ReplaceApprovers` then rejects, with `0018`
+  collapsing every reason into `ApproverNotEligible` so no screen can say why.
+- **`UsersController` stacks both policies**, unlike `ResourcesController` where
+  the class-level policy is the weaker one so a forgotten attribute can only
+  narrow a write. There is no member-facing read here to be weaker for, and
+  `TenantAdmin` alone admits SysAdmin by role — who carries no `orgId` claim, so
+  the tenant filter would answer them `200` with an empty page. `TenantMember`
+  alongside it turns that into the 403 it should be. Verified live.
+- **No migration, no new reason code, and no existing contract changed.** The
+  only behavioural change outside the new endpoint is that approver eligibility
+  is evaluated by SQL Server rather than by C# — same rule, same answers, proven
+  by the existing `ApproverEndpointTests` still passing untouched.
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across

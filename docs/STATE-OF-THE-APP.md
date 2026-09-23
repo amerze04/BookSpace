@@ -11,7 +11,7 @@ demoing it, start here. The reasoning behind any individual decision lives in
 
 ## 1. What works today
 
-### Backend — complete through WP-5
+### Backend — complete through WP-5, plus the admin console's `GET /users`
 
 Every feature the first five work packages asked for is built, tested and
 running.
@@ -23,6 +23,7 @@ running.
 | Auth | Credential login, 15-minute access tokens, rotating refresh tokens with reuse detection, four RBAC roles |
 | Resources & availability | Full CRUD, availability windows, blackout periods, approver assignment, the bookable-slot query |
 | Booking engine | One-off creation through `dbo.CreateBooking` under `UPDLOCK, HOLDLOCK` — **zero double-bookings under concurrent load, the project's primary acceptance bar, proven by test** |
+| Approver discovery | `GET /users` — the decision `0018` eligible set, paged, TenantAdmin-only (admin console phase 1, 2026-09-22) |
 | Recurrence | Series creation fully materialized up front, per-occurrence outcome reporting, DST spring-forward and fall-back policies |
 | Approvals | Request/approve/reject with a capacity re-check at approval time (AC-5) |
 | Error contract | One `AppException` hierarchy → `ErrorKind` → status, with a machine-readable reason code per failure |
@@ -57,7 +58,7 @@ cancel it, or cancel the whole series.
 | Suite | Count | Notes |
 |---|---|---|
 | Backend unit | 1073 | |
-| Backend integration | 511 | Needs a real SQL Server — the in-memory provider has no locking and no RLS |
+| Backend integration | 536 | Needs a real SQL Server — the in-memory provider has no locking and no RLS |
 | Frontend (vitest) | 861 | |
 
 Production build clean. The five named acceptance-criteria tests all pass:
@@ -121,8 +122,9 @@ Each of these is a decision with a reason, not an oversight.
 - **Resource administration UI** — create, edit, archive, manage availability
   windows / approvers / blackouts. The backend has supported all of it since
   WP-3 and the provided designs assume it, but WP-7's task list is member-facing
-  only. Buttons are absent rather than shown disabled. **Now planned** —
-  [`docs/admin-plan.md`](admin-plan.md), 2026-09-22.
+  only. Buttons are absent rather than shown disabled. **Now being built** —
+  [`docs/admin-plan.md`](admin-plan.md); phase 1 (`GET /users`) landed
+  2026-09-22, the six frontend phases have not started.
 - **A "My Bookings" list** — cancelled on 2026-09-18. The calendar answers the
   same question, and the source work package never asked for the screen.
 - **Cancelled and rejected bookings on the calendar** — neither holds any time,
@@ -195,12 +197,15 @@ Each of these is a decision with a reason, not an oversight.
 backlog as it stands, in the order it is worth picking up.
 
 1. **The admin console** — tenant admin CRUD for resources, availability
-   windows, approvers and blackout periods. **Planned 2026-09-22, not started**:
-   [`docs/admin-plan.md`](admin-plan.md), seven phases. Owner-initiated rather
-   than mentor-issued, and the largest thing still missing from the application —
-   flagged as a gap since WP-7 Phase 1 (§4). Carries the one backend addition the
-   plan could not avoid: **`GET /users`**, without which approvers cannot be
-   assigned from a UI at all, because nothing in the API lists users.
+   windows, approvers and blackout periods. **In progress**:
+   [`docs/admin-plan.md`](admin-plan.md), seven phases, of which **phase 1 is
+   done** (2026-09-22) and the remaining six are all frontend. Owner-initiated
+   rather than mentor-issued, and the largest thing still missing from the
+   application — flagged as a gap since WP-7 Phase 1 (§4). Phase 1 was the one
+   backend addition the plan could not avoid: **`GET /users`**, without which
+   approvers cannot be assigned from a UI at all, because nothing in the API
+   listed users. It answers the decision `0018` eligible set only, not a user
+   directory.
 2. **The design pass** the owner has flagged — the calendar, the booking detail,
    the cancel confirmation, and the approval queue with its decision panel were
    all built without a provided design, to the app's existing card vocabulary.

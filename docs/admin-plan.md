@@ -8,14 +8,14 @@ frontend and this is the largest thing still missing from the application.
 
 ## Status
 
-**Planned, not started.** Phases below; per the convention every phase since
-WP-3 has followed, each phase's step-by-step breakdown is written into this
-document immediately before that phase starts, not drafted for all seven up
-front.
+**In progress.** Phase 1 is done; phases 2–7 below. The owner asked on
+2026-09-22 that each phase be built in one go rather than split into separately
+reviewable steps, on the judgment that they are individually small enough —
+so unlike WP-7, there is no per-phase step breakdown written ahead of the work.
 
 | Phase | State |
 |---|---|
-| 1 — `GET /users` (backend only) | Not started |
+| 1 — `GET /users` (backend only) | **Done 2026-09-22** |
 | 2 — The admin shell | Not started |
 | 3 — Resources: create, edit, archive | Not started |
 | 4 — Availability windows editor | Not started |
@@ -67,7 +67,7 @@ do and paid for**, when a screen shipped linking into a 404.
 | | `PUT /resources/{id}/blackout-periods/{id}` | TenantAdmin |
 | | `DELETE /resources/{id}/blackout-periods/{id}` | TenantAdmin |
 | | `GET /resources/{id}/blackout-periods` | TenantMember |
-| **Users** | **does not exist** | — |
+| **Users** | `GET /users` — **added by phase 1** | TenantAdmin |
 
 **The reason codes already exist and already have throwers** (WP-3): 
 `ResourceNotFound`, `InvalidTimeZone`, `CapacityBelowExistingBookings`,
@@ -76,9 +76,9 @@ do and paid for**, when a screen shipped linking into a 404.
 **dialect** over `booking-rejection.ts`'s existing machinery — a fifth one — and
 not a new error-handling scheme.
 
-### The one thing that has to be built on the backend
+### The one thing that had to be built on the backend — **built, phase 1**
 
-**There is no users endpoint of any kind.** `PUT /resources/{id}/approvers` takes
+**There was no users endpoint of any kind.** `PUT /resources/{id}/approvers` takes
 `approverUserIds`, and `GET /resources/{id}` returns the *currently assigned*
 approvers (id and name) — so an admin can see who is assigned and has no way
 whatever to discover who they could assign. The approvers screen is impossible
@@ -89,6 +89,14 @@ TenantAdmin-only, filtered to decision `0018`'s eligible set** — own-tenant,
 active, holding `Approver` or `TenantAdmin`. The narrowest endpoint that makes
 the screen possible, and it reuses an eligibility rule the codebase already
 enforces rather than inventing a second definition of "eligible".
+
+Built 2026-09-22 as `GET /users`, exactly that shape. It returns `id`,
+`fullName`, `email` and `roles`. Email is on the wire here and deliberately is
+**not** on `ApproverSummary`: that one answers "who approves this room" for every
+member of the tenant, where an address is contact information nobody asked for,
+while this one is TenantAdmin-only and its job is telling two people with the
+same name apart. Roles are there because `0018` leaves the picker nothing else
+true to say about eligibility.
 
 ---
 
@@ -183,14 +191,42 @@ decision.**
 
 ## 5. Phasing
 
-Same discipline as WP-7: each phase is small enough to review on its own, and
-its steps are written immediately before it starts.
+Each phase is small enough to review on its own. Unlike WP-7 they are **not**
+split into separately reviewable steps — the owner's call on 2026-09-22 — so a
+phase is built, tested and reported in one go.
 
-### Phase 1 — `GET /users` (backend only)
+### Phase 1 — `GET /users` (backend only) — **Done 2026-09-22**
 The one backend addition. Tenant-scoped, TenantAdmin-only, filtered to decision
 `0018`'s eligible set, paged like every other list (decision `0015`). Reviewable
 entirely on its own, before any frontend depends on it — the shape WP-7 Phase 6
 step 1 proved worth taking.
+
+Three things are true now that were not when this was planned, and phase 5's
+approvers picker is built against them:
+
+- **The route is broader than the answer, deliberately.** `GET /users` returns
+  the eligible-approver set, not the tenant's users, and there is no parameter
+  that would widen it. Said plainly in `ListUsersQueryRequest`'s own header so
+  nobody later reads the absence of a Member as a bug.
+- **The eligibility rule moved out of memory and into SQL.** It used to run in
+  C# over an already-fetched candidate list (`FindEligibleApproverIdsAsync`), on
+  the argument that an `EF.Property` expression over the private
+  `_roleAssignments` backing field is fragile and unreadable. That trade stops
+  working for a *paged* answer: filtering after `OFFSET`/`FETCH` pages over the
+  wrong set and reports a `TotalCount` that counts ineligible people. The
+  predicate is now one `Expression<Func<User, bool>>` in `UserRepository`, used
+  by both methods — because two copies could disagree, and the way they would
+  disagree is the worst available: an admin offered somebody the write path then
+  refuses, with `0018` collapsing every reason into `ApproverNotEligible` so the
+  screen cannot say why.
+- **Both authorization policies are stacked on the controller**, unlike
+  `ResourcesController` where the class policy is the weaker one. `TenantAdmin`
+  admits SysAdmin by role, and a SysAdmin has no `orgId` claim, so on that policy
+  alone this endpoint would answer them `200` with an empty page — a confusing
+  way to say 403. `TenantMember` alongside it is what makes the refusal explicit.
+  Verified live: member `403`, approver `403`, anonymous `401`.
+
+No new reason code, no migration, no change to any existing endpoint's contract.
 
 ### Phase 2 — The admin shell
 `isTenantAdmin` on `AuthService` (only `canApproveBookings` exists today), an
