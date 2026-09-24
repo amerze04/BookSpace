@@ -164,6 +164,23 @@ public static class ReasonCodes
     // BookingNotCancellable: there is an actor and a time to overwrite.
     public const string RecurrenceRuleNotCancellable = "RecurrenceRuleNotCancellable";
 
+    // ---- Users (user management phase 3) ----
+
+    // ErrorKind.Conflict. The email address already belongs to an account.
+    //
+    // **One code, one message, whether the address is in the caller's own tenant
+    // or another** — decision `0010` made email unique platform-wide, and
+    // answering differently in the two cases would turn POST /users into a
+    // cross-tenant existence oracle (AC-4). That is the concern `0018` collapsed
+    // three approver-ineligibility reasons into one code to avoid, and
+    // docs/user-management-plan.md §3.2 settles it the same way.
+    //
+    // The handler does not merely *decline* to distinguish the two — it cannot.
+    // Nothing on the create path reads Users unfiltered; the refusal comes from
+    // UQ_Users_Email firing on the insert (CLAUDE.md §6 tier 1, uniqueness), so
+    // the code that raises it never learns which tenant the other account is in.
+    public const string EmailAlreadyInUse = "EmailAlreadyInUse";
+
     // ---- Approvals (WP-5 Phase 3, FR-7.1-7.5, AC-5) ----
 
     // ErrorKind.RuleViolation. Approve or reject called on a booking that is

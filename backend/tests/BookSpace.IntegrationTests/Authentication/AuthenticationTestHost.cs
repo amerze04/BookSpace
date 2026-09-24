@@ -75,6 +75,12 @@ public sealed class AuthenticationTestHost : WebApplicationFactory<Program>, IAs
         builder.UseSetting("Email:FromDisplayName", "BookSpace Integration Tests");
         builder.UseSetting("Email:DevelopmentSink:Directory", EmailSinkDirectory);
 
+        // ActivationOptions is ValidateOnStart too, and ActivationUrl has no
+        // default on purpose — the API cannot guess its frontend's origin (user
+        // management phase 3). The value is asserted against in
+        // CreateUserEndpointTests, so it is a real URL rather than a placeholder.
+        builder.UseSetting("Activation:ActivationUrl", "https://bookspace.test/activate");
+
         // Makes PolicyProbeController discoverable. The API has no business
         // endpoints yet, so without it there is nothing for the authorization
         // policies to guard in a test.

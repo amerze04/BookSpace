@@ -1,5 +1,6 @@
 using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.Users.ListUsers;
+using BookSpace.Domain.Entities;
 
 namespace BookSpace.Application.Abstractions;
 
@@ -70,4 +71,22 @@ public interface IUserRepository
     // Approver reaches only the ones listing them. Notifying an Approver about a
     // resource they cannot act on would be worse than notifying nobody.
     Task<IReadOnlyCollection<Guid>> FindTenantAdminUserIdsAsync(CancellationToken cancellationToken);
+
+    // User management phase 3: POST /users.
+    void Add(User user);
+
+    // Persists everything tracked on this unit of work — the new user, its role
+    // assignment, and the activation token added alongside it through
+    // IActivationTokenRepository, which shares the same DbContext. One save, so
+    // a provisioned account and the only means of signing into it cannot exist
+    // without each other.
+    //
+    // **Throws EmailAlreadyInUseException when UQ_Users_Email refuses the
+    // insert**, which is the only place that refusal is decided. There is no
+    // pre-check, deliberately: a read that could see another tenant's row would
+    // have to be an unfiltered one, and CLAUDE.md §4.2 keeps that surface to the
+    // two named authentication methods. Letting the unique index answer is both
+    // race-free (CLAUDE.md §6 puts uniqueness in tier 1) and structurally
+    // incapable of telling the caller which tenant the collision is in.
+    Task SaveChangesAsync(CancellationToken cancellationToken);
 }

@@ -1,4 +1,5 @@
 using BookSpace.Application.Abstractions;
+using BookSpace.Application.Common.Errors;
 using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.Resources.GetResource;
 using BookSpace.Application.Features.Resources.ListResources;
@@ -207,4 +208,37 @@ internal sealed class FakeUserRepository : IUserRepository
         CancellationToken cancellationToken) =>
         throw new NotSupportedException(
             "FakeUserRepository does not list users; see UserReadEndpointTests.");
+
+    // ---- User management phase 3: POST /users ----
+    //
+    // Extended here rather than given a second fake, because a second
+    // implementation of IUserRepository is a second thing to update every time
+    // the interface moves — and the one nobody is looking at is the one that
+    // rots. CreateUserCommandRequestHandlerTests uses this.
+
+    public List<User> Added { get; } = [];
+
+    // Counted, not just flagged: the create handler's atomicity claim is that
+    // the account, its role and its activation token go in *one* save.
+    public int SaveCount { get; private set; }
+
+    // Makes the next save fail exactly as UQ_Users_Email does in the real
+    // repository. Modelled as a flag rather than by matching addresses, because
+    // the collision this stands in for may be with an account in *another*
+    // tenant — which a fake holding only this tenant's users could not see, and
+    // which is precisely the case the real path is built not to distinguish.
+    public bool NextSaveHitsDuplicateEmail { get; set; }
+
+    public void Add(User user) => Added.Add(user);
+
+    public Task SaveChangesAsync(CancellationToken cancellationToken)
+    {
+        if (NextSaveHitsDuplicateEmail)
+        {
+            throw new EmailAlreadyInUseException();
+        }
+
+        SaveCount++;
+        return Task.CompletedTask;
+    }
 }

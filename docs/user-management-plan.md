@@ -19,7 +19,7 @@ console on 2026-09-22 and which held up across all seven of its phases.
 |---|---|
 | 1 — `IEmailSender`, configuration, development sink | **Done 2026-09-23** |
 | 2 — Activation tokens, `User.SetPassword`, `POST /auth/activate` | **Done 2026-09-24** |
-| 3 — `POST /users` — create and invite | Not started |
+| 3 — `POST /users` — create and invite | **Done 2026-09-24** |
 | 4 — The directory read — widening `GET /users` | Not started |
 | 5 — Deactivate, reactivate, roles, and the last-admin guard | Not started |
 | 6 — Frontend: the user directory and the create form | Not started |
@@ -502,6 +502,75 @@ The new user is created **with no roles at all** — role assignment is phase 5,
 and a user with no roles can sign in and see nothing, which is the correct
 resting state for somebody an admin has not yet decided about. Whether creation
 should take an initial role set is a phase-3 call, not settled here.
+
+**Done 2026-09-24.** 1252 unit + 579 integration tests (58 + 24 new), build
+clean, no migration, and the whole flow walked against the running API —
+including reading the invitation off disk and following the link out of it.
+What is true before building on it:
+
+- **`EmailAlreadyInUse` is decided by `UQ_Users_Email`, and there is no
+  pre-check anywhere.** That is not a shortcut, it is the §3.2 guarantee made
+  structural: a pre-check able to see another tenant's row would have to be an
+  unfiltered read, and CLAUDE.md §4.2 keeps that surface to the two named
+  authentication methods. Letting the index answer is race-free (§6 puts
+  uniqueness in tier 1) and means the code raising the refusal **cannot** learn
+  which tenant the collision is in, rather than merely declining to say.
+  `UserRepository.SaveChangesAsync` translates SQL 2601/2627 — and checks the
+  *index name*, because `Users` also carries `UQ_Users_CalendarFeedToken` and
+  `UQ_Users_Org_Id` and reporting either as "that email is taken" would send an
+  admin hunting a problem that is not there.
+- **Order: save, then send.** An email that says "click here" must never go out
+  for an account the database refused, and a unit test asserts exactly that.
+  The account, its role and its activation token go in **one** save, so an
+  account cannot exist with no way into it.
+- **The new user gets `Member`, not "no roles at all" — a phase-3 call that
+  corrects this plan's own premise.** §5 said a roleless user "can sign in and
+  see nothing"; that is false. `AuthorizationPolicies.TenantMember` requires
+  only the `orgId` claim, so a roleless account can already browse and book
+  exactly as a Member can. Nothing in `src/` branches on `Role.Member` — it is
+  purely descriptive — so assigning it grants nothing extra, makes the row
+  describe what the account can actually do, and keeps a provisioned user
+  structurally identical to a seeded one (the seed assigns `Member` explicitly).
+  Approver and TenantAdmin are *not* assigned: those grant something, and
+  granting them is phase 5's job, with the last-admin guard.
+- **The placeholder credential is a PBKDF2 hash of two fresh Guids**, so there
+  is no window in which a provisioned account is sign-innable before its owner
+  activates it — proven live by three failed login attempts before activation.
+- **`Activation:ActivationUrl` is required with no default**, like
+  `Cors:AllowedOrigins`: the API cannot guess its frontend's origin, and a guess
+  would produce invitations that look right and lead nowhere. Startup fails
+  without it. `ActivationLinkBuilder` uses `UriBuilder`, which matters for the
+  case concatenation gets wrong — a configured URL that already has a query
+  string.
+- **The invitation is `InvitationEmail`, a pure function, text *and* HTML.** The
+  text half is required because a client that refuses HTML must still be able to
+  get the recipient in. The admin-typed full name is HTML-escaped, ampersand
+  first so nothing double-escapes.
+
+**A seam found while building, and closed:** FluentValidation's `.EmailAddress()`
+is deliberately lenient and accepts `"ada lovelace@acme.test"`, while MimeKit
+refuses an address with a space outright (measured in phase 1). Left alone, that
+paste-a-name typo would have produced a 201, a failed send, and a colleague who
+never hears anything. The validator now also rejects whitespace — the narrowest
+rule that turns it into a 400 naming the field. Login is deliberately **not**
+tightened to match: such an address can no longer be created, and refusing to
+let an existing account sign in would be a different change.
+
+**Verified live** (2026-09-24, dev database, development email sink): admin
+creates a user → `201`, `roles: ["Member"]`, `isActive: true`,
+`invitationEmailSent: true`; the sink writes a real multipart/alternative `.eml`
+whose HTML shows `Ada &lt;Test&gt; Lovelace` correctly escaped; the link taken
+**out of that file** activates the account (`204`) and the new user then signs in
+(`200`) with a JWT carrying `role: Member` and the right `orgId`; the link
+refuses a second use (`401`). A duplicate in the caller's own tenant and one in
+another tenant both answer `409 EmailAlreadyInUse` with **byte-identical**
+bodies. A Member and an Approver get `403`, anonymous `401`, a SysAdmin `403`,
+and an address with a space `400`.
+
+**The known gap this leaves, deliberately:** an admin can now create a colleague
+and **cannot see them anywhere** — `GET /users` still answers the decision `0018`
+eligible-approver set, so a freshly created Member is absent (confirmed live:
+`totalCount` stays 2). That is exactly what phase 4 is for.
 
 ### Phase 4 — The directory read
 Widening `GET /users` per §4.6's recommendation, with the eligible-approver set

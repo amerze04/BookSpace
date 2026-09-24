@@ -302,6 +302,11 @@ Resources and availability (WP-3): `ResourceNotFound`, `InvalidTimeZone`,
 `ApproversRequired`, `ApproverNotEligible`, `BlackoutPeriodElapsed`,
 `BlackoutPeriodNotFound`.
 
+Users (user management phase 3): `EmailAlreadyInUse` — `Conflict`, and one code
+with one message whether the address is in the caller's tenant or another
+(decision `0010` + AC-4). It is raised by `UQ_Users_Email` firing on the insert,
+not by a pre-check, so the path that reports it never learns which.
+
 Note that `BlackoutPeriod` above is a **booking** rejection despite its name —
 the interval a client asked for is covered by a blackout — so WP-3's blackout
 endpoints do not throw it. Creating a blackout is refused by
@@ -1281,7 +1286,7 @@ console above and the hardening pass below, and deliberately not numbered as a
 WP: WP-8 has not been issued, and §12's rule is that this roadmap mirrors the
 packages the mentor sends rather than an invented build order.
 
-Eight phases; **phases 1–2 are done (2026-09-23/24)**. Four questions were put to the owner and answered
+Eight phases; **phases 1–3 are done (2026-09-23/24)**. Four questions were put to the owner and answered
 before the plan was written, because none was answerable from the PRD or §9.
 Read the plan before starting any phase; what follows is only what is needed to
 know the shape.
@@ -1425,6 +1430,43 @@ matters before touching the auth surface again:
   explicitly-named repository methods may enter it. **Both changes were proven
   load-bearing by removing them** — 8 of 16 new integration tests fail without
   the first, exactly 1 without the second.
+
+**Phase 3 — `POST /users`, create and invite — Done 2026-09-24.** 1252 unit +
+579 integration tests (58 + 24 new), no migration, one new reason code. The
+whole flow walked against the running API, invitation email included. Before
+touching it:
+
+- **`EmailAlreadyInUse` (Conflict, 409) is decided by `UQ_Users_Email` and
+  nothing else.** No pre-check anywhere, deliberately: one able to see another
+  tenant's row would need an unfiltered read, which §4.2 reserves for the two
+  named authentication methods. So the refusal is race-free (§6 tier 1,
+  uniqueness) and the code raising it **cannot** learn which tenant the
+  collision is in — decision `0010` + AC-4, structurally rather than by
+  discipline. `UserRepository.SaveChangesAsync` translates SQL 2601/2627 and
+  checks the *index name*, since `Users` has two other unique indexes.
+- **Save first, send second.** No invitation goes out for an account the
+  database refused, and the account, its `Member` role and its activation token
+  land in one save.
+- **A created user gets `Member`.** This corrects the plan's premise that a
+  roleless user "sees nothing": `AuthorizationPolicies.TenantMember` needs only
+  the `orgId` claim, so roleless already means full member access. Nothing
+  branches on `Role.Member`, so it grants nothing extra and makes the row honest
+  — and matches what the seed does.
+- **A send failure still returns 201** with the activation link and
+  `invitationEmailSent: false` (plan §4.3). The provider's own detail never
+  reaches the response — it can name hosts and accounts.
+- **`Activation:ActivationUrl` is required with no default**, like
+  `Cors:AllowedOrigins`. The API cannot guess its frontend's origin and a guess
+  would email links that lead nowhere, so startup fails instead.
+- **The create validator is narrower than login's**, by one rule: no whitespace
+  in the email. FluentValidation's `.EmailAddress()` accepts
+  `"ada lovelace@acme.test"` and MimeKit refuses it, so without this a paste-a-
+  name typo produced a 201, a failed send and a colleague who never heard
+  anything. Login is deliberately not tightened to match.
+- **An admin still cannot see the colleague they just created.** `GET /users`
+  remains the `0018` eligible-approver set, so a new Member is absent from it.
+  Phase 4 is what closes that; until then the 201 body is the only record the
+  admin gets.
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across

@@ -1,10 +1,12 @@
 using System.Linq.Expressions;
 using BookSpace.Application.Abstractions;
+using BookSpace.Application.Common.Errors;
 using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.Users;
 using BookSpace.Application.Features.Users.ListUsers;
 using BookSpace.Domain.Entities;
 using BookSpace.Domain.Enums;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
 namespace BookSpace.Infrastructure.Persistence.Repositories;
@@ -60,6 +62,56 @@ internal sealed class UserRepository : IUserRepository
     {
         _context = context;
     }
+
+    // User management phase 3. Tracked through the tenant-filtered DbSet like
+    // everything else here — BookSpaceDbContext's SaveChanges guard (§4.2
+    // mechanism 2) then refuses the insert outright if the new user's OrgId
+    // disagrees with the caller's tenant, so nothing in the handler has to
+    // re-check it.
+    public void Add(User user) => _context.Users.Add(user);
+
+    // Also persists the ActivationToken the create handler added through
+    // IActivationTokenRepository: both repositories hold this same scoped
+    // DbContext, so one SaveChanges covers the account, its role and the only
+    // means of signing into it.
+    //
+    // **The one place a duplicate email is refused.** There is deliberately no
+    // pre-check in the handler: seeing another tenant's row would require an
+    // unfiltered read, and CLAUDE.md §4.2 keeps that surface to the two named
+    // methods on IAuthenticationUserRepository. Letting UQ_Users_Email answer is
+    // race-free (§6 puts uniqueness in tier 1) and means nothing on this path
+    // can learn which tenant the collision is in — which is what makes
+    // EmailAlreadyInUse safe to return for both cases (decision `0010`,
+    // docs/user-management-plan.md §3.2).
+    //
+    // 2601 is a duplicate key on a unique *index*, which is what
+    // HasIndex(...).IsUnique() creates and therefore what actually fires here;
+    // 2627 is the PRIMARY KEY / named UNIQUE CONSTRAINT form, included because
+    // nothing stops a future migration changing the enforcement mechanism. The
+    // same pair RecurrenceRuleRepository already tests for.
+    //
+    // The index name is checked, not just the error number: Users also carries
+    // UQ_Users_CalendarFeedToken and UQ_Users_Org_Id, and reporting either of
+    // those as "that email is taken" would send an admin looking for a problem
+    // that is not there. Anything else rethrows.
+    public async Task SaveChangesAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex)
+            when (ex.InnerException is SqlException { Number: 2601 or 2627 } sql
+                && sql.Message.Contains(EmailUniqueIndexName, StringComparison.Ordinal))
+        {
+            throw new EmailAlreadyInUseException();
+        }
+    }
+
+    // As named in UserConfiguration. A constant rather than a literal in the
+    // filter above, because a renamed index that nobody noticed here would turn
+    // a 409 into a 500 and only in production data.
+    private const string EmailUniqueIndexName = "UQ_Users_Email";
 
     public async Task<IReadOnlyCollection<Guid>> FindEligibleApproverIdsAsync(
         IReadOnlyCollection<Guid> candidateUserIds,

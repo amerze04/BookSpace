@@ -84,6 +84,7 @@ public static class DependencyInjection
         services.AddSingleton<IPasswordHasher, PasswordHasherAdapter>();
         services.AddSingleton<IRefreshTokenFactory, RefreshTokenFactory>();
         services.AddSingleton<IActivationTokenFactory, ActivationTokenFactory>();
+        services.AddSingleton<IActivationLinkBuilder, ActivationLinkBuilder>();
         services.AddSingleton<IAccessTokenService, JwtAccessTokenService>();
 
         // Scoped: these hold the request's DbContext.
