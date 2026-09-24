@@ -164,17 +164,33 @@ internal sealed class UserRepository : IUserRepository
             .ToListAsync(cancellationToken);
     }
 
-    // GET /users. Note what this method does *not* do: there is no "all users"
-    // branch and no parameter that would produce one. The route is narrower than
-    // its name on purpose — see ListUsersQueryRequest for why.
-    public Task<PagedResult<ListUsersQueryResponse>> ListEligibleApproversAsync(
+    // GET /users, for both callers. User management phase 4 added the "all
+    // users" branch this method's own comment used to say did not exist — see
+    // UserScope for why it is opt-in rather than the default.
+    //
+    // The two scopes differ by exactly one `Where`, and that is deliberate:
+    // paging, searching and ordering are written once, so the directory and the
+    // picker cannot come to disagree about what page 2 contains.
+    public Task<PagedResult<ListUsersQueryResponse>> ListAsync(
         ListUsersQueryRequest query,
         SortOption? sort,
         CancellationToken cancellationToken)
     {
-        var users = _context.Users
-            .AsNoTracking()
-            .Where(IsEligibleApprover);
+        var users = _context.Users.AsNoTracking();
+
+        // Not a ternary inside the Where: an unrecognized scope must not
+        // silently pick a branch. UserScope has two values and the validator has
+        // already refused anything else, so the default arm is unreachable —
+        // which is exactly why it throws rather than guessing.
+        users = query.Scope switch
+        {
+            UserScope.EligibleApprovers => users.Where(IsEligibleApprover),
+            UserScope.All => users,
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(query),
+                query.Scope,
+                "Unsupported user scope."),
+        };
 
         // FullName or Email, the two things the picker actually shows. Whitespace
         // -only counts as "no search"; EF translates Contains to a LIKE, whose
@@ -200,6 +216,7 @@ internal sealed class UserRepository : IUserRepository
                 u.Id,
                 u.FullName,
                 u.Email,
+                u.IsActive,
                 EF.Property<ICollection<User.RoleAssignment>>(u, RoleAssignmentsNavigation)
                     .Select(r => r.Role)
                     .ToList()))

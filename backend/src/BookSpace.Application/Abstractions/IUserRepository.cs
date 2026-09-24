@@ -40,17 +40,22 @@ public interface IUserRepository
         IReadOnlyCollection<Guid> userIds,
         CancellationToken cancellationToken);
 
-    // Admin console phase 1: the same eligible set as a paged list, for the
-    // approvers picker (GET /users). The rule above asked the other way round —
-    // FindEligibleApproverIdsAsync narrows a set of ids the caller already has,
-    // this one produces the set in the first place.
+    // GET /users, paged, for both of its callers. `query.Scope` decides which:
+    // omitted gives the decision `0018` eligible-approver set (the approvers
+    // picker, admin console phase 1), `All` gives every user in the tenant
+    // (the directory, user management phase 4).
     //
-    // Deliberately on this interface rather than a new one, because they are one
-    // rule. If the two ever disagreed, an admin would be offered somebody the
-    // write path then refuses, with ApproverNotEligible and no explanation
-    // available (decision `0018` collapses every reason into that one code). The
-    // implementation states the predicate once and both methods use it.
-    Task<PagedResult<ListUsersQueryResponse>> ListEligibleApproversAsync(
+    // Was ListEligibleApproversAsync until phase 4, and renamed rather than
+    // joined by a second method: two methods would be two places the paging,
+    // searching and ordering are written, and the one nobody looks at is the one
+    // that drifts. The eligibility *predicate* is still stated once and shared
+    // with FindEligibleApproverIdsAsync above — if those two disagreed, an admin
+    // would be offered somebody the write path then refuses, with
+    // ApproverNotEligible and no explanation available.
+    //
+    // Neither scope reaches past the tenant: that is the query filter's and RLS's
+    // job, not a parameter's.
+    Task<PagedResult<ListUsersQueryResponse>> ListAsync(
         ListUsersQueryRequest query,
         SortOption? sort,
         CancellationToken cancellationToken);

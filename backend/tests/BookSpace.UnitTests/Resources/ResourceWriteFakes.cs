@@ -198,11 +198,11 @@ internal sealed class FakeUserRepository : IUserRepository
 
     // GET /users' read, deliberately unimplemented here. Nothing in this file's
     // tests lists users, and a hand-written paging/search/sort fake would be a
-    // second implementation of decision `0018`'s eligibility rule — the exact
-    // duplication UserRepository states the predicate once to avoid. The real
-    // one is exercised where it can be: against SQL Server, in
-    // UserReadEndpointTests.
-    public Task<PagedResult<ListUsersQueryResponse>> ListEligibleApproversAsync(
+    // second implementation of decision `0018`'s eligibility rule and of
+    // UserScope's two branches — the exact duplication UserRepository states
+    // each of them once to avoid. The real one is exercised where it can be:
+    // against SQL Server, in UserReadEndpointTests and UserDirectoryEndpointTests.
+    public Task<PagedResult<ListUsersQueryResponse>> ListAsync(
         ListUsersQueryRequest query,
         SortOption? sort,
         CancellationToken cancellationToken) =>

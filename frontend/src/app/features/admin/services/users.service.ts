@@ -19,7 +19,13 @@ export class UsersService {
   private readonly http = inject(HttpClient);
 
   // Returns the decision `0018` eligible-approver set for the caller's tenant.
-  // There is no "all users" mode and no parameter that would produce one.
+  //
+  // It sends no `scope`, which is why this method needed no change when user
+  // management phase 4 widened the endpoint: an omitted scope still means the
+  // eligible set, byte for byte. That was the point of making the wider set
+  // opt-in rather than the default. The directory's `scope=All` mode belongs to
+  // the screen phase 6 builds, and adding the parameter here before there is a
+  // caller for it would only be a second way to get the picker's answer wrong.
   list(params: ListUsersParams = {}): Observable<PagedResult<EligibleUser>> {
     return this.http.get<PagedResult<EligibleUser>>(`${environment.apiBaseUrl}/users`, {
       params: buildParams(params),

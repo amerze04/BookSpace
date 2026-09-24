@@ -410,6 +410,8 @@ added, add its one-liner to both places.
 26. [`0026`](docs/decisions/0026-notifications-series-anchor.md) — `CK_Notifications_HasContext` now also accepts `RecurrenceRuleId` alone, for the whole-series-cancel notification.
 27. [`0027`](docs/decisions/0027-approver-booking-detail-reach.md) — an Approver may read a booking by id when it is **their own or** on a resource they gate; the union, not the list's intersection.
 28. [`0028`](docs/decisions/0028-approval-gating-without-approvers.md) — a resource may require approval with **no approvers assigned**; FR-3.3's implies-approvers invariant is removed, `ApproversRequired` is deleted, and the request falls back to the tenant's admins.
+29. [`0029`](docs/decisions/0029-user-provisioning-and-invitation-delivery.md) — invitations are emailed synchronously and deliberately not through the `Notifications` outbox; a delivery failure is a return value; the activation token is shaped like a refresh token.
+30. [`0030`](docs/decisions/0030-email-collision-disclosure-at-creation.md) — `POST /users` answers `EmailAlreadyInUse` identically whether the address is in the caller's tenant or another, and the unique index — not a pre-check — is what decides it.
 
 If a task needs a decision that isn't listed above and isn't in this log,
 **stop and ask** rather than picking silently.
@@ -1286,7 +1288,7 @@ console above and the hardening pass below, and deliberately not numbered as a
 WP: WP-8 has not been issued, and §12's rule is that this roadmap mirrors the
 packages the mentor sends rather than an invented build order.
 
-Eight phases; **phases 1–3 are done (2026-09-23/24)**. Four questions were put to the owner and answered
+Eight phases; **phases 1–4 are done (2026-09-23/24)**. Four questions were put to the owner and answered
 before the plan was written, because none was answerable from the PRD or §9.
 Read the plan before starting any phase; what follows is only what is needed to
 know the shape.
@@ -1463,10 +1465,39 @@ touching it:
   `"ada lovelace@acme.test"` and MimeKit refuses it, so without this a paste-a-
   name typo produced a 201, a failed send and a colleague who never heard
   anything. Login is deliberately not tightened to match.
-- **An admin still cannot see the colleague they just created.** `GET /users`
-  remains the `0018` eligible-approver set, so a new Member is absent from it.
-  Phase 4 is what closes that; until then the 201 body is the only record the
-  admin gets.
+- **An admin could not see the colleague they just created** until phase 4;
+  `GET /users?scope=All` is what closes it.
+
+**Phase 4 — the directory read — Done 2026-09-24.** 1267 unit + 600 integration
+tests (15 + 21 new), 1114 vitest unchanged, no migration, no new reason code.
+`GET /users` gained `scope`. Before touching it:
+
+- **`UserScope` is an enum (`EligibleApprovers` | `All`), not a bool**, modelled
+  on `BookingScope`, which already means "which rows" on `GET /bookings`.
+- **The narrow set is the default and that is the entire design.** An omitted
+  `scope` answers exactly what it answered before the parameter existed, so a
+  forgotten parameter narrows rather than widens. Widening by default would have
+  let the approvers picker offer people `ReplaceApprovers` then refuses — with
+  `0018` collapsing every reason into `ApproverNotEligible`, so no screen could
+  say why. **`UserReadEndpointTests` and `ApproverEndpointTests` pass untouched**
+  (44 tests, zero edits), which is the proof and only means anything because the
+  default did not move.
+- **The row now carries `isActive`**, because a directory has to show a
+  deactivated account. `ListUsersQueryResponse`'s header used to list it among
+  the deliberate absences; that stopped being true and the comment was rewritten
+  rather than left to mislead.
+- **`scope` widens within a tenant and nowhere else** — the query filter and RLS
+  exclude other tenants, and no value here reaches them.
+- **The frontend is untouched by design.** `UsersService` sends no `scope`, so
+  the picker is unaffected; three now-false comments were corrected and
+  `EligibleUser` deliberately does not gain `isActive` — the directory's row
+  type is phase 6's.
+- **Test trap, first hit by this phase**: `member2@acme.test` is *permanently*
+  deactivated by `AuthenticationEndpointTests.Refresh_UserDeactivatedSinceLogin`.
+  No earlier test could see it (the eligible set excludes Members), but
+  `scope=All` returns that row — so "every user is active" passed alone and
+  failed only in a full run. Name the account you mean; `admin@acme.test` is the
+  one nothing deactivates.
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across

@@ -20,7 +20,7 @@ console on 2026-09-22 and which held up across all seven of its phases.
 | 1 — `IEmailSender`, configuration, development sink | **Done 2026-09-23** |
 | 2 — Activation tokens, `User.SetPassword`, `POST /auth/activate` | **Done 2026-09-24** |
 | 3 — `POST /users` — create and invite | **Done 2026-09-24** |
-| 4 — The directory read — widening `GET /users` | Not started |
+| 4 — The directory read — widening `GET /users` | **Done 2026-09-24** |
 | 5 — Deactivate, reactivate, roles, and the last-admin guard | Not started |
 | 6 — Frontend: the user directory and the create form | Not started |
 | 7 — Frontend: the user detail screen | Not started |
@@ -582,6 +582,59 @@ rewritten rather than left to mislead.
 **The approvers picker's specs are the regression proof** for this phase, the
 way `ApproverEndpointTests` were for admin console phase 1.
 
+**Done 2026-09-24.** 1267 unit + 600 integration tests (15 + 21 new), 1114
+vitest tests unchanged, no migration, no new reason code, and the endpoint
+probed live. What is true before building on it:
+
+- **`GET /users?scope=All`**, and `scope` is a `UserScope` enum
+  (`EligibleApprovers` | `All`) rather than a bool, modelled on `BookingScope`
+  — which already means "which rows" on `GET /bookings`, so the two list
+  endpoints read the same way.
+- **The default is the narrow set, which is the whole design** (§4.6). An
+  omitted `scope` gives the decision `0018` eligible-approver answer, byte for
+  byte, so a forgotten parameter narrows rather than widens. The failure mode
+  that inverts avoids is specific: a picker silently offering people
+  `ReplaceApprovers` then refuses, with `0018` collapsing every reason into
+  `ApproverNotEligible` so no screen can say why.
+- **`UserReadEndpointTests` and `ApproverEndpointTests` pass untouched** — 44
+  tests, not one line edited. That is the regression proof this phase was
+  supposed to produce, and it only means something because the default did not
+  move.
+- **The row grew `isActive`.** `ListUsersQueryResponse`'s header used to list it
+  among the deliberate absences ("every row is active by construction"); that
+  claim died with `scope=All` and the comment is rewritten rather than left to
+  mislead. It is still true of the default scope, and now asserted rather than
+  stated.
+- **`scope` widens within a tenant and nowhere else.** The query filter and RLS
+  are what exclude another tenant's rows; no value of this parameter reaches
+  them, and a SysAdmin (no `OrgId`) appears in nobody's directory.
+- **One method on the repository, not two.** `ListEligibleApproversAsync` became
+  `ListAsync` and the scopes differ by exactly one `Where`, so paging, searching
+  and ordering are written once. An unrecognized scope throws rather than
+  picking a branch — unreachable, because the validator refuses it first, which
+  is precisely why it should not guess.
+- **The frontend is unchanged and deliberately so.** `UsersService` sends no
+  `scope`, so the picker keeps working; only three now-false comments were
+  corrected. `EligibleUser` does not gain `isActive` — the directory's row type
+  belongs to phase 6.
+
+**A test trap this phase was the first to hit**, worth knowing before writing
+anything against the seeded users: `member2@acme.test` is **permanently
+deactivated** by `AuthenticationEndpointTests.Refresh_UserDeactivatedSinceLogin`,
+by design and documented there. No previous test could see it, because the
+eligible set excludes Members anyway — but `scope=All` returns that row, so an
+assertion that "every user is active" passed alone and failed only in a full
+run. Tests that care about `IsActive` name the account they mean;
+`admin@acme.test` is the one nothing deactivates.
+
+**Verified live** (2026-09-24): `scope` omitted → 2 rows; `scope=All` → 4;
+omitted and `scope=EligibleApprovers` byte-identical; `isActive` on every row;
+`scope=Everyone` and `scope=99` both 400; enum binding is case-insensitive, so
+`scope=all` works. And the phase 3 gap closing, end to end: a colleague created
+through `POST /users` is **absent** from the default scope and **present** in
+`scope=All`, findable by search, and still listed with `isActive: false` once
+deactivated.
+
 ### Phase 5 — Deactivate, reactivate, roles, and the last-admin guard
 The three writes, plus `LastTenantAdmin` checked under a lock (§4.5). Decide
 here whether roles are replace-the-set or add/remove — `admin-plan.md` §4.1's
@@ -658,14 +711,21 @@ Per §9's convention — a settled question gets a numbered record with its
 reasoning, and its one-liner goes in both CLAUDE.md §9 and
 `docs/roadmap/decisions-log-detail.md`.
 
-- **`0029` — user provisioning and invitation delivery.** Why invitations are
-  emailed synchronously and deliberately do not use the `Notifications` outbox
-  (§4.1), and why the activation token is shaped like a refresh token (§4.2).
-- **`0030` — email collision disclosure at creation.** One generic refusal
-  either way, and the AC-4 reasoning inherited from `0018` (§3.2).
-- **`0031` — the last-TenantAdmin guard.** Why it exists, why it covers both
-  role removal and deactivation, and why it is checked under a lock (§3.3,
-  §4.5).
+- **[`0029`](decisions/0029-user-provisioning-and-invitation-delivery.md) — user
+  provisioning and invitation delivery. Written 2026-09-24**, covering phases
+  1–3: why invitations are emailed synchronously and deliberately do not use the
+  `Notifications` outbox (§4.1), why a delivery failure is a return value
+  (§4.3), and why the activation token is shaped like a refresh token (§4.2).
+  It also records the two §4.2 write exemptions activation needed, which this
+  plan did not anticipate.
+- **[`0030`](decisions/0030-email-collision-disclosure-at-creation.md) — email
+  collision disclosure at creation. Written 2026-09-24.** One generic refusal
+  either way, the AC-4 reasoning inherited from `0018` (§3.2), and the
+  structural half this plan did not call for: the unique index decides it, not
+  a pre-check, so the path cannot learn which tenant the collision is in.
+- **`0031` — the last-TenantAdmin guard.** Not written yet — phase 5. Why it
+  exists, why it covers both role removal and deactivation, and why it is
+  checked under a lock (§3.3, §4.5).
 
 ---
 

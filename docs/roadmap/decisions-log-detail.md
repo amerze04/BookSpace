@@ -284,6 +284,39 @@ feature, the reasoning matters as much as the answer.
     FR-9.3's expiry job deciding them unseen. `ReasonCodes.ApproversRequired`
     and `ApproversRequiredException` are deleted, as `ApprovalRequired` was in
     WP-4 Phase 1a.
+29. [`0029`](../decisions/0029-user-provisioning-and-invitation-delivery.md) —
+    how a provisioned user gets a credential their administrator never sees.
+    An invitation is emailed **synchronously, inside the request**, and
+    deliberately does not go through the `Notifications` outbox: that table is
+    a scheduler (`SendAtUtc`, `Attempts`, `LastError`, anchored to a booking or
+    a series) with no address and no body, and routing an invitation through it
+    would need a second widening of `CK_Notifications_HasContext`, a meaningless
+    idempotency key, and the unbuilt reminder job — so the three background jobs
+    stay out of this package entirely, and it builds the `IEmailSender` they
+    will need. A delivery failure is a **return value, not an exception**, which
+    is what lets `POST /users` answer 201 with the activation link even when the
+    provider is down. Two senders chosen by one configuration switch, defaulting
+    to `Smtp` so a misconfigured deployment fails the boot rather than filing
+    invitations on a disk. The activation token reuses `0011`'s shape whole —
+    SHA-256 of a CSPRNG value, single use enforced by a concurrency token, no
+    `OrgId` and no RLS, because activation runs before the user has ever signed
+    in. `POST /auth/activate` is anonymous, rate-limited, returns 204 rather
+    than a session, and answers every failure identically. Two §4.2 mechanisms
+    had to be given an explicit, named write exemption for it, both proven
+    load-bearing by removal.
+30. [`0030`](../decisions/0030-email-collision-disclosure-at-creation.md) —
+    `POST /users` refuses a taken address with `EmailAlreadyInUse` (Conflict,
+    409) and says **the same thing whether the address is in the caller's tenant
+    or another**. `0010` made email unique platform-wide but settled that for
+    login; a refusal that distinguished the two cases would let an administrator
+    enumerate addresses across the platform one create at a time (AC-4), which
+    is why `0018` collapsed three approver reasons into one code. The structural
+    half is the point: the refusal comes from `UQ_Users_Email` firing on the
+    insert, **not from a pre-check**, because a pre-check able to see another
+    tenant's row would need an unfiltered read — so the code raising it cannot
+    learn which tenant the collision is in rather than merely declining to say.
+    The translation checks the index *name* as well as the SQL error number,
+    since `Users` carries two other unique indexes.
 
 If a task needs a decision that isn't listed above and isn't in this log,
 **stop and ask** rather than picking silently.

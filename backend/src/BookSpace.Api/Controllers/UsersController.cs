@@ -1,5 +1,6 @@
 using BookSpace.Api.Authorization;
 using BookSpace.Application.Common.Pagination;
+using BookSpace.Application.Features.Users;
 using BookSpace.Application.Features.Users.CreateUser;
 using BookSpace.Application.Features.Users.ListUsers;
 using BookSpace.Application.Messaging;
@@ -9,15 +10,16 @@ using Microsoft.AspNetCore.Mvc;
 namespace BookSpace.Api.Controllers;
 
 // Admin console phase 1 (docs/admin-plan.md) for the read; user management
-// phase 3 (docs/user-management-plan.md) for the create. Thin by design (WP-2's
-// rule): map the request onto a command or query, dispatch through the
-// mediator, return the result. No filtering, ordering or tenant logic here.
+// phases 3 and 4 (docs/user-management-plan.md) for the create and the
+// directory. Thin by design (WP-2's rule): map the request onto a command or
+// query, dispatch through the mediator, return the result. No filtering,
+// ordering or tenant logic here.
 //
-// **The two actions do not describe the same set of people, and will not until
-// phase 4.** GET returns the decision `0018` eligible-approver set; POST creates
-// a Member, who is deliberately not in it. That is not drift — see
-// ListUsersQueryRequest for why the read is narrower than its route, and the
-// plan's phase 4 for the widening that reconciles them.
+// **GET answers two different sets of people, and `scope` is which.** Omitted
+// it is the decision `0018` eligible-approver set — so a Member created by POST
+// here does not appear in it, which was a real gap between phases 3 and 4 and is
+// now a parameter away. `scope=All` is the directory. See UserScope for why the
+// narrow set is the default rather than the wide one.
 //
 // **The whole controller is TenantAdmin, unlike ResourcesController**, where the
 // class policy is the weaker TenantMember so a forgotten attribute can only ever
@@ -54,11 +56,14 @@ public sealed class UsersController : ControllerBase
         int Page = PagingDefaults.Page,
         int PageSize = PagingDefaults.PageSize,
         string? Sort = null,
-        string? Search = null);
+        string? Search = null,
+        UserScope Scope = UserScope.EligibleApprovers);
 
-    // Returns the decision `0018` eligible-approver set for the caller's tenant,
-    // not every user in it — see ListUsersQueryRequest for why the route is
-    // broader than the answer.
+    // Two answers, one route, chosen by `scope`. Omitted gives the decision
+    // `0018` eligible-approver set for the caller's tenant — the approvers
+    // picker's read, and what this endpoint answered before the directory
+    // existed. `scope=All` gives every user in the tenant, deactivated accounts
+    // included. See UserScope for why the narrow one is the default.
     //
     // Paging/sorting failures come back as 400 from ValidationBehavior, with
     // per-field errors — not silently clamped (PagingDefaults.MaxPageSize).
@@ -77,7 +82,8 @@ public sealed class UsersController : ControllerBase
                 request.Page,
                 request.PageSize,
                 request.Sort,
-                request.Search),
+                request.Search,
+                request.Scope),
             cancellationToken);
 
         return Ok(result);

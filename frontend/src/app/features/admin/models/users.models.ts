@@ -2,6 +2,10 @@
 // the only one this feature owns outright. It lives here rather than beside the
 // resource models because nothing outside the admin console can call it: it is
 // TenantAdmin-only, and its whole reason for existing is the approvers picker.
+//
+// User management phase 4 gave that endpoint a second job — the user directory,
+// behind a `scope` parameter. These types describe the default scope only, and
+// deliberately have not changed; see `EligibleUser` below.
 
 // BookSpace.Domain.Enums.Role, serialized by name — Program.cs registers
 // JsonStringEnumConverter app-wide.
@@ -15,10 +19,19 @@ export type UserRole = 'SysAdmin' | 'TenantAdmin' | 'Approver' | 'Member';
 
 // One row of `GET /users` — ListUsersQueryResponse.
 //
-// **The route is broader than the answer.** This is the decision `0018`
-// eligible-approver set — own-tenant, active, holding `Approver` or
-// `TenantAdmin` — not every user in the tenant, and there is no parameter that
-// widens it. A Member is absent by design.
+// **This is the decision `0018` eligible-approver set** — own-tenant, active,
+// holding `Approver` or `TenantAdmin` — not every user in the tenant. A Member
+// is absent by design.
+//
+// It used to say "and there is no parameter that widens it", which stopped
+// being true in user management phase 4: `GET /users?scope=All` returns every
+// user in the tenant, deactivated accounts included, for the directory screen
+// phase 6 will build. **The narrow set is still the default**, deliberately, so
+// this type and its caller are unaffected — see `UserScope` on the backend for
+// why the wider set is opt-in. When the directory lands it will need its own
+// row type: the wire row now also carries `isActive`, which is omitted here
+// because in this scope it is true of every row and the picker has no use for
+// it.
 //
 // `email` is here and deliberately is *not* on `ApproverDetail`: that one
 // answers "who approves this room" for every member of the tenant, where an
