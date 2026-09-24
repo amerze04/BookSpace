@@ -21,6 +21,20 @@ internal sealed class FakeAuthenticationUserRepository : IAuthenticationUserRepo
 
     public Task<AuthenticatedUser?> FindByIdAsync(Guid userId, CancellationToken cancellationToken) =>
         Task.FromResult(_users.FirstOrDefault(u => u.User.Id == userId));
+
+    // Counted rather than no-op'd: the activation handler's whole atomicity
+    // argument is that the password write and the token consumption land in
+    // *one* save, so "how many times was this called" is the thing worth
+    // asserting. The bypass it performs for real is an Infrastructure concern
+    // and is proven in the integration suite, where there is a database to be
+    // filtered by.
+    public int SaveCount { get; private set; }
+
+    public Task SaveChangesUnfilteredAsync(CancellationToken cancellationToken)
+    {
+        SaveCount++;
+        return Task.CompletedTask;
+    }
 }
 
 internal sealed class FakeRefreshTokenRepository : IRefreshTokenRepository
@@ -69,6 +83,33 @@ internal sealed class FakeRefreshTokenFactory : IRefreshTokenFactory
     public string HashOf(string rawToken) => $"hash::{rawToken}";
 }
 
+internal sealed class FakeActivationTokenRepository : IActivationTokenRepository
+{
+    public List<ActivationToken> Tokens { get; } = [];
+
+    public Task<ActivationToken?> FindByHashAsync(string tokenHash, CancellationToken cancellationToken) =>
+        Task.FromResult(Tokens.FirstOrDefault(t => t.TokenHash == tokenHash));
+
+    public void Add(ActivationToken token) => Tokens.Add(token);
+}
+
+// Same trick as FakeRefreshTokenFactory: predictable and reversible, so a test
+// can compute the hash of a token it holds without depending on SHA-256.
+internal sealed class FakeActivationTokenFactory : IActivationTokenFactory
+{
+    private int _next;
+
+    public TimeSpan Lifetime { get; set; } = TimeSpan.FromDays(7);
+
+    public GeneratedActivationToken Create()
+    {
+        var raw = $"raw-activation-{++_next}";
+        return new GeneratedActivationToken(raw, HashOf(raw));
+    }
+
+    public string HashOf(string rawToken) => $"hash::{rawToken}";
+}
+
 internal sealed class FakeAccessTokenService : IAccessTokenService
 {
     public DateTime ExpiresAtUtc { get; set; } = new(2026, 8, 26, 12, 15, 0, DateTimeKind.Utc);
@@ -87,7 +128,18 @@ internal sealed class RecordingPasswordHasher : IPasswordHasher
     // (against its fixed dummy hash) rather than short-circuiting before it.
     public List<string> VerifiedAgainst { get; } = [];
 
-    public string Hash(string password) => $"hash::{password}";
+    // Every hash produced, in call order. The activation handler hashes the
+    // submitted password *before* it looks the token up, so that every path
+    // costs the same; this is what lets a test prove that ordering rather than
+    // trust the comment.
+    public List<string> Hashed { get; } = [];
+
+    public string Hash(string password)
+    {
+        var hash = $"hash::{password}";
+        Hashed.Add(hash);
+        return hash;
+    }
 
     public bool Verify(string passwordHash, string password)
     {

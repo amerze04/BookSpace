@@ -23,6 +23,11 @@ Authoritative specs live in `/docs`:
   what works, what is verified, what is deliberately absent, and what is left.**
   Start there when picking this up cold or preparing a demo; updated at the
   close of each phase.
+- [`user-management-plan.md`](docs/user-management-plan.md) — **the next
+  package, planned and not started.** Read it before touching `Users`,
+  `UsersController` or anything on the auth surface: it records four owner
+  decisions, the PRD gap it is built on, and why FR-2.4 turns out to be
+  satisfied already.
 - `decisions/000N-*.md` — every open decision from PRD §13, plus ones raised
   during schema/ERD review, resolved and written up individually with the
   reasoning behind each. See §9 below for the index. Check here before
@@ -1268,6 +1273,158 @@ against the running API. No new screens. What is true before touching this area:
   than manufacturing cases: the 3D Printer's adjacent `09:00–12:00` /
   `12:00–17:00` windows (adjacency is not overlap) and the Audi A5's Monday
   window closing at `23:59:59` (decision `0022`'s midnight convention).
+
+### User management — provisioning, roles and account status — **In progress** (started 2026-09-23)
+Plan: [`docs/user-management-plan.md`](docs/user-management-plan.md).
+**Owner-initiated, not a mentor work package** — same standing as the admin
+console above and the hardening pass below, and deliberately not numbered as a
+WP: WP-8 has not been issued, and §12's rule is that this roadmap mirrors the
+packages the mentor sends rather than an invented build order.
+
+Eight phases; **phases 1–2 are done (2026-09-23/24)**. Four questions were put to the owner and answered
+before the plan was written, because none was answerable from the PRD or §9.
+Read the plan before starting any phase; what follows is only what is needed to
+know the shape.
+
+- **The PRD has no functional requirement for user management, and the plan
+  says so rather than inventing one.** Checked 2026-09-23: the authority is the
+  §2 persona line — a Tenant Administrator "Manage[s] resources, rules,
+  **members, roles**" — plus FR-2.4 on suspension. FR-1.5 is a model constraint,
+  FR-1.3 is about *tenants* and a different audience, and PRD §13 never raises
+  it. **Cite the persona line and FR-2.4; do not write an FR number that does
+  not exist.**
+- **FR-2.4 is already satisfied, which deletes a whole phase.**
+  `LoginCommandRequestHandler` checks `IsActive`; `RefreshTokenCommandRequestHandler`
+  checks `IsActive` *and* `OrganizationStatus.Suspended` and **revokes the whole
+  token family**. So deactivation needs no change to the auth stack at all —
+  only something that writes the flag, which is what does not exist. The
+  15-minute access-token tail afterwards is not a gap: FR-2.4 asks for access to
+  be lost "immediately on next token refresh", which is exactly what happens.
+- **This package builds the first email path in the application**, and
+  **deliberately does not use the `Notifications` outbox** — which is what keeps
+  the three unbuilt background jobs out of its way (the owner's own question
+  when choosing this). `Notification` is a *scheduler*: it carries `SendAtUtc`,
+  `Attempts` and `LastError`, no address and no body, and `CK_Notifications_HasContext`
+  anchors every row to a booking or a series. An invitation has neither anchor,
+  nothing to schedule, and no meaningful idempotency key. It is therefore sent
+  **synchronously inside the request**, and the `IEmailSender` this builds is the
+  one the jobs will later need.
+- **An emailed invitation implies activation.** `POST /auth/activate` plus a
+  hashed, single-use, expiring token table are in scope as a consequence of the
+  email decision, not as scope creep — without them `POST /users` creates
+  somebody who can never sign in. The token is shaped on decision `0011`: store
+  SHA-256 of a CSPRNG value, plaintext only in the email. The endpoint is
+  anonymous, so it needs the rate limiting `login`/`refresh` already have, and
+  **expired / used / never-existed must be indistinguishable** for `0018`'s
+  reason.
+- **An email collision answers the same way whether the address is in this
+  tenant or another** (`EmailAlreadyInUse`). Decision `0010` made email unique
+  platform-wide but settled that for *login*; a refusal that distinguishes the
+  two cases is a cross-tenant existence oracle, which is what `0018` collapsed
+  three approver reasons into one code to avoid (AC-4).
+- **The last TenantAdmin cannot be removed or deactivated** (`LastTenantAdmin`),
+  and the guard is **checked under a lock** — two admins removing each other
+  concurrently both read "there are two" and both pass. A tenant with no admins
+  cannot be managed by any API (FR-1.3 has no controller either) and breaks
+  decision `0028`: approval requests on a gated resource with no approvers fall
+  back to `FindTenantAdminUserIdsAsync`, so they would notify nobody.
+- **`GET /users` gets widened rather than duplicated, with today's answer as the
+  default.** The directory needs every user; the route currently answers the
+  `0018` eligible set. An omitted parameter must keep today's behaviour
+  byte-identical, so a forgotten one narrows rather than widens — the safe
+  direction, and the same shape as `includeArchived` on `GET /resources`.
+- **Out of scope, deliberately**: self-service change password, re-issuing an
+  invitation, SysAdmin tenant management (FR-1.3), and deleting a user (§4.5 —
+  nothing is deleted). The second of those is the one the plan pushes back on:
+  with no resend, a failed invitation email leaves that person with no route in
+  at all, which is why the create response carries the activation link whether
+  the send succeeded or not.
+- **Three decision records will come out of it** — `0029` provisioning and
+  invitation delivery, `0030` email collision disclosure, `0031` the
+  last-TenantAdmin guard — each added to §9 here and to
+  `docs/roadmap/decisions-log-detail.md`.
+
+**Phase 1 — `IEmailSender`, configuration, development sink — Done 2026-09-23.**
+1140 unit + 539 integration tests (69 + 3 new), build clean, all four
+configuration outcomes probed against the real host. No endpoint, no migration,
+no schema change, no new reason code. Full detail in the plan; what matters
+before using it:
+
+- **A delivery failure is a return value, not an exception.**
+  `IEmailSender.SendAsync` answers `EmailSendResult`, and both senders catch
+  everything — transport, an unwritable directory, a recipient MimeKit refuses.
+  That is plan §4.3 made structural: phase 3 has to discard the failure on
+  purpose rather than remember a try/catch. The caller's own cancellation is the
+  one thing that still propagates.
+- **MailKit over any provider's SMTP relay**, not a vendor SDK — there is no
+  provider account yet, and picking one now would be a dependency taken before
+  the decision it depends on. One new package.
+- **`EmailOptions.DeliveryMode` defaults to `Smtp`, deliberately**, so an
+  omitted or misspelled `Email` section fails the boot; a `DevelopmentSink`
+  default would have written production invitations to a directory nobody reads.
+  Which sender is registered is decided once in `AddInfrastructure`, and needs a
+  restart to change.
+- **A credential over an unencrypted transport is refused at boot** (§4.4),
+  along with a missing host, a half-configured credential and an unusable From
+  address — all in `EmailOptionsValidator`, which holds every rule rather than
+  splitting them across data annotations it cannot express.
+- **The sink is not a test double** — it is how this runs locally. It writes an
+  `.eml` through the same `MimeMessageFactory` the SMTP sender uses, so what is
+  on disk is what would have gone on the wire.
+  `backend/src/BookSpace.Api/sent-emails/` is gitignored: every file is a live
+  activation link. The log line carries the subject and the path and **nothing
+  else** — not the body, which holds a token, and not the recipient, which is a
+  personal record.
+- **MimeKit is more permissive than a usable-address check**, measured not
+  assumed: `TryParse("not-an-address")` is true, and `new MailboxAddress(n, "")`
+  succeeds and yields an empty `To`. `EmailAddressRules` is the one rule both
+  the startup validator and `MimeMessageFactory` apply.
+- **The sink's file name deliberately carries nothing from the message.** It
+  carried the recipient first, and since the log line carries the path, that
+  made the §4.4 rule above false as written — caught by this class's own test.
+  A timestamp and random bytes beat a sanitizer: there is no path-traversal case
+  left to get wrong.
+
+**Phase 2 — activation tokens, `User.SetPassword`, `POST /auth/activate` — Done
+2026-09-24.** 1194 unit + 555 integration tests (54 + 16 new), one migration
+(`AddActivationTokens`), the whole flow probed against the running API. What
+matters before touching the auth surface again:
+
+- **`ActivationTokens` is `RefreshTokens`' shape, including its absences** — no
+  `OrgId`, no query filter, no RLS predicate. Activation runs before the user
+  has ever signed in, so §4.2 has nothing to act on and the token's own secrecy
+  is the access control: 256 bits of CSPRNG, SHA-256 stored, single use,
+  absolute expiry (decision `0011`'s shape, reused).
+- **`SecureToken` (Infrastructure/Security) now holds "a bearer secret this
+  application hands out" once**, and both token factories delegate. Two copies
+  of a crypto rule is where drift is most expensive.
+- **Single use is enforced by a concurrency token**, `ConsumedAtUtc`, exactly as
+  `RefreshTokens.RevokedAtUtc` works — so two simultaneous redemptions do not
+  both set a password. Model metadata, no DDL.
+- **Every refusal is byte-identical**: expired, redeemed, unknown, user
+  deactivated, org suspended → `401 InvalidActivationToken` (the sixth code in
+  `AuthenticationFailureReason`, which is where auth codes live per §6). The
+  password policy is validated *before* the token lookup, so a 400 cannot be
+  used to probe whether a token is live, and a rejected password leaves the
+  token spendable.
+- **`PasswordPolicy` — 12 to 128 characters, no composition rules — is invented
+  here and flagged as such.** This is the first place the application sets a
+  password; FR-2.3 says hashed and nothing says how long. Length-only follows
+  NIST SP 800-63B; the maximum bounds PBKDF2 work on an anonymous endpoint.
+- **Activation returns 204, not a session.** Minting one would duplicate login's
+  FR-2.4 account-state gate or skip it.
+- **The auth repository gained a *write* exemption, and mechanism 2 now honours
+  the bypass.** Activation writes to `Users` from an anonymous request, which
+  §4.2 refuses twice over: RLS's *filter* predicate hides the row so the UPDATE
+  matches nothing (hence
+  `IAuthenticationUserRepository.SaveChangesUnfilteredAsync`), and
+  `ValidateTenantOwnership` threw when a browser attached an existing session's
+  bearer token to the anonymous call. The guard now returns early inside a
+  `TenantBypassScope` — the same signal RLS already honours — so the two
+  mechanisms agree. Nothing widens: the scope is internal and only
+  explicitly-named repository methods may enter it. **Both changes were proven
+  load-bearing by removing them** — 8 of 16 new integration tests fail without
+  the first, exactly 1 without the second.
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across

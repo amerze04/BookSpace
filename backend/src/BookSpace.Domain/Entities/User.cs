@@ -75,6 +75,23 @@ public class User : IAuditable, ITenantOwned
     public static string NormalizeEmail(string email) =>
         email.Trim().ToLowerInvariant();
 
+    // FR-2.3. The only way PasswordHash changes after construction, and it takes
+    // a hash rather than a password on purpose: the Domain project references
+    // nothing (CLAUDE.md §3), so it cannot hash one, and an overload that took
+    // plaintext would be an invitation to store it.
+    //
+    // First caller is account activation, where actorUserId is the user
+    // themselves — the one moment in this system somebody acts on their own
+    // account before they have ever signed in (see ActivationToken).
+    public void SetPassword(string passwordHash, Guid actorUserId, DateTime nowUtc)
+    {
+        if (string.IsNullOrWhiteSpace(passwordHash))
+            throw new ArgumentException("PasswordHash is required.", nameof(passwordHash));
+
+        PasswordHash = passwordHash;
+        Touch(actorUserId, nowUtc);
+    }
+
     public void AddRole(Role role, Guid actorUserId, DateTime nowUtc)
     {
         if (_roleAssignments.Any(r => r.Role == role))

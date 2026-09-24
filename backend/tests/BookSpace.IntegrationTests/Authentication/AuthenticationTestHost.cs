@@ -25,6 +25,11 @@ public sealed class AuthenticationTestHost : WebApplicationFactory<Program>, IAs
     // enough to satisfy the 32-character JwtOptions guard.
     private const string TestSigningKey = "integration-test-signing-key-0123456789";
 
+    // Under the OS temp directory, not the repository, and deleted with the
+    // database in DisposeAsync.
+    private static readonly string EmailSinkDirectory =
+        Path.Combine(Path.GetTempPath(), "BookSpace.IntegrationTests", "sent-emails");
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         // Not Development: the Development branch in Program.cs seeds the
@@ -52,6 +57,23 @@ public sealed class AuthenticationTestHost : WebApplicationFactory<Program>, IAs
         builder.UseSetting("RateLimiting:Login:WindowSeconds", "60");
         builder.UseSetting("RateLimiting:Refresh:PermitLimit", "1000000");
         builder.UseSetting("RateLimiting:Refresh:WindowSeconds", "60");
+        // Same reasoning for /auth/activate (user management phase 2), and it
+        // bites harder there: the shipped limit is 5 per minute, and the
+        // activation tests alone send more than that.
+        builder.UseSetting("RateLimiting:Activate:PermitLimit", "1000000");
+        builder.UseSetting("RateLimiting:Activate:WindowSeconds", "60");
+
+        // EmailOptions is ValidateOnStart, and appsettings.json's DeliveryMode
+        // is Smtp with no host on purpose (a deployment that forgets to
+        // configure email must fail the boot rather than drop invitations). So
+        // this host has to say which mode it wants, exactly as it already has
+        // to supply a signing key. The sink, pointed at a throwaway directory:
+        // nothing here asserts on a sent message yet, and a test run must not
+        // scatter .eml files through the repository.
+        builder.UseSetting("Email:DeliveryMode", "DevelopmentSink");
+        builder.UseSetting("Email:FromAddress", "no-reply@bookspace.test");
+        builder.UseSetting("Email:FromDisplayName", "BookSpace Integration Tests");
+        builder.UseSetting("Email:DevelopmentSink:Directory", EmailSinkDirectory);
 
         // Makes PolicyProbeController discoverable. The API has no business
         // endpoints yet, so without it there is nothing for the authorization
@@ -82,6 +104,11 @@ public sealed class AuthenticationTestHost : WebApplicationFactory<Program>, IAs
         {
             var context = scope.ServiceProvider.GetRequiredService<BookSpaceDbContext>();
             await context.Database.EnsureDeletedAsync();
+        }
+
+        if (Directory.Exists(EmailSinkDirectory))
+        {
+            Directory.Delete(EmailSinkDirectory, recursive: true);
         }
 
         await base.DisposeAsync();

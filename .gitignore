@@ -36,3 +36,9 @@ Thumbs.db
 appsettings.*.local.json
 *.env
 .env
+
+## Development email sink (docs/user-management-plan.md §5, phase 1)
+## Each .eml here is a real message that was never sent, activation link and
+## all — a live credential sitting on disk. Never committed.
+backend/src/BookSpace.Api/sent-emails/
+sent-emails/

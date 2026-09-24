@@ -234,14 +234,22 @@ start of a user directory. Which is exactly what item 1 now has to build.
    API layer above them at all** — `UsersController` has exactly one action, the
    eligibility-filtered `GET /users`. It is a backend package on the scale of
    WP-3 plus a frontend the size of admin phases 3 and 5 combined, not an eighth
-   phase of the console. **The question that decides its shape is how a
-   provisioned user gets a password**: there is no email sender anywhere in
-   `backend/src` and no change-password endpoint, so the options are an
-   admin-set password, a one-time activation token, or building the first email
-   path in the application. Now unblocked — the console it would slot into is
-   built, and the approvers picker is the screen that will show a deactivation
-   immediately (its "no longer able to approve" group exists and has never been
-   reachable, because nothing can deactivate anybody).
+   phase of the console. **Planned in full on 2026-09-23**:
+   [`docs/user-management-plan.md`](user-management-plan.md), eight phases, with
+   four open questions answered by the owner before any of it was written. The
+   one that decided its shape was how a provisioned user gets a password —
+   there is no email sender anywhere in `backend/src` — and the answer is that
+   **this package builds the first email path in the application**, sending
+   invitations synchronously rather than through the `Notifications` outbox, so
+   none of the three unbuilt background jobs is a prerequisite.
+
+   Two things the audit established, both of which the plan turns on:
+   **FR-2.4 is already satisfied** — login and refresh both check `IsActive`,
+   and refresh revokes the whole token family — so deactivation needs no change
+   to the auth stack at all, only something that writes the flag. And **the PRD
+   has no functional requirement for user management**: only the §2 persona line
+   "Manage resources, rules, members, roles", which the plan cites openly rather
+   than inventing an FR number for.
 2. **The design pass** the owner has flagged — the calendar, the booking detail,
    the cancel confirmation, and the approval queue with its decision panel were
    all built without a provided design, to the app's existing card vocabulary.

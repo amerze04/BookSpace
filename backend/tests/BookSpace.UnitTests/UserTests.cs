@@ -131,4 +131,59 @@ public class UserTests
 
         Assert.True(user.IsActive);
     }
+
+    // User management phase 2. The only way PasswordHash changes after
+    // construction — see ActivationToken for why it has to change at all.
+    [Fact]
+    public void SetPassword_ReplacesTheHash()
+    {
+        var user = CreateValid();
+
+        user.SetPassword("new-hash", ActorId, NowUtc.AddMinutes(1));
+
+        Assert.Equal("new-hash", user.PasswordHash);
+    }
+
+    // On activation the actor is the user themselves, which is the one moment
+    // in this system somebody acts on their own account before ever signing in.
+    [Fact]
+    public void SetPassword_RecordsWhoChangedItAndWhen()
+    {
+        var user = CreateValid();
+        var changedAt = NowUtc.AddMinutes(5);
+
+        user.SetPassword("new-hash", user.Id, changedAt);
+
+        Assert.Equal(changedAt, user.UpdatedAtUtc);
+        Assert.Equal(user.Id, user.UpdatedByUserId);
+    }
+
+    // The same guard the constructor has. A blank hash would make every login
+    // attempt against the account fail in a way that looks like a wrong
+    // password rather than a corrupted row.
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void SetPassword_ThrowsOnBlankHash(string passwordHash)
+    {
+        var user = CreateValid();
+
+        Assert.Throws<ArgumentException>(() => user.SetPassword(passwordHash, ActorId, NowUtc));
+    }
+
+    [Fact]
+    public void SetPassword_LeavesEverythingElseAlone()
+    {
+        var user = CreateValid(orgId: Guid.NewGuid());
+        user.AddRole(Role.Approver, ActorId, NowUtc);
+        var orgId = user.OrgId;
+        var feedToken = user.CalendarFeedToken;
+
+        user.SetPassword("new-hash", user.Id, NowUtc.AddMinutes(1));
+
+        Assert.Equal(orgId, user.OrgId);
+        Assert.Equal(feedToken, user.CalendarFeedToken);
+        Assert.True(user.IsActive);
+        Assert.Contains(Role.Approver, user.Roles);
+    }
 }

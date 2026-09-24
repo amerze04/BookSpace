@@ -40,6 +40,7 @@ public class BookSpaceDbContext : DbContext
     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
     public DbSet<Notification> Notifications => Set<Notification>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+    public DbSet<ActivationToken> ActivationTokens => Set<ActivationToken>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -147,6 +148,26 @@ public class BookSpaceDbContext : DbContext
 
     private void ValidateTenantOwnership()
     {
+        // A deliberate, explicitly-named bypass — the same signal mechanism 3
+        // (RLS) already honours. Added for account activation, the first write
+        // that runs inside a TenantBypassScope with a tenant context possibly
+        // present: /auth/activate is anonymous, but a browser that already has
+        // a session attaches its bearer token to same-origin API calls, so
+        // ICurrentTenant can hold *somebody else's* org while the user being
+        // activated belongs to another. Without this the two mechanisms would
+        // disagree — RLS would permit the write and this would throw — and the
+        // symptom would be a 500 on a link somebody clicked while logged in.
+        //
+        // This does not widen who can write across tenants. TenantBypassScope is
+        // internal to this assembly and CLAUDE.md §4.2 restricts entering it to
+        // the same explicitly-named repository methods that may already read
+        // unfiltered; the guard below exists to catch a *forgotten* scope, not a
+        // declared one.
+        if (TenantBypassScope.IsActive)
+        {
+            return;
+        }
+
         var currentOrgId = _currentTenant.OrgId;
         if (currentOrgId is null)
         {

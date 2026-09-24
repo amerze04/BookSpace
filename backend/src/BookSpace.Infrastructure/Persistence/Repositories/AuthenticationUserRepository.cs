@@ -34,6 +34,32 @@ internal sealed class AuthenticationUserRepository : IAuthenticationUserReposito
     public Task<AuthenticatedUser?> FindByIdAsync(Guid userId, CancellationToken cancellationToken) =>
         QueryUnfiltered(u => u.Id == userId, cancellationToken);
 
+    // The write half of the same exemption, for account activation — the first
+    // operation that changes a Users row from an unauthenticated request.
+    //
+    // The scope is not optional here, and the failure without it is quiet
+    // rather than loud: RLS is a *filter* predicate (see the AddTenantIsolationRls
+    // migration), and a filter predicate applies to the rows an UPDATE can see.
+    // With no tenant context the Users row is invisible, the UPDATE matches
+    // nothing, and EF reports a DbUpdateConcurrencyException about a row that is
+    // plainly there — which reads as a race, not as a missing bypass.
+    //
+    // It also stands the SaveChanges ownership guard down (CLAUDE.md §4.2
+    // mechanism 2, BookSpaceDbContext.ValidateTenantOwnership), because the two
+    // mechanisms have to agree about what a bypass means. Before this there was
+    // no writer inside a bypass scope with a tenant context present, so they
+    // never had to.
+    // async, and awaiting inside the scope, deliberately: returning the Task
+    // without awaiting would dispose the scope the instant this method returns,
+    // while the save was still in flight and had not yet opened the connection
+    // the interceptor reads the flag from.
+    public async Task SaveChangesUnfilteredAsync(CancellationToken cancellationToken)
+    {
+        using var _ = TenantBypassScope.Enter();
+
+        await _context.SaveChangesAsync(cancellationToken);
+    }
+
     // Projects the owning organization's status in the same query so FR-2.4 costs
     // no extra round trip. Organizations is not tenant-filtered, but it is joined
     // here rather than loaded separately for the same reason.
