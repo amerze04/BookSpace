@@ -74,6 +74,21 @@ public class AppExceptionCatalogueTests
         // WP-5 Phase 3.
         [typeof(BookingNotPendingException)] =
             (ReasonCodes.BookingNotPending, ErrorKind.RuleViolation),
+
+        // User management phase 3. Conflict rather than Validation: the address
+        // is well-formed and what refuses it is the current state of the data,
+        // which is also why it may succeed later.
+        [typeof(EmailAlreadyInUseException)] =
+            (ReasonCodes.EmailAlreadyInUse, ErrorKind.Conflict),
+
+        // User management phase 5. NotFound follows ResourceNotFound and
+        // BookingNotFound — a cross-tenant id is indistinguishable from one that
+        // exists nowhere, and must stay that way (AC-4). LastTenantAdmin is a
+        // RuleViolation rather than a Conflict: nothing collided, and no retry
+        // gets past it until the admin changes something first.
+        [typeof(UserNotFoundException)] = (ReasonCodes.UserNotFound, ErrorKind.NotFound),
+        [typeof(LastTenantAdminException)] =
+            (ReasonCodes.LastTenantAdmin, ErrorKind.RuleViolation),
     };
 
     // AuthenticationException is excluded deliberately, and it is the one

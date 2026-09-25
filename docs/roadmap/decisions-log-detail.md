@@ -284,6 +284,57 @@ feature, the reasoning matters as much as the answer.
     FR-9.3's expiry job deciding them unseen. `ReasonCodes.ApproversRequired`
     and `ApproversRequiredException` are deleted, as `ApprovalRequired` was in
     WP-4 Phase 1a.
+29. [`0029`](../decisions/0029-user-provisioning-and-invitation-delivery.md) —
+    how a provisioned user gets a credential their administrator never sees.
+    An invitation is emailed **synchronously, inside the request**, and
+    deliberately does not go through the `Notifications` outbox: that table is
+    a scheduler (`SendAtUtc`, `Attempts`, `LastError`, anchored to a booking or
+    a series) with no address and no body, and routing an invitation through it
+    would need a second widening of `CK_Notifications_HasContext`, a meaningless
+    idempotency key, and the unbuilt reminder job — so the three background jobs
+    stay out of this package entirely, and it builds the `IEmailSender` they
+    will need. A delivery failure is a **return value, not an exception**, which
+    is what lets `POST /users` answer 201 with the activation link even when the
+    provider is down. Two senders chosen by one configuration switch, defaulting
+    to `Smtp` so a misconfigured deployment fails the boot rather than filing
+    invitations on a disk. The activation token reuses `0011`'s shape whole —
+    SHA-256 of a CSPRNG value, single use enforced by a concurrency token, no
+    `OrgId` and no RLS, because activation runs before the user has ever signed
+    in. `POST /auth/activate` is anonymous, rate-limited, returns 204 rather
+    than a session, and answers every failure identically. Two §4.2 mechanisms
+    had to be given an explicit, named write exemption for it, both proven
+    load-bearing by removal.
+30. [`0030`](../decisions/0030-email-collision-disclosure-at-creation.md) —
+    `POST /users` refuses a taken address with `EmailAlreadyInUse` (Conflict,
+    409) and says **the same thing whether the address is in the caller's tenant
+    or another**. `0010` made email unique platform-wide but settled that for
+    login; a refusal that distinguished the two cases would let an administrator
+    enumerate addresses across the platform one create at a time (AC-4), which
+    is why `0018` collapsed three approver reasons into one code. The structural
+    half is the point: the refusal comes from `UQ_Users_Email` firing on the
+    insert, **not from a pre-check**, because a pre-check able to see another
+    tenant's row would need an unfiltered read — so the code raising it cannot
+    learn which tenant the collision is in rather than merely declining to say.
+    The translation checks the index *name* as well as the SQL error number,
+    since `Users` carries two other unique indexes.
+
+31. [`0031`](../decisions/0031-last-tenant-admin-guard.md) — a tenant must always
+    keep at least one active `TenantAdmin`, refused as `LastTenantAdmin` (422).
+    Worth enforcing because a tenant with none is **unrecoverable through this
+    API**: every endpoint that could grant the role back is TenantAdmin-only,
+    FR-1.3's platform-operator surface has no controller, and decision `0028`
+    routes approval requests on an approverless gated resource to the tenant's
+    admins — so such a tenant would create Pending bookings notifying nobody.
+    The guard covers **both doors** (deactivate, and role removal) and
+    deliberately neither reactivation nor a role edit that keeps the role, since
+    the set can only shrink one way. **Checked under `UPDLOCK, HOLDLOCK` on both
+    `dbo.Users` and `dbo.UserRoles`, inside the write's own
+    `IUnitOfWork.ExecuteAsync`** — it is a read-check-write across two rows, so
+    two admins removing each other concurrently would otherwise both read "there
+    are two". An admin may still step down while another remains: the rule
+    protects the tenant, not a person. It also cost a test that was lying — the
+    HTTP-level concurrency test passed with the hints removed, so a deterministic
+    one that forces the interleaving was added beside it.
 
 If a task needs a decision that isn't listed above and isn't in this log,
 **stop and ask** rather than picking silently.

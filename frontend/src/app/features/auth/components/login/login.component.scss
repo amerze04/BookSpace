@@ -144,6 +144,19 @@
   color: var(--color-error);
 }
 
+// Shown once, after activation. Green rather than red for the obvious reason,
+// and above the form rather than below it, because it is context for what the
+// person is about to do rather than a result of what they just did here.
+.success-message {
+  margin: 0 0 1.25rem;
+  padding: 0.6rem 0.8rem;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-success) 10%, white);
+  color: var(--color-success);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
 .error-message {
   margin: 1rem 0 0;
   padding: 0.6rem 0.8rem;

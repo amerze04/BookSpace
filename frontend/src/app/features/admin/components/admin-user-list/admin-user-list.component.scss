@@ -1,0 +1,242 @@
+// The admin resource list's vocabulary, reused rather than reinvented — the two
+// screens are siblings in the same console and should not read as if they came
+// from different products (admin-plan.md §7).
+
+:host {
+  display: block;
+}
+
+.list-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.25rem;
+}
+
+.intro {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 0.95rem;
+}
+
+.primary-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.55rem 1rem;
+  border-radius: var(--radius-md);
+  background: var(--color-primary);
+  color: #fff;
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+
+  svg {
+    width: 1rem;
+    height: 1rem;
+  }
+
+  &:hover {
+    background: var(--color-primary-hover);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+}
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.search-input {
+  flex: 1 1 18rem;
+  min-width: 12rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 0.9rem;
+
+  &:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 1px;
+  }
+}
+
+.state-message {
+  margin: 0;
+  padding: 1.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 0.95rem;
+  text-align: center;
+
+  p {
+    margin: 0;
+  }
+}
+
+.state-message--error {
+  color: var(--color-error);
+
+  p {
+    margin: 0 0 0.75rem;
+  }
+}
+
+.retry-button {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 0.9rem;
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 1px;
+  }
+}
+
+.user-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.user-row {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+// A deactivated row stays fully legible, for the same reason an archived
+// resource does: somebody scanning this list is often looking *for* it.
+.user-row--inactive {
+  background: var(--color-bg);
+}
+
+.row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.row-title-link {
+  color: inherit;
+  text-decoration: none;
+
+  &:hover .row-title {
+    color: var(--color-primary);
+  }
+}
+
+.row-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-email {
+  margin: 0.2rem 0 0;
+  color: var(--color-text-secondary);
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-badges {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.badge {
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.badge--role {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+}
+
+.badge--inactive {
+  background: #ece7e9;
+  color: var(--color-text-secondary);
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 1.25rem;
+}
+
+.pagination-button {
+  padding: 0.45rem 0.9rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 0.85rem;
+  cursor: pointer;
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  &:not(:disabled):hover {
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+  }
+}
+
+.pagination-status {
+  color: var(--color-text-secondary);
+  font-size: 0.85rem;
+}
+
+@media (max-width: 640px) {
+  .user-row {
+    flex-wrap: wrap;
+  }
+
+  .row-main {
+    flex: 1 1 100%;
+  }
+}

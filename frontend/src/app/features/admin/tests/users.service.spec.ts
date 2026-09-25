@@ -119,15 +119,147 @@ describe('UsersService', () => {
     req.flush(page());
   });
 
-  // **There is no "all users" mode, and that is the point of the endpoint.**
-  // The route is broader than the answer — it returns decision `0018`'s eligible
-  // set and nothing widens it — so no caller can ask this service for a tenant
-  // directory by passing something extra.
-  it('exposes no parameter that would widen the answer beyond the eligible set', () => {
+  // **`list` cannot be talked into the wider answer.** It used to be that the
+  // endpoint had no wider answer at all; user management phase 4 gave it one,
+  // behind `scope`, and this is what keeps the picker's call out of it — a
+  // caller passing something extra still gets decision `0018`'s eligible set,
+  // because `list` sends no scope and an omitted scope is the narrow one.
+  it('never sends a scope, whatever it is passed', () => {
     firstValueFrom(service.list({ search: 'anybody' }));
     const req = httpMock.expectOne((r) => r.url === `${API}/users`);
     expect(req.request.params.keys().sort()).toEqual(['search']);
+    expect(req.request.params.has('scope')).toBe(false);
 
     req.flush(page());
+  });
+
+  // ---- User management phase 6 ----
+
+  // The directory's read. Same route, one parameter apart — and that parameter
+  // is the whole difference between "everyone here" and "the two people who can
+  // approve things".
+  it('asks for every user in the tenant through listDirectory', async () => {
+    const result = firstValueFrom(service.listDirectory());
+
+    const req = httpMock.expectOne((r) => r.url === `${API}/users`);
+    expect(req.request.method).toBe('GET');
+    expect(req.request.params.get('scope')).toBe('All');
+
+    const body = page([
+      { id: 'u1', fullName: 'Member One', email: 'member1@acme.test', isActive: true, roles: ['Member'] },
+    ]);
+    req.flush(body);
+
+    expect(await result).toEqual(body);
+  });
+
+  it('carries paging and search into the directory read alongside the scope', () => {
+    firstValueFrom(service.listDirectory({ page: 2, pageSize: 50, search: 'ada' }));
+
+    const req = httpMock.expectOne((r) => r.url === `${API}/users`);
+    expect(req.request.params.get('page')).toBe('2');
+    expect(req.request.params.get('pageSize')).toBe('50');
+    expect(req.request.params.get('search')).toBe('ada');
+    expect(req.request.params.get('scope')).toBe('All');
+
+    req.flush(page());
+  });
+
+  it('posts a new user to the top-level route', async () => {
+    const created = {
+      id: 'u9',
+      email: 'ada@acme.test',
+      fullName: 'Ada Lovelace',
+      isActive: true,
+      roles: ['Member'],
+      createdAtUtc: '2026-09-25T09:00:00Z',
+      activationLink: 'https://bookspace.test/activate?token=abc',
+      activationLinkExpiresAtUtc: '2026-10-02T09:00:00Z',
+      invitationEmailSent: true,
+    };
+    const result = firstValueFrom(service.create({ email: 'ada@acme.test', fullName: 'Ada Lovelace' }));
+
+    const req = httpMock.expectOne(`${API}/users`);
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toEqual({ email: 'ada@acme.test', fullName: 'Ada Lovelace' });
+    req.flush(created);
+
+    expect(await result).toEqual(created);
+  });
+
+  // The create screen renders its own inline refusal — a taken address belongs
+  // under the email control, not in a toast that says nothing useful.
+  it('skips the global error toast for both new calls', () => {
+    firstValueFrom(service.listDirectory()).catch(() => undefined);
+    expect(httpMock.expectOne((r) => r.url === `${API}/users`).request.context.get(SKIP_ERROR_TOAST)).toBe(true);
+    httpMock.verify();
+
+    firstValueFrom(service.create({ email: 'a@b.test', fullName: 'A' })).catch(() => undefined);
+    expect(httpMock.expectOne(`${API}/users`).request.context.get(SKIP_ERROR_TOAST)).toBe(true);
+  });
+
+  // ---- User management phase 7 ----
+
+  it('reads a single person by id', async () => {
+    const detail = {
+      id: 'u1',
+      fullName: 'Member One',
+      email: 'member1@acme.test',
+      isActive: true,
+      roles: ['Member'],
+      createdAtUtc: '2026-09-01T09:00:00Z',
+      updatedAtUtc: '2026-09-01T09:00:00Z',
+    };
+    const result = firstValueFrom(service.getById('u1'));
+
+    const req = httpMock.expectOne(`${API}/users/u1`);
+    expect(req.request.method).toBe('GET');
+    req.flush(detail);
+
+    expect(await result).toEqual(detail);
+  });
+
+  it('posts a deactivation with no body', () => {
+    firstValueFrom(service.deactivate('u1')).catch(() => undefined);
+
+    const req = httpMock.expectOne(`${API}/users/u1/deactivate`);
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toBeNull();
+
+    req.flush({});
+  });
+
+  it('posts a reactivation with no body', () => {
+    firstValueFrom(service.reactivate('u1')).catch(() => undefined);
+
+    const req = httpMock.expectOne(`${API}/users/u1/reactivate`);
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toBeNull();
+
+    req.flush({});
+  });
+
+  it('replaces the whole role set in one PUT', () => {
+    firstValueFrom(service.replaceRoles('u1', { roles: ['Approver', 'Member'] })).catch(() => undefined);
+
+    const req = httpMock.expectOne(`${API}/users/u1/roles`);
+    expect(req.request.method).toBe('PUT');
+    expect(req.request.body).toEqual({ roles: ['Approver', 'Member'] });
+
+    req.flush({});
+  });
+
+  it('skips the global error toast for all four detail-screen calls', () => {
+    firstValueFrom(service.getById('u1')).catch(() => undefined);
+    expect(httpMock.expectOne(`${API}/users/u1`).request.context.get(SKIP_ERROR_TOAST)).toBe(true);
+
+    firstValueFrom(service.deactivate('u1')).catch(() => undefined);
+    expect(httpMock.expectOne(`${API}/users/u1/deactivate`).request.context.get(SKIP_ERROR_TOAST)).toBe(true);
+
+    firstValueFrom(service.reactivate('u1')).catch(() => undefined);
+    expect(httpMock.expectOne(`${API}/users/u1/reactivate`).request.context.get(SKIP_ERROR_TOAST)).toBe(true);
+
+    firstValueFrom(service.replaceRoles('u1', { roles: ['Member'] })).catch(() => undefined);
+    expect(httpMock.expectOne(`${API}/users/u1/roles`).request.context.get(SKIP_ERROR_TOAST)).toBe(true);
   });
 });

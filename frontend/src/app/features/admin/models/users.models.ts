@@ -2,6 +2,10 @@
 // the only one this feature owns outright. It lives here rather than beside the
 // resource models because nothing outside the admin console can call it: it is
 // TenantAdmin-only, and its whole reason for existing is the approvers picker.
+//
+// User management phase 4 gave that endpoint a second job — the user directory,
+// behind a `scope` parameter. These types describe the default scope only, and
+// deliberately have not changed; see `EligibleUser` below.
 
 // BookSpace.Domain.Enums.Role, serialized by name — Program.cs registers
 // JsonStringEnumConverter app-wide.
@@ -15,10 +19,19 @@ export type UserRole = 'SysAdmin' | 'TenantAdmin' | 'Approver' | 'Member';
 
 // One row of `GET /users` — ListUsersQueryResponse.
 //
-// **The route is broader than the answer.** This is the decision `0018`
-// eligible-approver set — own-tenant, active, holding `Approver` or
-// `TenantAdmin` — not every user in the tenant, and there is no parameter that
-// widens it. A Member is absent by design.
+// **This is the decision `0018` eligible-approver set** — own-tenant, active,
+// holding `Approver` or `TenantAdmin` — not every user in the tenant. A Member
+// is absent by design.
+//
+// It used to say "and there is no parameter that widens it", which stopped
+// being true in user management phase 4: `GET /users?scope=All` returns every
+// user in the tenant, deactivated accounts included, for the directory screen
+// phase 6 will build. **The narrow set is still the default**, deliberately, so
+// this type and its caller are unaffected — see `UserScope` on the backend for
+// why the wider set is opt-in. When the directory lands it will need its own
+// row type: the wire row now also carries `isActive`, which is omitted here
+// because in this scope it is true of every row and the picker has no use for
+// it.
 //
 // `email` is here and deliberately is *not* on `ApproverDetail`: that one
 // answers "who approves this room" for every member of the tenant, where an
@@ -35,12 +48,115 @@ export interface EligibleUser {
   roles: UserRole[];
 }
 
+// One row of `GET /users?scope=All` — the directory, user management phase 6.
+//
+// The same row the picker gets plus `isActive`, and it extends `EligibleUser`
+// rather than repeating its fields so the relationship is in the type: the
+// directory is a superset of the picker's answer, not a different shape.
+//
+// `isActive` is the field the directory exists for. Without it an administrator
+// cannot tell somebody who left from somebody who was never added — and the
+// picker has no use for it, because an inactive user is not an eligible
+// approver and never appears there.
+export interface DirectoryUser extends EligibleUser {
+  isActive: boolean;
+}
+
+// Which set `GET /users` answers with — `UserScope` on the backend. Omitted
+// means the eligible-approver set, and **that default is deliberate**: a
+// forgotten parameter narrows rather than widens, so the approvers picker
+// cannot start offering people `ReplaceApprovers` would then refuse.
+export type UserScope = 'EligibleApprovers' | 'All';
+
 // `GET /users` query params. All optional; an omitted field lets the backend's
 // own documented default apply rather than this file keeping a second copy of
-// it (the convention `ListResourcesParams` established).
+// it (the convention `ListResourcesParams` established) — which for `scope` is
+// the point rather than a convenience.
 export interface ListUsersParams {
   page?: number;
   pageSize?: number;
   sort?: string;
   search?: string;
+  scope?: UserScope;
 }
+
+// The body of `POST /users`. No password and no roles: the recipient chooses
+// the first through the activation link, and the server assigns `Member` as the
+// second (user management phase 3).
+export interface CreateUserRequest {
+  email: string;
+  fullName: string;
+}
+
+// The 201 body of `POST /users`.
+//
+// **`activationLink` is a live credential**, carried whether or not the
+// invitation email went out. That is the server's deliberate choice — creating
+// a colleague must not fail because an email provider is down, and nothing
+// re-issues an invitation — and it makes this response something to show once
+// and never store. The screen that renders it says so.
+//
+// `invitationEmailSent` is a field rather than something inferred from the
+// status code, because a 201 arrives either way and the outcome reads
+// differently: one is "we have told them", the other is "you will have to".
+export interface CreatedUser {
+  id: string;
+  email: string;
+  fullName: string;
+  isActive: boolean;
+  roles: UserRole[];
+  createdAtUtc: string;
+  activationLink: string;
+  activationLinkExpiresAtUtc: string;
+  invitationEmailSent: boolean;
+}
+
+// GET /users/{id} — user management phase 7, added for this screen: none of
+// `List`, `Deactivate`, `Reactivate` or `ReplaceRoles` returns a single user in
+// a shape meant to seed a whole screen, and the directory has no id filter — so
+// a direct link, a bookmark, or a reload had nothing to load from.
+//
+// Extends `DirectoryUser` rather than repeating its fields, the same relationship
+// `DirectoryUser` has to `EligibleUser`: this is what the directory's own row
+// would say about one person, plus the two timestamps a list has no room for.
+//
+// **Not eligibility-filtered at all** — unlike `EligibleUser`, this is not "can
+// this person approve something", it answers with whoever the id names,
+// Member or deactivated included. The picker and this screen ask different
+// questions of the same underlying account.
+export interface UserDetail extends DirectoryUser {
+  createdAtUtc: string;
+  updatedAtUtc: string;
+}
+
+// The 200 body shared by `POST /{id}/deactivate`, `POST /{id}/reactivate` and
+// `PUT /{id}/roles` — `DeactivateUserCommandResponse`,
+// `ReactivateUserCommandResponse` and `ReplaceUserRolesCommandResponse` are
+// three separate C# types (decision `0015`'s per-endpoint rule) but are
+// field-for-field identical, and the three calling components all do the same
+// thing with the result: reseed the screen from what was actually stored. One
+// wire type here mirrors that, without claiming the backend shares it too.
+export interface UserWriteResult {
+  id: string;
+  email: string;
+  fullName: string;
+  isActive: boolean;
+  roles: UserRole[];
+  updatedAtUtc: string;
+}
+
+// The body of `PUT /users/{id}/roles`. Replace-the-set, matching
+// `PUT /resources/{id}/approvers` — see `ReplaceUserRolesCommandRequest` for
+// why: an intermediate state produced by per-role add/remove would depend on
+// request order, and the last-admin guard needs a final set to ask its
+// question of.
+export interface ReplaceUserRolesRequest {
+  roles: UserRole[];
+}
+
+// Every role `PUT /users/{id}/roles` may be asked to assign. `SysAdmin` is
+// deliberately excluded — unlike `UserRole` above, which has to describe what
+// a row *can* hold (a bootstrap SysAdmin row exists), this describes what a
+// TenantAdmin's screen may *offer*, and the validator refuses SysAdmin outright
+// as a privilege-escalation guard, not a formatting rule.
+export const ASSIGNABLE_ROLES: readonly Exclude<UserRole, 'SysAdmin'>[] = ['TenantAdmin', 'Approver', 'Member'];

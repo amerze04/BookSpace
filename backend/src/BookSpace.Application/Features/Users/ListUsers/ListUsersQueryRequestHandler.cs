@@ -4,7 +4,12 @@ using BookSpace.Application.Messaging;
 
 namespace BookSpace.Application.Features.Users.ListUsers;
 
-// FR-3.3's missing half. TenantAdmin-only at the controller; nothing here
+// GET /users, for both its callers — the approvers picker (FR-3.3's missing
+// half) and the user directory. Which set comes back is ListUsersQueryRequest.Scope,
+// passed straight through: the handler makes no decision about it, because the
+// only decision available is the one UserScope already documents.
+//
+// TenantAdmin-only at the controller; nothing here
 // re-checks the role, the same way no other handler does — authorization is one
 // mechanism (decision `0012`), not a policy plus a hand-written if.
 public sealed class ListUsersQueryRequestHandler
@@ -28,6 +33,6 @@ public sealed class ListUsersQueryRequestHandler
         // ListResourcesQueryRequestHandler.
         SortOption.TryParse(request.Sort, UserSortFields.All, out var sort);
 
-        return _users.ListEligibleApproversAsync(request, sort, cancellationToken);
+        return _users.ListAsync(request, sort, cancellationToken);
     }
 }

@@ -152,6 +152,22 @@ try
                     builder.Configuration.GetValue("RateLimiting:Refresh:WindowSeconds", 60)),
                 QueueLimit = 0,
             }));
+
+        // User management phase 2: /auth/activate is anonymous and looks a
+        // secret up by hash, which is the same shape as login and wants the
+        // same throttle. Tighter than login's default, deliberately — a person
+        // activates an account once, ever, so there is no legitimate traffic
+        // pattern that needs headroom, and an attacker guessing at 256-bit
+        // tokens should not get many tries per minute to do it in.
+        options.AddPolicy("activate", httpContext => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                PermitLimit = builder.Configuration.GetValue("RateLimiting:Activate:PermitLimit", 5),
+                Window = TimeSpan.FromSeconds(
+                    builder.Configuration.GetValue("RateLimiting:Activate:WindowSeconds", 60)),
+                QueueLimit = 0,
+            }));
     });
 
     builder.Services.AddExceptionHandler<GlobalExceptionHandler>();

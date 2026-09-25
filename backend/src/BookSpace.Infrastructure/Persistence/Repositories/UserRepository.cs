@@ -1,10 +1,13 @@
 using System.Linq.Expressions;
 using BookSpace.Application.Abstractions;
+using BookSpace.Application.Common.Errors;
 using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.Users;
+using BookSpace.Application.Features.Users.GetUserById;
 using BookSpace.Application.Features.Users.ListUsers;
 using BookSpace.Domain.Entities;
 using BookSpace.Domain.Enums;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
 namespace BookSpace.Infrastructure.Persistence.Repositories;
@@ -61,6 +64,123 @@ internal sealed class UserRepository : IUserRepository
         _context = context;
     }
 
+    // User management phase 3. Tracked through the tenant-filtered DbSet like
+    // everything else here — BookSpaceDbContext's SaveChanges guard (§4.2
+    // mechanism 2) then refuses the insert outright if the new user's OrgId
+    // disagrees with the caller's tenant, so nothing in the handler has to
+    // re-check it.
+    public void Add(User user) => _context.Users.Add(user);
+
+    // Tracked, not AsNoTracking: the caller mutates it through the domain
+    // methods and the change has to be saved. FirstOrDefaultAsync, never Find()
+    // — Find can answer from the change tracker without querying, which would
+    // skip the tenant query filter (CLAUDE.md §4.2).
+    public Task<User?> FindForUpdateAsync(Guid userId, CancellationToken cancellationToken) =>
+        _context.Users.FirstOrDefaultAsync(u => u.Id == userId, cancellationToken);
+
+    // GET /users/{id} — user management phase 7. AsNoTracking, the read
+    // counterpart to FindForUpdateAsync above: nothing here is ever saved.
+    // Same navigation-by-name reason as IsEligibleApprover for reading Roles.
+    public Task<GetUserByIdQueryResponse?> FindDetailAsync(
+        Guid userId,
+        CancellationToken cancellationToken) =>
+        _context.Users
+            .AsNoTracking()
+            .Where(u => u.Id == userId)
+            .Select(u => new GetUserByIdQueryResponse(
+                u.Id,
+                u.FullName,
+                u.Email,
+                u.IsActive,
+                EF.Property<ICollection<User.RoleAssignment>>(u, RoleAssignmentsNavigation)
+                    .Select(r => r.Role)
+                    .ToList(),
+                u.CreatedAtUtc,
+                u.UpdatedAtUtc))
+            .FirstOrDefaultAsync(cancellationToken);
+
+    // The last-admin guard's locking read (docs/user-management-plan.md §3.3,
+    // §4.5). Raw SQL because the hints are the entire point and LINQ cannot
+    // express them — the same reason CLAUDE.md §4.1 gives for dbo.CreateBooking,
+    // though this needs no stored procedure: that rule is about *booking* writes.
+    //
+    // UPDLOCK stops two transactions holding this read at once, so the second
+    // admin blocks rather than reading the same "there are two" the first did.
+    // HOLDLOCK makes it a range lock held to commit, so nobody can insert or
+    // reactivate a TenantAdmin into the range underneath either of them. Both
+    // tables are hinted: the role assignment is as much part of the answer as
+    // the user row, and locking only one leaves the other free to move.
+    //
+    // No OrgId predicate, deliberately. Row-level security scopes this to the
+    // caller's tenant on the connection itself (§4.2 mechanism 3), and
+    // dbo.UserRoles is reachable only through the join to the filtered
+    // dbo.Users. A hand-written WHERE would be a fourth isolation mechanism
+    // that could be forgotten — the thing §4.2 exists to avoid.
+    //
+    // Interpolated FormattableString, so `excludingUserId` is a parameter and
+    // not concatenated text (CLAUDE.md §5).
+    public async Task<int> CountOtherActiveTenantAdminsAsync(
+        Guid excludingUserId,
+        CancellationToken cancellationToken)
+    {
+        var counts = await _context.Database
+            .SqlQuery<int>(
+                $"""
+                SELECT COUNT(*) AS [Value]
+                FROM dbo.Users AS u WITH (UPDLOCK, HOLDLOCK)
+                INNER JOIN dbo.UserRoles AS r WITH (UPDLOCK, HOLDLOCK) ON r.UserId = u.Id
+                WHERE u.IsActive = 1
+                  AND r.Role = 'TenantAdmin'
+                  AND u.Id <> {excludingUserId}
+                """)
+            .ToListAsync(cancellationToken);
+
+        return counts.Single();
+    }
+
+    // Also persists the ActivationToken the create handler added through
+    // IActivationTokenRepository: both repositories hold this same scoped
+    // DbContext, so one SaveChanges covers the account, its role and the only
+    // means of signing into it.
+    //
+    // **The one place a duplicate email is refused.** There is deliberately no
+    // pre-check in the handler: seeing another tenant's row would require an
+    // unfiltered read, and CLAUDE.md §4.2 keeps that surface to the two named
+    // methods on IAuthenticationUserRepository. Letting UQ_Users_Email answer is
+    // race-free (§6 puts uniqueness in tier 1) and means nothing on this path
+    // can learn which tenant the collision is in — which is what makes
+    // EmailAlreadyInUse safe to return for both cases (decision `0010`,
+    // docs/user-management-plan.md §3.2).
+    //
+    // 2601 is a duplicate key on a unique *index*, which is what
+    // HasIndex(...).IsUnique() creates and therefore what actually fires here;
+    // 2627 is the PRIMARY KEY / named UNIQUE CONSTRAINT form, included because
+    // nothing stops a future migration changing the enforcement mechanism. The
+    // same pair RecurrenceRuleRepository already tests for.
+    //
+    // The index name is checked, not just the error number: Users also carries
+    // UQ_Users_CalendarFeedToken and UQ_Users_Org_Id, and reporting either of
+    // those as "that email is taken" would send an admin looking for a problem
+    // that is not there. Anything else rethrows.
+    public async Task SaveChangesAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex)
+            when (ex.InnerException is SqlException { Number: 2601 or 2627 } sql
+                && sql.Message.Contains(EmailUniqueIndexName, StringComparison.Ordinal))
+        {
+            throw new EmailAlreadyInUseException();
+        }
+    }
+
+    // As named in UserConfiguration. A constant rather than a literal in the
+    // filter above, because a renamed index that nobody noticed here would turn
+    // a 409 into a 500 and only in production data.
+    private const string EmailUniqueIndexName = "UQ_Users_Email";
+
     public async Task<IReadOnlyCollection<Guid>> FindEligibleApproverIdsAsync(
         IReadOnlyCollection<Guid> candidateUserIds,
         CancellationToken cancellationToken)
@@ -112,17 +232,33 @@ internal sealed class UserRepository : IUserRepository
             .ToListAsync(cancellationToken);
     }
 
-    // GET /users. Note what this method does *not* do: there is no "all users"
-    // branch and no parameter that would produce one. The route is narrower than
-    // its name on purpose — see ListUsersQueryRequest for why.
-    public Task<PagedResult<ListUsersQueryResponse>> ListEligibleApproversAsync(
+    // GET /users, for both callers. User management phase 4 added the "all
+    // users" branch this method's own comment used to say did not exist — see
+    // UserScope for why it is opt-in rather than the default.
+    //
+    // The two scopes differ by exactly one `Where`, and that is deliberate:
+    // paging, searching and ordering are written once, so the directory and the
+    // picker cannot come to disagree about what page 2 contains.
+    public Task<PagedResult<ListUsersQueryResponse>> ListAsync(
         ListUsersQueryRequest query,
         SortOption? sort,
         CancellationToken cancellationToken)
     {
-        var users = _context.Users
-            .AsNoTracking()
-            .Where(IsEligibleApprover);
+        var users = _context.Users.AsNoTracking();
+
+        // Not a ternary inside the Where: an unrecognized scope must not
+        // silently pick a branch. UserScope has two values and the validator has
+        // already refused anything else, so the default arm is unreachable —
+        // which is exactly why it throws rather than guessing.
+        users = query.Scope switch
+        {
+            UserScope.EligibleApprovers => users.Where(IsEligibleApprover),
+            UserScope.All => users,
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(query),
+                query.Scope,
+                "Unsupported user scope."),
+        };
 
         // FullName or Email, the two things the picker actually shows. Whitespace
         // -only counts as "no search"; EF translates Contains to a LIKE, whose
@@ -148,6 +284,7 @@ internal sealed class UserRepository : IUserRepository
                 u.Id,
                 u.FullName,
                 u.Email,
+                u.IsActive,
                 EF.Property<ICollection<User.RoleAssignment>>(u, RoleAssignmentsNavigation)
                     .Select(r => r.Role)
                     .ToList()))

@@ -1,0 +1,158 @@
+@if (notFound()) {
+  <div class="state-message state-message--error">
+    <p><strong>That account doesn't exist, or it isn't yours to manage.</strong></p>
+    <a class="secondary-action" routerLink="/admin/users">Back to users</a>
+  </div>
+} @else if (loading()) {
+  <p class="state-message">Loading person…</p>
+} @else if (loadError()) {
+  <div class="state-message state-message--error">
+    <p>Couldn't load this person.</p>
+    <button type="button" class="retry-button" (click)="retryLoad()">Try again</button>
+  </div>
+} @else if (user(); as user) {
+  <header class="detail-header">
+    <h1 class="detail-heading">{{ heading() }}</h1>
+    <p class="detail-email">{{ user.email }}</p>
+    <span class="badge" [class.badge--active]="user.isActive" [class.badge--inactive]="!user.isActive">
+      {{ user.isActive ? 'Active' : 'Deactivated' }}
+    </span>
+  </header>
+
+  <section class="panel">
+    <h2 class="panel-heading">Roles</h2>
+    <p class="panel-detail">
+      What this person can do in your organization. At least one role is required — to remove
+      every role, deactivate the account instead.
+    </p>
+
+    <div class="role-checkboxes" role="group" aria-label="Roles">
+      @for (role of assignableRoles; track role) {
+        <label class="checkbox-line">
+          <input
+            type="checkbox"
+            [checked]="selectedRoles().has(role)"
+            [disabled]="savingRoles()"
+            (change)="toggleRole(role)"
+          />
+          <span>{{ roleDisplayLabel(role) }}</span>
+        </label>
+      }
+    </div>
+
+    @if (rolesEmpty()) {
+      <p class="field-warning" role="alert">
+        Select at least one role, or deactivate the account instead of clearing every role.
+      </p>
+    }
+
+    @if (rolesRejection(); as rejection) {
+      @if (rejection.formMessage) {
+        <p class="form-error" role="alert">{{ rejection.formMessage }}</p>
+      }
+    }
+
+    @if (rolesSaved()) {
+      <p class="form-success" role="status"><strong>Roles updated.</strong></p>
+    }
+
+    <div class="form-actions">
+      <button type="button" class="primary-action" [disabled]="!canSaveRoles()" (click)="saveRoles()">
+        {{ savingRoles() ? 'Saving…' : 'Save roles' }}
+      </button>
+    </div>
+  </section>
+
+  @if (user.isActive) {
+    <section class="danger-zone">
+      <h2 class="danger-heading">Deactivate this account</h2>
+
+      @if (!confirmingDeactivate()) {
+        <p class="danger-detail">
+          They will lose access the next time their session refreshes — at most 15 minutes, not
+          immediately (FR-2.4). <strong>Their existing bookings are not cancelled</strong> and stay
+          on the calendar as scheduled. This can be undone by reactivating the account.
+        </p>
+        <button type="button" class="danger-button" (click)="startConfirmingDeactivate()">
+          Deactivate account
+        </button>
+      } @else {
+        <p class="danger-detail">
+          <strong>Deactivate {{ heading() }}?</strong> They will lose access on their next token
+          refresh, at most 15 minutes from now. Their existing bookings are not cancelled. You can
+          reactivate this account at any time.
+        </p>
+
+        @if (statusRejection(); as rejection) {
+          @if (rejection.formMessage) {
+            <p class="form-error" role="alert">{{ rejection.formMessage }}</p>
+          }
+        }
+
+        <div class="danger-actions">
+          <button
+            type="button"
+            class="danger-button"
+            [disabled]="statusChanging()"
+            (click)="confirmDeactivate()"
+          >
+            {{ statusChanging() ? 'Deactivating…' : 'Yes, deactivate' }}
+          </button>
+          <button
+            type="button"
+            class="secondary-action"
+            [disabled]="statusChanging()"
+            (click)="cancelConfirmingDeactivate()"
+          >
+            Cancel
+          </button>
+        </div>
+      }
+    </section>
+  } @else {
+    <section class="panel">
+      <h2 class="panel-heading">Reactivate this account</h2>
+
+      @if (!confirmingReactivate()) {
+        <p class="panel-detail">
+          Restores their access. They will be able to sign in as soon as they next authenticate.
+        </p>
+        <button type="button" class="primary-action" (click)="startConfirmingReactivate()">
+          Reactivate account
+        </button>
+      } @else {
+        <p class="panel-detail">
+          <strong>Reactivate {{ heading() }}?</strong> They will be able to sign in again
+          immediately.
+        </p>
+
+        @if (statusRejection(); as rejection) {
+          @if (rejection.formMessage) {
+            <p class="form-error" role="alert">{{ rejection.formMessage }}</p>
+          }
+        }
+
+        <div class="form-actions">
+          <button
+            type="button"
+            class="primary-action"
+            [disabled]="statusChanging()"
+            (click)="confirmReactivate()"
+          >
+            {{ statusChanging() ? 'Reactivating…' : 'Yes, reactivate' }}
+          </button>
+          <button
+            type="button"
+            class="secondary-action"
+            [disabled]="statusChanging()"
+            (click)="cancelConfirmingReactivate()"
+          >
+            Cancel
+          </button>
+        </div>
+      }
+    </section>
+  }
+
+  <a class="inline-link" routerLink="/admin/users">Back to users</a>
+}

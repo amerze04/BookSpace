@@ -164,6 +164,46 @@ public static class ReasonCodes
     // BookingNotCancellable: there is an actor and a time to overwrite.
     public const string RecurrenceRuleNotCancellable = "RecurrenceRuleNotCancellable";
 
+    // ---- Users (user management phase 3) ----
+
+    // ErrorKind.Conflict. The email address already belongs to an account.
+    //
+    // **One code, one message, whether the address is in the caller's own tenant
+    // or another** — decision `0010` made email unique platform-wide, and
+    // answering differently in the two cases would turn POST /users into a
+    // cross-tenant existence oracle (AC-4). That is the concern `0018` collapsed
+    // three approver-ineligibility reasons into one code to avoid, and
+    // docs/user-management-plan.md §3.2 settles it the same way.
+    //
+    // The handler does not merely *decline* to distinguish the two — it cannot.
+    // Nothing on the create path reads Users unfiltered; the refusal comes from
+    // UQ_Users_Email firing on the insert (CLAUDE.md §6 tier 1, uniqueness), so
+    // the code that raises it never learns which tenant the other account is in.
+    public const string EmailAlreadyInUse = "EmailAlreadyInUse";
+
+    // ErrorKind.NotFound (user management phase 5). No such user visible to this
+    // caller — the id exists nowhere, or it belongs to another tenant, which
+    // after CLAUDE.md §4.2's filters is the same answer from here and must stay
+    // that way (AC-4). Same reasoning as ResourceNotFound and BookingNotFound.
+    public const string UserNotFound = "UserNotFound";
+
+    // ErrorKind.RuleViolation (user management phase 5). The write would leave
+    // the tenant with no active TenantAdmin — by deactivating the last one, or
+    // by taking the role off them.
+    //
+    // Not politeness: a tenant with zero administrators cannot be managed
+    // through any API in this system, there is no SysAdmin rescue path (FR-1.3
+    // has no controller either), and decision `0028` routes approval requests on
+    // a gated resource with no approvers to `FindTenantAdminUserIdsAsync` — so
+    // such a tenant would create Pending bookings notifying nobody. Recovery
+    // would be a database edit.
+    //
+    // Checked under a lock, in the same transaction as the write: it is a
+    // read-check-write across two rows, so two admins removing each other
+    // concurrently would otherwise both read "there are two" and both pass. §6's
+    // own table puts a "must never" in tiers 1–3, and this is tier 2.
+    public const string LastTenantAdmin = "LastTenantAdmin";
+
     // ---- Approvals (WP-5 Phase 3, FR-7.1-7.5, AC-5) ----
 
     // ErrorKind.RuleViolation. Approve or reject called on a booking that is

@@ -20,5 +20,21 @@ public sealed class ListUsersQueryRequestValidator : AbstractValidator<ListUsers
         this.AddPagingRules(UserSortFields.All);
 
         RuleFor(q => q.Search).MaximumLength(SearchMaxLength);
+
+        // Bound by name from the query string, so an unparseable value never
+        // reaches here — model binding fails first. This catches the numeric
+        // form, exactly as ListBookingsQueryRequestValidator does for its own
+        // Scope: Enum.TryParse accepts any integer, so `?scope=99` would bind to
+        // an undefined UserScope, fall through the repository's switch to the
+        // eligible-approver branch, and read as "your tenant has two people" to
+        // an admin who asked for the directory. A 400 naming the field beats a
+        // silently narrowed answer.
+        //
+        // No role rule alongside it, unlike bookings: the whole controller is
+        // TenantAdmin, so there is no weaker caller for a scope to be widened
+        // past.
+        RuleFor(q => q.Scope)
+            .IsInEnum()
+            .WithMessage($"Scope must be one of: {string.Join(", ", Enum.GetNames<UserScope>())}.");
     }
 }

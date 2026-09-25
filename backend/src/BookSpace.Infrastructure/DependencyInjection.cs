@@ -1,4 +1,5 @@
 using BookSpace.Application.Abstractions;
+using BookSpace.Infrastructure.Email;
 using BookSpace.Infrastructure.Persistence;
 using BookSpace.Infrastructure.Persistence.Repositories;
 using BookSpace.Infrastructure.Security;
@@ -6,6 +7,7 @@ using BookSpace.Infrastructure.Time;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace BookSpace.Infrastructure;
 
@@ -37,16 +39,58 @@ public static class DependencyInjection
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
+        // Same ValidateOnStart posture as JwtOptions: a deployment that cannot
+        // send email fails the boot rather than dropping invitations silently.
+        // The rules live in EmailOptionsValidator rather than in annotations
+        // because half of them depend on DeliveryMode — see that file.
+        services.AddOptions<EmailOptions>()
+            .Bind(configuration.GetSection(EmailOptions.SectionName))
+            .ValidateOnStart();
+        services.AddSingleton<IValidateOptions<EmailOptions>, EmailOptionsValidator>();
+
+        // Read once, here, rather than resolved per send behind a factory: which
+        // sender is in play is a deployment decision, and having it show up in
+        // the DI graph means "why did no email arrive?" is answered by looking
+        // at one registration. Changing it needs a restart, like every other
+        // wiring decision in this file.
+        //
+        // An unparseable value throws here and kills the boot, which is the
+        // intended direction — there is no silent fallback to either mode.
+        var deliveryMode = configuration
+            .GetSection(EmailOptions.SectionName)
+            .GetValue(nameof(EmailOptions.DeliveryMode), EmailDeliveryMode.Smtp);
+
+        if (deliveryMode is EmailDeliveryMode.DevelopmentSink)
+        {
+            services.AddSingleton<IEmailSender, DevelopmentSinkEmailSender>();
+        }
+        else
+        {
+            services.AddSingleton<IEmailSender, SmtpEmailSender>();
+        }
+
+        // Nothing secret in this section, so unlike Jwt and Email it is
+        // committed whole — but it is still ValidateOnStart, so a nonsensical
+        // invitation lifetime fails the boot rather than issuing tokens that
+        // expire before they arrive.
+        services.AddOptions<ActivationOptions>()
+            .Bind(configuration.GetSection(ActivationOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
         services.AddSingleton<IClock, SystemClock>();
         // Stateless; TimeZoneInfo does its own caching.
         services.AddSingleton<ITimeZoneCatalog, SystemTimeZoneCatalog>();
         services.AddSingleton<IPasswordHasher, PasswordHasherAdapter>();
         services.AddSingleton<IRefreshTokenFactory, RefreshTokenFactory>();
+        services.AddSingleton<IActivationTokenFactory, ActivationTokenFactory>();
+        services.AddSingleton<IActivationLinkBuilder, ActivationLinkBuilder>();
         services.AddSingleton<IAccessTokenService, JwtAccessTokenService>();
 
         // Scoped: these hold the request's DbContext.
         services.AddScoped<IAuthenticationUserRepository, AuthenticationUserRepository>();
         services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
+        services.AddScoped<IActivationTokenRepository, ActivationTokenRepository>();
         services.AddScoped<IResourceRepository, ResourceRepository>();
         services.AddScoped<IUserRepository, UserRepository>();
         services.AddScoped<IBlackoutPeriodRepository, BlackoutPeriodRepository>();

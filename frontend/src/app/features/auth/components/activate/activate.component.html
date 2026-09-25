@@ -1,0 +1,78 @@
+<div class="activate-page">
+  <section class="activate-card-wrapper">
+    <div class="activate-card">
+      <div class="brand brand--centered">
+        <app-brand-mark />
+      </div>
+
+      @if (tokenMissing) {
+        <!--
+          No token in the URL at all — usually a link that lost its query string
+          on the way through a mail client. Its own state rather than an error
+          under a control, because no control on this page could fix it.
+        -->
+        <h2>This link is incomplete</h2>
+        <p class="subtitle">
+          The invitation link seems to have been cut short. Open it again straight from your
+          invitation email, or ask your administrator to invite you again.
+        </p>
+      } @else {
+        <h2>Choose a password</h2>
+        <p class="subtitle">Set a password to finish setting up your BookSpace account.</p>
+
+        <form (submit)="$event.preventDefault(); submit()">
+          <label for="password">Password</label>
+          <input
+            id="password"
+            type="password"
+            autocomplete="new-password"
+            [attr.maxlength]="passwordMaxLength"
+            [value]="password()"
+            [disabled]="submitting()"
+            [attr.aria-invalid]="passwordError() ? 'true' : null"
+            [attr.aria-describedby]="passwordError() ? 'password-error' : 'password-hint'"
+            (input)="onPasswordInput($event)"
+            (blur)="markTouched('password')"
+          />
+          @if (passwordError(); as message) {
+            <p id="password-error" class="field-error">{{ message }}</p>
+          } @else {
+            <p id="password-hint" class="field-hint">At least {{ passwordMinLength }} characters.</p>
+          }
+
+          <label for="confirm-password">Confirm password</label>
+          <input
+            id="confirm-password"
+            type="password"
+            autocomplete="new-password"
+            [attr.maxlength]="passwordMaxLength"
+            [value]="confirmPassword()"
+            [disabled]="submitting()"
+            [attr.aria-invalid]="confirmError() ? 'true' : null"
+            [attr.aria-describedby]="confirmError() ? 'confirm-error' : null"
+            (input)="onConfirmInput($event)"
+            (blur)="markTouched('confirmPassword')"
+          />
+          @if (confirmError(); as message) {
+            <p id="confirm-error" class="field-error">{{ message }}</p>
+          }
+
+          @if (errorMessage(); as message) {
+            <p class="error-message" role="alert">{{ message }}</p>
+          }
+
+          <button type="submit" [disabled]="!canSubmit()">
+            {{ submitting() ? 'Setting your password…' : 'Set password' }}
+          </button>
+        </form>
+
+        <!--
+          There is no password reset in this application (plan §3.4), so this is
+          the only password this account will have until somebody builds one.
+          Worth saying while they are choosing it, not afterwards.
+        -->
+        <p class="footnote">You'll use this password every time you sign in.</p>
+      }
+    </div>
+  </section>
+</div>

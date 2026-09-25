@@ -16,7 +16,7 @@ import { BreadcrumbService } from '../../breadcrumb.service';
 interface NavItem {
   label: string;
   path: string;
-  icon: 'calendar' | 'resources' | 'approvals' | 'admin' | 'settings' | 'help';
+  icon: 'calendar' | 'resources' | 'approvals' | 'admin' | 'users' | 'settings' | 'help';
 }
 
 // WP-7 Phase 4 (2026-09-18): "Home" and "My Bookings" were both removed and
@@ -43,6 +43,23 @@ const APPROVALS_NAV_ITEM: NavItem = { label: 'Approvals', path: '/approvals', ic
 // highlighting matches the URL the visitor actually lands on, the same reason
 // approverGuard redirects to /calendar rather than through /home.
 const ADMIN_NAV_ITEM: NavItem = { label: 'Admin', path: '/admin/resources', icon: 'admin' };
+
+// User management phase 6. **The second admin entry point, and the exception
+// the comment above describes rather than a contradiction of it.** That comment
+// refuses a flat list of admin items because availability windows, approvers
+// and blackout periods are all sub-resources of `/resources/{id}` — they cannot
+// be addressed without a resource in hand, so a nav item for them would promise
+// a destination the API has no URL for. `GET /users` and `POST /users` are
+// top-level routes with no such dependency, so this one is reachable directly
+// and belongs in the sidebar.
+//
+// It sits after Admin, so the two administration entries group together at the
+// bottom of the list.
+//
+// The alternative — one "Admin" item leading to a tabbed console — is the
+// tidier answer if this grows a third section, and is noted rather than built:
+// two destinations do not need a tab strip and a shared layout route.
+const ADMIN_USERS_NAV_ITEM: NavItem = { label: 'Users', path: '/admin/users', icon: 'users' };
 
 @Component({
   selector: 'app-shell',
@@ -81,6 +98,7 @@ export class ShellComponent {
 
     if (this.auth.isTenantAdmin()) {
       items.push(ADMIN_NAV_ITEM);
+      items.push(ADMIN_USERS_NAV_ITEM);
     }
 
     return items;

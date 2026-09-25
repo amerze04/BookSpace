@@ -1,7 +1,9 @@
 using BookSpace.Application.Abstractions;
+using BookSpace.Application.Common.Errors;
 using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.Resources.GetResource;
 using BookSpace.Application.Features.Resources.ListResources;
+using BookSpace.Application.Features.Users.GetUserById;
 using BookSpace.Application.Features.Users.ListUsers;
 using BookSpace.Domain.Availability;
 using BookSpace.Domain.Entities;
@@ -197,14 +199,94 @@ internal sealed class FakeUserRepository : IUserRepository
 
     // GET /users' read, deliberately unimplemented here. Nothing in this file's
     // tests lists users, and a hand-written paging/search/sort fake would be a
-    // second implementation of decision `0018`'s eligibility rule — the exact
-    // duplication UserRepository states the predicate once to avoid. The real
-    // one is exercised where it can be: against SQL Server, in
-    // UserReadEndpointTests.
-    public Task<PagedResult<ListUsersQueryResponse>> ListEligibleApproversAsync(
+    // second implementation of decision `0018`'s eligibility rule and of
+    // UserScope's two branches — the exact duplication UserRepository states
+    // each of them once to avoid. The real one is exercised where it can be:
+    // against SQL Server, in UserReadEndpointTests and UserDirectoryEndpointTests.
+    public Task<PagedResult<ListUsersQueryResponse>> ListAsync(
         ListUsersQueryRequest query,
         SortOption? sort,
         CancellationToken cancellationToken) =>
         throw new NotSupportedException(
             "FakeUserRepository does not list users; see UserReadEndpointTests.");
+
+    // ---- User management phase 3: POST /users ----
+    //
+    // Extended here rather than given a second fake, because a second
+    // implementation of IUserRepository is a second thing to update every time
+    // the interface moves — and the one nobody is looking at is the one that
+    // rots. CreateUserCommandRequestHandlerTests uses this.
+
+    public List<User> Added { get; } = [];
+
+    // Counted, not just flagged: the create handler's atomicity claim is that
+    // the account, its role and its activation token go in *one* save.
+    public int SaveCount { get; private set; }
+
+    // Makes the next save fail exactly as UQ_Users_Email does in the real
+    // repository. Modelled as a flag rather than by matching addresses, because
+    // the collision this stands in for may be with an account in *another*
+    // tenant — which a fake holding only this tenant's users could not see, and
+    // which is precisely the case the real path is built not to distinguish.
+    public bool NextSaveHitsDuplicateEmail { get; set; }
+
+    public void Add(User user) => Added.Add(user);
+
+    // ---- User management phase 5: the three writes ----
+
+    // The tracked user a write handler mutates. Stated as a list rather than
+    // looked up by construction argument, so a test says exactly which people
+    // this tenant has.
+    public List<User> Users { get; } = [];
+
+    public Task<User?> FindForUpdateAsync(Guid userId, CancellationToken cancellationToken) =>
+        Task.FromResult(Users.FirstOrDefault(u => u.Id == userId));
+
+    // ---- User management phase 7: GET /users/{id} ----
+    //
+    // Projected from the same `Users` list FindForUpdateAsync reads, so a test
+    // that seeds one person's state sees it from both — the fake has no second
+    // notion of who exists.
+    public Task<GetUserByIdQueryResponse?> FindDetailAsync(Guid userId, CancellationToken cancellationToken)
+    {
+        var user = Users.FirstOrDefault(u => u.Id == userId);
+        return Task.FromResult(user is null
+            ? null
+            : new GetUserByIdQueryResponse(
+                user.Id,
+                user.FullName,
+                user.Email,
+                user.IsActive,
+                user.Roles.ToList(),
+                user.CreatedAtUtc,
+                user.UpdatedAtUtc));
+    }
+
+    // The last-admin guard's locking read. Counted from `Users` rather than
+    // returned from a fixed field, so a test sets up a tenant and the guard
+    // answers the same question the real repository would — the *lock* is the
+    // part only the integration suite can prove, and it does
+    // (UserWriteEndpointTests' concurrent-removal test).
+    public int LastAdminCountQueries { get; private set; }
+
+    public Task<int> CountOtherActiveTenantAdminsAsync(
+        Guid excludingUserId,
+        CancellationToken cancellationToken)
+    {
+        LastAdminCountQueries++;
+
+        return Task.FromResult(Users.Count(u =>
+            u.Id != excludingUserId && u.IsActive && u.Roles.Contains(Role.TenantAdmin)));
+    }
+
+    public Task SaveChangesAsync(CancellationToken cancellationToken)
+    {
+        if (NextSaveHitsDuplicateEmail)
+        {
+            throw new EmailAlreadyInUseException();
+        }
+
+        SaveCount++;
+        return Task.CompletedTask;
+    }
 }

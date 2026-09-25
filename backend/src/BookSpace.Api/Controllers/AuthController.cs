@@ -1,4 +1,5 @@
 using BookSpace.Application.Features.Authentication;
+using BookSpace.Application.Features.Authentication.Activate;
 using BookSpace.Application.Features.Authentication.Login;
 using BookSpace.Application.Features.Authentication.Logout;
 using BookSpace.Application.Features.Authentication.Refresh;
@@ -35,6 +36,10 @@ public sealed class AuthController : ControllerBase
     // lands at M4.
     public sealed record RefreshRequest(string RefreshToken);
 
+    // The token is the one from the invitation email; the password is the first
+    // one this account has ever had.
+    public sealed record ActivateRequest(string Token, string Password);
+
     // Hardening pass, P2 security: credential-stuffing/guessing throttle.
     // See Program.cs's AddRateLimiter for the policy itself.
     [HttpPost("login")]
@@ -60,6 +65,31 @@ public sealed class AuthController : ControllerBase
     {
         var result = await _sender.Send(new RefreshTokenCommandRequest(request.RefreshToken), cancellationToken);
         return Ok(result);
+    }
+
+    // User management phase 2. The recipient of an invitation has no credentials
+    // yet, by definition, so this is anonymous like login — and therefore rate
+    // limited like login, since an anonymous endpoint that looks a secret up by
+    // hash is exactly what a guessing loop wants.
+    //
+    // 204, not a token pair: activation sets a credential, and minting a session
+    // stays with POST /auth/login, which already owns FR-2.4's account-state
+    // checks. See ActivateAccountCommandRequest.
+    //
+    // 401 covers expired, already used, and never existed, identically — see
+    // ActivateAccountCommandRequestHandler. 409 is reachable only by two
+    // requests racing to redeem the same live token.
+    [HttpPost("activate")]
+    [EnableRateLimiting("activate")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> Activate(ActivateRequest request, CancellationToken cancellationToken)
+    {
+        await _sender.Send(
+            new ActivateAccountCommandRequest(request.Token, request.Password), cancellationToken);
+        return NoContent();
     }
 
     // 204 whether or not the token was recognized — see LogoutCommandRequestHandler.

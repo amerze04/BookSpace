@@ -22,6 +22,45 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.Entity("BookSpace.Domain.Entities.ActivationToken", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("ConsumedAtUtc")
+                        .IsConcurrencyToken()
+                        .HasPrecision(0)
+                        .HasColumnType("datetime2(0)");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasPrecision(0)
+                        .HasColumnType("datetime2(0)");
+
+                    b.Property<DateTime>("IssuedAtUtc")
+                        .HasPrecision(0)
+                        .HasColumnType("datetime2(0)");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("nvarchar(255)");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id")
+                        .HasName("PK_ActivationTokens");
+
+                    b.HasAlternateKey("TokenHash")
+                        .HasName("UQ_ActivationTokens_TokenHash");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("IX_ActivationTokens_User");
+
+                    b.ToTable("ActivationTokens", (string)null);
+                });
+
             modelBuilder.Entity("BookSpace.Domain.Entities.ApprovalRequest", b =>
                 {
                     b.Property<Guid>("Id")
@@ -759,6 +798,16 @@ namespace BookSpace.Infrastructure.Persistence.Migrations
                     b.HasIndex("UpdatedByUserId");
 
                     b.ToTable("Users", (string)null);
+                });
+
+            modelBuilder.Entity("BookSpace.Domain.Entities.ActivationToken", b =>
+                {
+                    b.HasOne("BookSpace.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_ActivationTokens_Users");
                 });
 
             modelBuilder.Entity("BookSpace.Domain.Entities.ApprovalRequest", b =>

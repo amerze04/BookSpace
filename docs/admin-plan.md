@@ -114,6 +114,10 @@ true to say about eligibility.
   exactly what the backend already supports, plus the one users endpoint.
   **User management is out**: inviting, deactivating and role assignment have no
   backend at all, and would be a substantial backend package before any UI.
+  **It became its own package on 2026-09-23** —
+  [`user-management-plan.md`](user-management-plan.md), planned the day this
+  one closed. The judgment held: it turned out to need the first email path in
+  the application, an activation-token table and three new decision records.
 - **`GET /users` is eligibility-filtered**, as above.
 - **Archive stays irreversible, and the UI exposes it anyway**, behind a hard
   confirmation. There is no unarchive and `ResourcesController` explains why:

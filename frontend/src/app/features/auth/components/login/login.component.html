@@ -21,6 +21,17 @@
       <h2>Welcome back</h2>
       <p class="subtitle">Sign in to your BookSpace account</p>
 
+      <!--
+        Set by the activation screen. Without it, somebody who has just set a
+        password lands on a bare login form with no sign that anything worked,
+        and the natural reading is that it did not.
+      -->
+      @if (justActivated()) {
+        <p class="success-message" role="status">
+          Your password is set. Sign in with it to finish.
+        </p>
+      }
+
       <form [formGroup]="form" (ngSubmit)="submit()">
         <label for="email">Email</label>
         <div class="input-with-icon">
