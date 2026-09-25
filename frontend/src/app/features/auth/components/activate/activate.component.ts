@@ -55,6 +55,31 @@ export class ActivateComponent {
   // control that could fix it.
   protected readonly tokenMissing = this.token.length === 0;
 
+  constructor() {
+    // Hardening pass, 2026-09-25 (finding 7). `this.token` above is already
+    // captured into memory by this point — field initializers run before a
+    // constructor body — so the visible URL can now be rewritten without
+    // losing anything this screen still needs. Left in place, the token would
+    // sit in browser history, in a link the recipient copies to paste
+    // elsewhere, and in a screenshot, for as long as this credential remains
+    // unredeemed.
+    //
+    // `history.replaceState`, not a router navigation: a real navigation
+    // would re-resolve this route and re-read `queryParamMap` — which is
+    // exactly the read this is trying to stop mattering — for no benefit,
+    // since nothing here needs Angular's router to know the URL changed.
+    // Only the `token` param is removed, not the whole query string, in case
+    // a future link shape ever carries anything else alongside it.
+    //
+    // Submitting still works after this: `activate()` sends `this.token`, the
+    // field captured above, never anything re-read from the address bar.
+    if (!this.tokenMissing && typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('token');
+      window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+    }
+  }
+
   protected readonly password = signal('');
   protected readonly confirmPassword = signal('');
   protected readonly submitting = signal(false);

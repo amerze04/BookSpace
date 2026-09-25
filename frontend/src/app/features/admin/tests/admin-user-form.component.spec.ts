@@ -5,17 +5,16 @@ import { provideRouter } from '@angular/router';
 import { AdminUserFormComponent } from '../components/admin-user-form/admin-user-form.component';
 import { CreatedUser } from '../models/users.models';
 
-// User management phase 6, the invite form.
+// User management phase 6, the invite form. Reworked in the 2026-09-25
+// hardening pass (finding 2): `POST /users` no longer hands back a raw
+// activation link — a TenantAdmin holding it could redeem their new
+// colleague's own invitation before the real recipient saw it — so the
+// outcome now points at the person's own detail screen, where "Resend
+// invitation" (finding 3) lives instead.
 //
-// Most of this file is about the outcome rather than the form, because that is
-// where the unusual behaviour is: `POST /users` hands back a live activation
-// link, and this screen is the only place it will ever appear. So the
-// assertions are that it is shown, that the form is gone while it is, that the
-// failure case still shows it, and that it is not recoverable afterwards.
-//
-// The DOM is asserted directly for those, not the signals: "is the link on
-// screen" is the actual question, and a signal-level check would pass with the
-// template's branches swapped.
+// The DOM is still asserted directly for the outcome: "is the form gone, is
+// the right message on screen" is the actual question, and a signal-level
+// check would pass with the template's branches swapped.
 
 const API = 'http://localhost:5270';
 
@@ -24,7 +23,6 @@ type TestableForm = AdminUserFormComponent & {
   fullName: () => string;
   submitting: () => boolean;
   created: () => CreatedUser | null;
-  linkCopied: () => boolean;
   emailError: () => string | null;
   fullNameError: () => string | null;
   formMessage: () => string | null;
@@ -34,7 +32,6 @@ type TestableForm = AdminUserFormComponent & {
   onFullNameInput(event: Event): void;
   submit(): void;
   inviteAnother(): void;
-  copyLink(): Promise<void>;
 };
 
 function fakeInputEvent(value: string): Event {
@@ -49,7 +46,6 @@ function created(overrides: Partial<CreatedUser> = {}): CreatedUser {
     isActive: true,
     roles: ['Member'],
     createdAtUtc: '2026-09-25T09:00:00Z',
-    activationLink: 'https://bookspace.test/activate?token=abc123',
     activationLinkExpiresAtUtc: '2026-10-02T09:00:00Z',
     invitationEmailSent: true,
     ...overrides,
@@ -264,7 +260,10 @@ describe('AdminUserFormComponent', () => {
     expect(fixture.nativeElement.querySelector('.outcome')).not.toBeNull();
   });
 
-  it('shows the activation link', async () => {
+  // Hardening pass, 2026-09-25 (finding 2): the response carries no credential
+  // any more, so nothing on this screen should render one — a regression guard
+  // against the raw link creeping back in.
+  it('never renders an activation link on the outcome screen', async () => {
     const { fixture, component } = createFixture();
     fill(component);
     component.submit();
@@ -272,28 +271,29 @@ describe('AdminUserFormComponent', () => {
     await fixture.whenStable();
     fixture.detectChanges();
 
-    const input: HTMLInputElement = fixture.nativeElement.querySelector('.link-input');
-    expect(input.value).toBe('https://bookspace.test/activate?token=abc123');
-    expect(input.readOnly).toBe(true);
+    expect(fixture.nativeElement.textContent).not.toContain('bookspace.test/activate');
+    expect(fixture.nativeElement.querySelector('input[readonly]')).toBeNull();
   });
 
-  it('says the link is shown once', async () => {
+  // The outcome points at the new person's own page — where resending lives —
+  // rather than handing over a credential itself.
+  it('links to the new person’s own detail screen', async () => {
     const { fixture, component } = createFixture();
     fill(component);
     component.submit();
-    httpMock.expectOne(`${API}/users`).flush(created());
+    httpMock.expectOne(`${API}/users`).flush(created({ id: 'u9' }));
     await fixture.whenStable();
     fixture.detectChanges();
 
-    const note = fixture.nativeElement.querySelector('.link-note').textContent as string;
-    expect(note).toContain('shown once');
-    expect(note).toContain("won't be shown again");
+    const view = [...fixture.nativeElement.querySelectorAll('a')].find((a: HTMLAnchorElement) =>
+      a.textContent?.includes('Ada Lovelace'),
+    ) as HTMLAnchorElement;
+    expect(view.getAttribute('href')).toBe('/admin/users/u9');
   });
 
-  // **The failure case reads differently from the success case, and both show
-  // the link** — plan §4.3. The account is real either way; what changed is who
-  // delivers the invitation.
-  it('still shows the link when the invitation email did not send', async () => {
+  // The failure case reads differently from the success case (finding 3: the
+  // fix is to resend from the person's own page, not a link shown here).
+  it('points at resending from the person’s page when the invitation email did not send', async () => {
     const { fixture, component } = createFixture();
     fill(component);
     component.submit();
@@ -301,12 +301,10 @@ describe('AdminUserFormComponent', () => {
     await fixture.whenStable();
     fixture.detectChanges();
 
-    const input: HTMLInputElement = fixture.nativeElement.querySelector('.link-input');
-    expect(input.value).toBe('https://bookspace.test/activate?token=abc123');
-
     const title = fixture.nativeElement.querySelector('.outcome-title').textContent as string;
     expect(title).toContain("didn't send");
     expect(fixture.nativeElement.querySelector('.outcome').classList).toContain('outcome--warning');
+    expect(fixture.nativeElement.textContent).toContain('resend');
   });
 
   it('reads as a plain success when the invitation did send', async () => {
@@ -322,9 +320,9 @@ describe('AdminUserFormComponent', () => {
     expect(fixture.nativeElement.querySelector('.outcome').classList).not.toContain('outcome--warning');
   });
 
-  // Shown once means shown once: starting another invitation drops the link
-  // rather than parking it somewhere it could be recovered from.
-  it('forgets the link when the administrator invites somebody else', async () => {
+  // Starting another invitation drops the previous outcome and goes back to
+  // an empty form.
+  it('clears the outcome when the administrator invites somebody else', async () => {
     const { fixture, component } = createFixture();
     fill(component);
     component.submit();
@@ -337,43 +335,11 @@ describe('AdminUserFormComponent', () => {
     fixture.detectChanges();
 
     expect(component.created()).toBeNull();
-    expect(fixture.nativeElement.querySelector('.link-input')).toBeNull();
+    expect(fixture.nativeElement.querySelector('.outcome')).toBeNull();
     expect(fixture.nativeElement.querySelector('form')).not.toBeNull();
     // ...and the fields are empty, ready for the next person.
     expect(component.email()).toBe('');
     expect(component.fullName()).toBe('');
-  });
-
-  it('copies the link to the clipboard', async () => {
-    const { component } = createFixture();
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    vi.stubGlobal('navigator', { clipboard: { writeText } });
-
-    fill(component);
-    component.submit();
-    httpMock.expectOne(`${API}/users`).flush(created());
-
-    await component.copyLink();
-
-    expect(writeText).toHaveBeenCalledWith('https://bookspace.test/activate?token=abc123');
-    expect(component.linkCopied()).toBe(true);
-    vi.unstubAllGlobals();
-  });
-
-  // Clipboard access can be refused outright — an insecure origin, a denied
-  // permission. The link is still on screen and selectable, so saying the copy
-  // failed would imply the invitation had.
-  it('stays quiet when the clipboard refuses', async () => {
-    const { component } = createFixture();
-    vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockRejectedValue(new Error('denied')) } });
-
-    fill(component);
-    component.submit();
-    httpMock.expectOne(`${API}/users`).flush(created());
-
-    await expect(component.copyLink()).resolves.toBeUndefined();
-    expect(component.linkCopied()).toBe(false);
-    vi.unstubAllGlobals();
   });
 
   it('links back to the directory from both screens', async () => {

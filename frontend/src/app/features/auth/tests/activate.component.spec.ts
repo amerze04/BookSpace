@@ -290,4 +290,44 @@ describe('ActivateComponent', () => {
 
     expect(component.errorMessage()).toBeNull();
   });
+
+  // ---- Hardening pass, 2026-09-25 (finding 7) ----
+
+  it('removes the token from the visible URL once it has been read', () => {
+    const replaceState = vi.spyOn(window.history, 'replaceState');
+
+    createFixture('a-real-token');
+
+    expect(replaceState).toHaveBeenCalledOnce();
+    const [, , url] = replaceState.mock.calls[0] as [unknown, string, string];
+    expect(url).not.toContain('token');
+    expect(url).not.toContain('a-real-token');
+  });
+
+  // The point of the fix is not losing the ability to redeem the link —
+  // `token` was already captured into the component's own field before the
+  // URL was rewritten, and submit() never re-reads the address bar.
+  it('still activates the account after the URL has been cleaned up', () => {
+    const { component } = createFixture('a-real-token');
+    fillMatching(component);
+
+    component.submit();
+
+    const request = httpMock.expectOne(`${API}/auth/activate`);
+    expect(request.request.body).toEqual({ token: 'a-real-token', password: 'a-good-long-password' });
+    request.flush(null, { status: 204, statusText: 'No Content' });
+  });
+
+  // Nothing to clean up when there was no token to begin with — `tokenMissing`
+  // (asserted elsewhere in this file) is the guard the constructor itself
+  // reads before touching the URL at all. A call-count assertion here would be
+  // unreliable: the test harness's own fixture teardown calls
+  // `history.replaceState` for reasons that have nothing to do with this
+  // component, so a spy over the whole test run cannot cleanly attribute a
+  // call to one or the other.
+  it('has nothing to clean up when there was no token to begin with', () => {
+    const { component } = createFixture(null);
+
+    expect(component.tokenMissing).toBe(true);
+  });
 });

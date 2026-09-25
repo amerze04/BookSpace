@@ -100,6 +100,57 @@ public class ActivationTokenTests
         Assert.Equal(Issued, token.IssuedAtUtc);
     }
 
+    // ---- Hardening pass, 2026-09-25 (findings 2/3) ----
+
+    [Fact]
+    public void Superseding_RecordsWhenAndBlocksRedemption()
+    {
+        var token = Token();
+        var supersededAt = Issued.AddHours(2);
+
+        token.Supersede(supersededAt);
+
+        Assert.True(token.IsSuperseded);
+        Assert.Equal(supersededAt, token.SupersededAtUtc);
+        Assert.False(token.CanBeRedeemed(supersededAt));
+    }
+
+    // Unlike Consume, a second Supersede (or one on an already-consumed token)
+    // is a no-op rather than a throw — the caller walks a set of rows it
+    // selected as "still live", and a row that changed underneath it between
+    // selection and the call is a race to report cleanly, not a bug.
+    [Fact]
+    public void SupersedingTwice_IsHarmless()
+    {
+        var token = Token();
+        token.Supersede(Issued.AddHours(1));
+
+        token.Supersede(Issued.AddHours(2));
+
+        Assert.Equal(Issued.AddHours(1), token.SupersededAtUtc);
+    }
+
+    [Fact]
+    public void SupersedingAConsumedToken_DoesNotOverwriteConsumption()
+    {
+        var token = Token();
+        token.Consume(Issued.AddHours(1));
+
+        token.Supersede(Issued.AddHours(2));
+
+        Assert.True(token.IsConsumed);
+        Assert.False(token.IsSuperseded);
+    }
+
+    [Fact]
+    public void AFreshToken_IsNotSuperseded()
+    {
+        var token = Token();
+
+        Assert.False(token.IsSuperseded);
+        Assert.Null(token.SupersededAtUtc);
+    }
+
     private static ActivationToken Token() =>
         new(Guid.NewGuid(), Guid.NewGuid(), "token-hash", Issued, Issued.AddDays(7));
 }

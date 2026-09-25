@@ -90,11 +90,20 @@ export interface CreateUserRequest {
 
 // The 201 body of `POST /users`.
 //
-// **`activationLink` is a live credential**, carried whether or not the
-// invitation email went out. That is the server's deliberate choice — creating
-// a colleague must not fail because an email provider is down, and nothing
-// re-issues an invitation — and it makes this response something to show once
-// and never store. The screen that renders it says so.
+// **`activationLink` used to be here, and it is gone deliberately (hardening
+// pass, 2026-09-25, finding 2).** It was a live credential — the raw
+// activation link — carried whether or not the invitation email went out. The
+// flaw: a TenantAdmin holding it could redeem their new colleague's own
+// invitation first, set the password themselves, and sign in as that person
+// before the real recipient ever saw it. Removed rather than left as a
+// halfway "sometimes you get the credential" state.
+//
+// The account is never stranded by this: `UsersService.reissueInvitation()`
+// (`POST /users/{id}/invitation`) is the recovery path when delivery fails or
+// the recipient loses the email, from the person's own detail screen.
+//
+// `activationLinkExpiresAtUtc` stays — a date, not a credential, so the
+// outcome screen can still say how long the invitation is good for.
 //
 // `invitationEmailSent` is a field rather than something inferred from the
 // status code, because a 201 arrives either way and the outcome reads
@@ -106,7 +115,6 @@ export interface CreatedUser {
   isActive: boolean;
   roles: UserRole[];
   createdAtUtc: string;
-  activationLink: string;
   activationLinkExpiresAtUtc: string;
   invitationEmailSent: boolean;
 }
@@ -124,9 +132,16 @@ export interface CreatedUser {
 // this person approve something", it answers with whoever the id names,
 // Member or deactivated included. The picker and this screen ask different
 // questions of the same underlying account.
+// `isActivated`, added in the 2026-09-25 hardening pass (finding 3): whether
+// this account has ever completed `POST /auth/activate`. It is what decides
+// whether "Resend invitation" appears at all — resending to an account that
+// already set its own password is refused server-side
+// (`UserAlreadyActivated`), so the control should not be offered in the first
+// place rather than offered and then explained away.
 export interface UserDetail extends DirectoryUser {
   createdAtUtc: string;
   updatedAtUtc: string;
+  isActivated: boolean;
 }
 
 // The 200 body shared by `POST /{id}/deactivate`, `POST /{id}/reactivate` and
@@ -160,3 +175,16 @@ export interface ReplaceUserRolesRequest {
 // TenantAdmin's screen may *offer*, and the validator refuses SysAdmin outright
 // as a privilege-escalation guard, not a formatting rule.
 export const ASSIGNABLE_ROLES: readonly Exclude<UserRole, 'SysAdmin'>[] = ['TenantAdmin', 'Approver', 'Member'];
+
+// The 200 body of `POST /users/{id}/invitation` — hardening pass, 2026-09-25
+// (finding 3). Deliberately no `activationLink`, for the same reason
+// `CreatedUser` no longer carries one (finding 2): handing the raw credential
+// back to the admin is the capability that was removed, and a reissue
+// response that restored it would reopen the same hole on a second endpoint.
+export interface ReissuedInvitation {
+  id: string;
+  email: string;
+  fullName: string;
+  activationLinkExpiresAtUtc: string;
+  invitationEmailSent: boolean;
+}

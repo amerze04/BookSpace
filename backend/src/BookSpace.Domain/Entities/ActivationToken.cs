@@ -34,7 +34,18 @@ public class ActivationToken
     public DateTime ExpiresAtUtc { get; private set; }
     public DateTime? ConsumedAtUtc { get; private set; }
 
+    // Hardening pass, 2026-09-25 (findings 2/3). Set when an administrator
+    // reissues an invitation while this one is still live — see
+    // ReissueInvitationCommandRequestHandler. A separate column from
+    // ConsumedAtUtc rather than overloading it: "somebody used this to set a
+    // password" and "an admin replaced this with a newer one" are different
+    // facts, and conflating them is exactly the kind of ambiguous halfway
+    // state this hardening pass was asked not to build.
+    public DateTime? SupersededAtUtc { get; private set; }
+
     public bool IsConsumed => ConsumedAtUtc is not null;
+
+    public bool IsSuperseded => SupersededAtUtc is not null;
 
     // EF Core materialization only — see Organization.cs for why this is needed.
     private ActivationToken()
@@ -66,7 +77,7 @@ public class ActivationToken
     // means rather than differing by a second nobody would ever find.
     public bool HasExpired(DateTime nowUtc) => ExpiresAtUtc <= nowUtc;
 
-    public bool CanBeRedeemed(DateTime nowUtc) => !IsConsumed && !HasExpired(nowUtc);
+    public bool CanBeRedeemed(DateTime nowUtc) => !IsConsumed && !IsSuperseded && !HasExpired(nowUtc);
 
     // Single use. The caller checks CanBeRedeemed first and reports the generic
     // failure; this throws rather than returning false because reaching it on a
@@ -81,5 +92,24 @@ public class ActivationToken
             throw new InvalidOperationException("The activation token has already been consumed.");
 
         ConsumedAtUtc = nowUtc;
+    }
+
+    // Hardening pass, 2026-09-25 (findings 2/3). Called when an administrator
+    // reissues an invitation for the same user: every token that was still
+    // redeemable is superseded so the account never has two simultaneously
+    // usable credentials outstanding (ReissueInvitationCommandRequestHandler
+    // finds every row satisfying CanBeRedeemed and calls this on each).
+    //
+    // A no-op on an already-consumed or already-superseded token rather than a
+    // throw — unlike Consume, the caller here is walking a set of rows it
+    // selected with CanBeRedeemed, so a row that has since changed underneath
+    // it (a concurrent activation, or a concurrent second reissue) is a race to
+    // report cleanly, not a programming error to raise on.
+    public void Supersede(DateTime nowUtc)
+    {
+        if (IsConsumed || IsSuperseded)
+            return;
+
+        SupersededAtUtc = nowUtc;
     }
 }

@@ -17,5 +17,21 @@ public interface IActivationTokenRepository
     // (docs/user-management-plan.md §4.2).
     Task<ActivationToken?> FindByHashAsync(string tokenHash, CancellationToken cancellationToken);
 
+    // Hardening pass, 2026-09-25 (finding 3) — every token for this user that
+    // ReissueInvitationCommandRequestHandler must supersede before adding a new
+    // one, so the account never has two simultaneously usable credentials
+    // outstanding. "Still live" means CanBeRedeemed at the moment of the call —
+    // not consumed, not already superseded, not expired — so an already-spent
+    // or already-expired row is left alone rather than touched for no reason.
+    Task<IReadOnlyList<ActivationToken>> FindRedeemableForUserAsync(
+        Guid userId, DateTime nowUtc, CancellationToken cancellationToken);
+
+    // Hardening pass, 2026-09-25 (finding 3). Whether this account has ever
+    // completed activation — the only way User.SetPassword is ever called (see
+    // ActivateAccountCommandRequestHandler) is by consuming a token, so this is
+    // what "has this account already been activated" actually means. There is
+    // no separate flag on User for it to drift from.
+    Task<bool> HasEverBeenConsumedAsync(Guid userId, CancellationToken cancellationToken);
+
     void Add(ActivationToken token);
 }

@@ -90,6 +90,20 @@ internal sealed class FakeActivationTokenRepository : IActivationTokenRepository
     public Task<ActivationToken?> FindByHashAsync(string tokenHash, CancellationToken cancellationToken) =>
         Task.FromResult(Tokens.FirstOrDefault(t => t.TokenHash == tokenHash));
 
+    // Hardening pass, 2026-09-25 (finding 3). Mirrors
+    // ActivationTokenRepository.FindRedeemableForUserAsync's own predicate —
+    // not consumed, not superseded, not expired — over the same `Tokens` list
+    // FindByHashAsync reads, so a test has one notion of what tokens exist.
+    public Task<IReadOnlyList<ActivationToken>> FindRedeemableForUserAsync(
+        Guid userId,
+        DateTime nowUtc,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<ActivationToken>>(
+            Tokens.Where(t => t.UserId == userId && t.CanBeRedeemed(nowUtc)).ToList());
+
+    public Task<bool> HasEverBeenConsumedAsync(Guid userId, CancellationToken cancellationToken) =>
+        Task.FromResult(Tokens.Any(t => t.UserId == userId && t.IsConsumed));
+
     public void Add(ActivationToken token) => Tokens.Add(token);
 }
 

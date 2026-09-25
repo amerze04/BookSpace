@@ -2,13 +2,17 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using BookSpace.Domain.Entities;
 using BookSpace.Domain.Enums;
+using BookSpace.Infrastructure.Email;
 using BookSpace.Infrastructure.Persistence;
 using BookSpace.IntegrationTests.Authentication;
 using BookSpace.IntegrationTests.Support;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using MimeKit;
 
 namespace BookSpace.IntegrationTests.Users;
 
@@ -238,7 +242,10 @@ public class UserWriteEndpointTests : IAsyncLifetime
 
         Assert.DoesNotContain(user, await EligibleApproverIdsAsync(client));
 
-        await PutRolesAsync(client, user, ["Approver"]);
+        // "Member" included per the hardening pass (2026-09-25, finding 6):
+        // every tenant user always carries Member, and a set omitting it is now
+        // refused (400) by ReplaceUserRolesCommandRequestValidator.
+        (await PutRolesAsync(client, user, ["Approver", "Member"])).EnsureSuccessStatusCode();
 
         Assert.Contains(user, await EligibleApproverIdsAsync(client));
     }
@@ -404,8 +411,22 @@ public class UserWriteEndpointTests : IAsyncLifetime
 
         try
         {
-            var first = PutRolesAsync(await AuthenticatedClientAsync(AcmeAdmin), seededAdmin.Id, ["Member"]);
-            var second = PutRolesAsync(await AuthenticatedClientAsync(AcmeAdmin), secondAdmin, ["Member"]);
+            // Both sign in *before* either PUT fires (hardening pass,
+            // 2026-09-25). The stale-admin-token authorization check (finding
+            // 1) added a database round trip to the write path, which was
+            // enough extra latency to expose a race this test always
+            // theoretically had: with the second login sequenced after the
+            // first PUT was already kicked off, the first PUT could commit
+            // (demoting the seeded admin) before the second login completed —
+            // handing the second request a token that had already lost its
+            // TenantAdmin claim, and failing it with 403 rather than the 422 or
+            // 409 this test is actually about. Authenticating both up front
+            // makes this a test of PUT-vs-PUT concurrency only, which is what
+            // it was always meant to be.
+            var secondClient = await AuthenticatedClientAsync(AcmeAdmin);
+
+            var first = PutRolesAsync(client, seededAdmin.Id, ["Member"]);
+            var second = PutRolesAsync(secondClient, secondAdmin, ["Member"]);
 
             var responses = await Task.WhenAll(first, second);
             var succeeded = responses.Count(r => r.StatusCode == HttpStatusCode.OK);
@@ -481,7 +502,7 @@ public class UserWriteEndpointTests : IAsyncLifetime
     // does rather than reaching into the database to invent a state.
     private async Task<Guid> CreateUserAsync(params Role[] roles)
     {
-        var (id, _, _) = await CreateUserCoreAsync(roles);
+        var (id, _) = await CreateUserCoreAsync(roles);
         return id;
     }
 
@@ -490,16 +511,19 @@ public class UserWriteEndpointTests : IAsyncLifetime
     private async Task<(Guid Id, string Email, string Password)> CreateActivatedUserAsync()
     {
         const string password = "a-perfectly-good-password";
-        var (id, email, activationLink) = await CreateUserCoreAsync([Role.Member]);
+        var (id, email) = await CreateUserCoreAsync([Role.Member]);
 
-        var token = activationLink.Split("token=")[1];
+        // Hardening pass, 2026-09-25 (finding 2): POST /users no longer hands
+        // back the raw activation link, so the only place a usable token can
+        // come from is the message that was actually sent.
+        var token = await ExtractActivationTokenAsync(email);
         (await _host.CreateClient().PostAsJsonAsync("/auth/activate", new { token, password }))
             .EnsureSuccessStatusCode();
 
         return (id, email, password);
     }
 
-    private async Task<(Guid Id, string Email, string ActivationLink)> CreateUserCoreAsync(Role[] roles)
+    private async Task<(Guid Id, string Email)> CreateUserCoreAsync(Role[] roles)
     {
         var admin = await AuthenticatedClientAsync(AcmeAdmin);
         var email = $"write-probe-{Guid.NewGuid():N}@acme.test";
@@ -510,14 +534,46 @@ public class UserWriteEndpointTests : IAsyncLifetime
         var id = body.GetProperty("id").GetGuid();
         _createdUserIds.Add(id);
 
-        // POST /users always creates a Member; anything else is a role write.
+        // POST /users always creates a Member; anything else is a role write,
+        // and Member is included unconditionally (hardening pass, finding 6:
+        // every tenant user always carries Member) so a caller asking for e.g.
+        // just [TenantAdmin] still sends a set the validator accepts.
         if (!(roles.Length == 1 && roles[0] == Role.Member))
         {
-            (await PutRolesAsync(admin, id, roles.Select(r => r.ToString()).ToArray()))
+            var rolesToSend = roles.Contains(Role.Member) ? roles : [.. roles, Role.Member];
+            (await PutRolesAsync(admin, id, rolesToSend.Select(r => r.ToString()).ToArray()))
                 .EnsureSuccessStatusCode();
         }
 
-        return (id, email, body.GetProperty("activationLink").GetString()!);
+        return (id, email);
+    }
+
+    // Hardening pass, 2026-09-25 (finding 2). Same sink-reading approach
+    // CreateUserEndpointTests uses — the raw link is no longer in any response
+    // body, so a usable token can only come from the message that was sent.
+    private async Task<string> ExtractActivationTokenAsync(string recipient)
+    {
+        await using var scope = _host.CreateScope();
+        var directory = scope.ServiceProvider
+            .GetRequiredService<IOptions<EmailOptions>>().Value.DevelopmentSink.Directory;
+
+        foreach (var path in Directory.GetFiles(directory, "*.eml"))
+        {
+            var message = await MimeMessage.LoadAsync(path);
+            if (!message.To.Mailboxes.Any(m =>
+                    string.Equals(m.Address, recipient, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            var match = Regex.Match(message.TextBody ?? string.Empty, @"token=(\S+)");
+            if (match.Success)
+            {
+                return match.Groups[1].Value;
+            }
+        }
+
+        throw new InvalidOperationException($"No activation message found for {recipient}.");
     }
 
     private async Task<HttpClient> AuthenticatedClientAsync(string email)

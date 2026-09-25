@@ -294,16 +294,24 @@ feature, the reasoning matters as much as the answer.
     idempotency key, and the unbuilt reminder job — so the three background jobs
     stay out of this package entirely, and it builds the `IEmailSender` they
     will need. A delivery failure is a **return value, not an exception**, which
-    is what lets `POST /users` answer 201 with the activation link even when the
-    provider is down. Two senders chosen by one configuration switch, defaulting
-    to `Smtp` so a misconfigured deployment fails the boot rather than filing
-    invitations on a disk. The activation token reuses `0011`'s shape whole —
-    SHA-256 of a CSPRNG value, single use enforced by a concurrency token, no
-    `OrgId` and no RLS, because activation runs before the user has ever signed
-    in. `POST /auth/activate` is anonymous, rate-limited, returns 204 rather
-    than a session, and answers every failure identically. Two §4.2 mechanisms
-    had to be given an explicit, named write exemption for it, both proven
-    load-bearing by removal.
+    is what lets `POST /users` answer 201 even when the provider is down. Two
+    senders chosen by one configuration switch, defaulting to `Smtp` so a
+    misconfigured deployment fails the boot rather than filing invitations on a
+    disk. The activation token reuses `0011`'s shape whole — SHA-256 of a
+    CSPRNG value, single use enforced by a concurrency token, no `OrgId` and no
+    RLS, because activation runs before the user has ever signed in.
+    `POST /auth/activate` is anonymous, rate-limited, returns 204 rather than a
+    session, and answers every failure identically. Two §4.2 mechanisms had to
+    be given an explicit, named write exemption for it, both proven
+    load-bearing by removal. **Amended 2026-09-25**: an external hardening pass
+    found that always returning the activation link let a TenantAdmin redeem a
+    colleague's own invitation before they did — the response no longer carries
+    it on any call, success or failure, and `POST /users/{id}/invitation`
+    (TenantAdmin-only, superseding any still-live token via a second
+    concurrency column, `SupersededAtUtc`) is the reissue path that makes
+    removing it safe. The same pass moved the invitation send onto
+    `CancellationToken.None` in both handlers, so a disconnected request can no
+    longer abort delivery after the account is already committed.
 30. [`0030`](../decisions/0030-email-collision-disclosure-at-creation.md) —
     `POST /users` refuses a taken address with `EmailAlreadyInUse` (Conflict,
     409) and says **the same thing whether the address is in the caller's tenant

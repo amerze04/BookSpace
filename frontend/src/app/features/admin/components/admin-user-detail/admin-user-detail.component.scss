@@ -122,6 +122,18 @@
   }
 }
 
+// Member (finding 6): always checked, always disabled — the line itself is
+// not clickable the way an ordinary checkbox row is.
+.checkbox-line--locked {
+  cursor: default;
+}
+
+.checkbox-note {
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  font-style: italic;
+}
+
 .field-warning {
   margin: 0;
   color: var(--color-warning);

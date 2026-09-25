@@ -122,6 +122,34 @@ public class ActivateAccountCommandRequestHandlerTests
         await AssertRefused(raw);
     }
 
+    // Hardening pass, 2026-09-25 (findings 2/3). An administrator resent the
+    // invitation while this one was still outstanding — only the newer link
+    // may work.
+    [Fact]
+    public async Task ASupersededToken_IsRefused()
+    {
+        var user = ProvisionedUser();
+        var raw = IssueTokenFor(user);
+        _activationTokens.Tokens[^1].Supersede(NowUtc.AddMinutes(-1));
+
+        await AssertRefused(raw);
+    }
+
+    // Left exactly as superseded — a redemption attempt against a replaced
+    // link must not retroactively mark it consumed, which would misreport
+    // that the recipient actually got in on this one.
+    [Fact]
+    public async Task ASupersededToken_IsNotMarkedConsumed()
+    {
+        var user = ProvisionedUser();
+        var raw = IssueTokenFor(user);
+        _activationTokens.Tokens[^1].Supersede(NowUtc.AddMinutes(-1));
+
+        await AssertRefused(raw);
+
+        Assert.False(_activationTokens.Tokens.Single().IsConsumed);
+    }
+
     // The point of the whole design, stated once: all five refusals are the
     // same answer. If this fails, some branch started being helpful.
     [Fact]
@@ -139,7 +167,7 @@ public class ActivateAccountCommandRequestHandlerTests
             kinds.Add(exception.Kind);
         }
 
-        Assert.Equal(5, reasons.Count);
+        Assert.Equal(6, reasons.Count);
         Assert.All(reasons, r => Assert.Equal(AuthenticationFailureReason.InvalidActivationToken, r));
         Assert.All(kinds, k => Assert.Equal(ErrorKind.Unauthorized, k));
     }
@@ -202,6 +230,10 @@ public class ActivateAccountCommandRequestHandlerTests
 
         var suspended = ProvisionedUser(OrganizationStatus.Suspended);
         tokens.Add(IssueTokenFor(suspended));
+
+        var superseded = ProvisionedUser();
+        tokens.Add(IssueTokenFor(superseded));
+        _activationTokens.Tokens[^1].Supersede(NowUtc.AddMinutes(-1));
 
         return await Task.FromResult(tokens);
     }

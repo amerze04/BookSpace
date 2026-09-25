@@ -1,6 +1,7 @@
 using BookSpace.Application.Features.Users.DeactivateUser;
 using BookSpace.Application.Features.Users.GetUserById;
 using BookSpace.Application.Features.Users.ReactivateUser;
+using BookSpace.Application.Features.Users.ReissueInvitation;
 using BookSpace.Application.Features.Users.ReplaceUserRoles;
 using BookSpace.Domain.Enums;
 
@@ -35,6 +36,8 @@ public class UserWriteValidatorTests
             .Validate(new ReactivateUserCommandRequest(Guid.Empty)).IsValid);
         Assert.False(new GetUserByIdQueryRequestValidator()
             .Validate(new GetUserByIdQueryRequest(Guid.Empty)).IsValid);
+        Assert.False(new ReissueInvitationCommandRequestValidator()
+            .Validate(new ReissueInvitationCommandRequest(Guid.Empty)).IsValid);
     }
 
     [Fact]
@@ -46,6 +49,8 @@ public class UserWriteValidatorTests
             .Validate(new ReactivateUserCommandRequest(Guid.NewGuid())).IsValid);
         Assert.True(new GetUserByIdQueryRequestValidator()
             .Validate(new GetUserByIdQueryRequest(Guid.NewGuid())).IsValid);
+        Assert.True(new ReissueInvitationCommandRequestValidator()
+            .Validate(new ReissueInvitationCommandRequest(Guid.NewGuid())).IsValid);
     }
 
     // **Unlike the approver list next door, which takes an empty array as a real
@@ -63,9 +68,13 @@ public class UserWriteValidatorTests
     [Fact]
     public void AnEmptyRoleSetSaysWhatToDoInstead()
     {
-        var message = Assert.Single(_roles.Validate(Request([])).Errors).ErrorMessage;
+        // Two rules both fire on an empty set since the hardening pass added
+        // the Member-required one (finding 6) — NotEmpty and "must include
+        // Member" are both true statements about an empty array. What matters
+        // is that the specific, actionable one is still among them.
+        var messages = _roles.Validate(Request([])).Errors.Select(e => e.ErrorMessage);
 
-        Assert.Contains("deactivate", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(messages, m => m.Contains("deactivate", StringComparison.OrdinalIgnoreCase));
     }
 
     // **A privilege-escalation guard.** SysAdmin is the platform operator and is
@@ -111,6 +120,34 @@ public class UserWriteValidatorTests
     public void DuplicateRolesAreInvalid()
     {
         Assert.False(_roles.Validate(Request([Role.Member, Role.Member])).IsValid);
+    }
+
+    // ---- Hardening pass, 2026-09-25 (finding 6) ----
+
+    [Fact]
+    public void ARoleSetMissingMemberIsInvalid()
+    {
+        Assert.False(_roles.Validate(Request([Role.Approver])).IsValid);
+        Assert.False(_roles.Validate(Request([Role.TenantAdmin])).IsValid);
+        Assert.False(_roles.Validate(Request([Role.TenantAdmin, Role.Approver])).IsValid);
+    }
+
+    [Fact]
+    public void ARoleSetMissingMemberSaysWhy()
+    {
+        var message = _roles.Validate(Request([Role.Approver])).Errors
+            .Select(e => e.ErrorMessage)
+            .FirstOrDefault(m => m.Contains("Member", StringComparison.Ordinal));
+
+        Assert.NotNull(message);
+    }
+
+    [Fact]
+    public void MemberAlongsideAnyOtherRoleIsValid()
+    {
+        Assert.True(_roles.Validate(Request([Role.Member, Role.Approver])).IsValid);
+        Assert.True(_roles.Validate(Request([Role.Member, Role.TenantAdmin])).IsValid);
+        Assert.True(_roles.Validate(Request([Role.Member, Role.TenantAdmin, Role.Approver])).IsValid);
     }
 
     private static ReplaceUserRolesCommandRequest Request(IReadOnlyList<Role> roles) =>

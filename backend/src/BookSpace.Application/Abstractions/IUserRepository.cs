@@ -78,6 +78,16 @@ public interface IUserRepository
     // resource they cannot act on would be worse than notifying nobody.
     Task<IReadOnlyCollection<Guid>> FindTenantAdminUserIdsAsync(CancellationToken cancellationToken);
 
+    // Hardening pass, 2026-09-25 (finding 1) — the database re-check behind
+    // ActiveTenantAdminAuthorizationHandler. Tenant-filtered like every other
+    // read here, so a token whose orgId claim no longer matches this row's real
+    // OrgId finds nothing — the same fail-closed shape AC-4 relies on
+    // everywhere else, applied to the actor rather than to a resource being
+    // read. True only when the row exists in this tenant, is active, and
+    // currently holds TenantAdmin; false for everything else, including "no
+    // such row at all" — there is nothing here for a caller to distinguish.
+    Task<bool> IsCurrentlyActiveTenantAdminAsync(Guid userId, CancellationToken cancellationToken);
+
     // GET /users/{id} — user management phase 7, for the user detail screen.
     // AsNoTracking, unlike FindForUpdateAsync below: this is a read with
     // nothing to save, and the two names now say which is which — a write

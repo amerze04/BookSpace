@@ -262,4 +262,22 @@ describe('UsersService', () => {
     firstValueFrom(service.replaceRoles('u1', { roles: ['Member'] })).catch(() => undefined);
     expect(httpMock.expectOne(`${API}/users/u1/roles`).request.context.get(SKIP_ERROR_TOAST)).toBe(true);
   });
+
+  // ---- Hardening pass, 2026-09-25 (finding 3) ----
+
+  it('posts a reissue request with no body', () => {
+    firstValueFrom(service.reissueInvitation('u1')).catch(() => undefined);
+
+    const req = httpMock.expectOne(`${API}/users/u1/invitation`);
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toBeNull();
+
+    req.flush({});
+  });
+
+  it('skips the global error toast for the reissue call', () => {
+    firstValueFrom(service.reissueInvitation('u1')).catch(() => undefined);
+
+    expect(httpMock.expectOne(`${API}/users/u1/invitation`).request.context.get(SKIP_ERROR_TOAST)).toBe(true);
+  });
 });

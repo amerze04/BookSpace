@@ -89,6 +89,15 @@ public class AppExceptionCatalogueTests
         [typeof(UserNotFoundException)] = (ReasonCodes.UserNotFound, ErrorKind.NotFound),
         [typeof(LastTenantAdminException)] =
             (ReasonCodes.LastTenantAdmin, ErrorKind.RuleViolation),
+
+        // Hardening pass, 2026-09-25 (finding 3). Conflict for "already
+        // activated" (the current state of the data refuses it, and nothing is
+        // wrong with the request itself); RuleViolation for "deactivated" (a
+        // standing rule — FR-2.4 — refuses it until the admin reactivates).
+        [typeof(UserAlreadyActivatedException)] =
+            (ReasonCodes.UserAlreadyActivated, ErrorKind.Conflict),
+        [typeof(UserNotActiveException)] =
+            (ReasonCodes.UserNotActive, ErrorKind.RuleViolation),
     };
 
     // AuthenticationException is excluded deliberately, and it is the one

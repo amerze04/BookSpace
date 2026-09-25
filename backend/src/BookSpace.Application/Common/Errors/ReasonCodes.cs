@@ -204,6 +204,19 @@ public static class ReasonCodes
     // own table puts a "must never" in tiers 1–3, and this is tier 2.
     public const string LastTenantAdmin = "LastTenantAdmin";
 
+    // ---- Invitation reissue (hardening pass, 2026-09-25, finding 3) ----
+
+    // ErrorKind.Conflict. `POST /users/{id}/invitation` on an account that has
+    // already set its own password — resending would only confuse someone who
+    // already signed in once, and the account no longer needs a way in.
+    public const string UserAlreadyActivated = "UserAlreadyActivated";
+
+    // ErrorKind.RuleViolation. `POST /users/{id}/invitation` on a deactivated
+    // account. A new activation link would redeem into an account FR-2.4
+    // refuses to let sign in anyway (ActivateAccountCommandRequestHandler
+    // already checks IsActive) — reactivate first, then resend.
+    public const string UserNotActive = "UserNotActive";
+
     // ---- Approvals (WP-5 Phase 3, FR-7.1-7.5, AC-5) ----
 
     // ErrorKind.RuleViolation. Approve or reject called on a booking that is

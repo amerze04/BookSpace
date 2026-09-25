@@ -1,7 +1,9 @@
 # 0029 — User provisioning and invitation delivery
 
 ## Status
-Decided and implemented 2026-09-23/24, user management phases 1–3.
+Decided and implemented 2026-09-23/24, user management phases 1–3. **Amended
+2026-09-25**, hardening pass finding 2/3 — see the amendment section below
+before relying on anything point 2 says about the create response.
 
 ## Context
 
@@ -153,3 +155,62 @@ suspended organization. The client holds the password it just set and can call
 - **One new package dependency, MailKit**, and one new reason code,
   `EmailAlreadyInUse` — see decision `0030` for what that code may and may not
   say.
+
+## Amendment, 2026-09-25 — the raw link is no longer handed to the admin
+
+An external hardening pass (findings 1–4) reviewed this package after it
+merged and found a real vulnerability in point 2's design: **an administrator
+holding the activation link could redeem it before the recipient did**, set the
+person's password themselves, and sign in as that person. `POST /users`
+returning the raw link "even when the send failed" was not a narrow fallback —
+it handed the same live credential to the admin on *every* call, delivered or
+not, and nothing on the wire distinguished "I need this because delivery
+failed" from "I am choosing to read someone else's credential." The two are the
+same capability.
+
+**The capability is removed, not narrowed.** `CreateUserCommandResponse` and
+the new `ReissueInvitationCommandResponse` below no longer carry
+`ActivationLink` under any circumstance — success, failure, or reissue. This is
+the "Otherwise, remove that capability" branch of the finding, not the "document
+it as an accepted trust model" one: nothing in this project's threat model
+needed an admin to be able to impersonate a fresh account, and the capability
+existed only as a side effect of the always-return-the-link design, not as a
+deliberate feature.
+
+**What replaces it: `POST /users/{id}/invitation`.** The "nothing re-issues an
+invitation" consequence bullet above is what made the original design feel
+necessary — with no recovery path, the link had to be handed over *somewhere*.
+That gap is now closed properly instead. The endpoint:
+
+- is TenantAdmin-only, tenant-filtered like every other write on this
+  controller (404 `UserNotFound` for a cross-tenant id, AC-4);
+- refuses `409 UserAlreadyActivated` once the account has ever consumed a
+  token — checked via `IActivationTokenRepository.HasEverBeenConsumedAsync`,
+  which is what "activated" means (`SetPassword` has no other caller), not a
+  second flag that could drift from it;
+- refuses `422 UserNotActive` for a deactivated account — a fresh link would
+  still fail FR-2.4's check at redemption, so the fix is to reactivate first;
+- **supersedes every still-redeemable token for that user before issuing a
+  new one.** `ActivationToken` gained `SupersededAtUtc`, a second concurrency
+  token alongside `ConsumedAtUtc` (migration `AddActivationTokenSupersession`),
+  so a token superseded mid-redemption and one redeemed mid-supersession both
+  resolve through the database rather than a race either could win silently.
+  This is what keeps the "no way to re-issue" gap from reopening as "two
+  simultaneously live credentials for one account" instead.
+
+**The request's own cancellation no longer reaches the send.** A second,
+narrower fix from the same pass (finding 4): both handlers now call
+`IEmailSender.SendAsync` with `CancellationToken.None`, not the caller's token,
+because by that point the account and its token are already durably committed.
+An HTTP request that disconnects after the commit — a closed tab, a proxy
+timeout — used to be able to abort the invitation mid-send; now it cannot, and
+if delivery still fails, the reissue endpoint above is the recovery path rather
+than a stranded account. MailKit's own socket timeout (`Email:Smtp:
+TimeoutSeconds`) still bounds the call regardless of which token it receives.
+
+**What this does not change**: point 2's account of *why* a delivery failure is
+a return value rather than an exception, why the two senders exist, why the
+token is shaped like a refresh token, and why `/auth/activate`'s failures are
+indistinguishable — all of that reasoning stands. Only "what the admin sees on
+success or failure" changed, and the change is the whole point: the admin now
+sees strictly less than the invitation's contents on every call.

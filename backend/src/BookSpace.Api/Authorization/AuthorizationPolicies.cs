@@ -16,6 +16,16 @@ public static class AuthorizationPolicies
     public const string Approver = nameof(Approver);
     public const string TenantMember = nameof(TenantMember);
 
+    // Hardening pass, 2026-09-25 (finding 1). Stacked alongside TenantAdmin on
+    // the handful of user-management writes that can grant or revoke
+    // TenantAdmin itself — see ActiveTenantAdminAuthorizationHandler for why a
+    // role claim up to 15 minutes stale is not enough there. Carries no
+    // RequireRole of its own: TenantAdmin already supplies the cheap
+    // claims-only check, and stacking (rather than folding the two together)
+    // keeps each policy's job singular, the same shape TenantMember +
+    // TenantAdmin already have on UsersController.
+    public const string ActiveTenantAdminWrite = nameof(ActiveTenantAdminWrite);
+
     public static void AddBookSpacePolicies(this AuthorizationOptions options)
     {
         // Platform operator. Deliberately not folded into the policies below.
@@ -24,6 +34,9 @@ public static class AuthorizationPolicies
 
         options.AddPolicy(TenantAdmin, policy =>
             policy.RequireRole(nameof(Role.TenantAdmin), nameof(Role.SysAdmin)));
+
+        options.AddPolicy(ActiveTenantAdminWrite, policy =>
+            policy.AddRequirements(new ActiveTenantAdminRequirement()));
 
         options.AddPolicy(Approver, policy =>
             policy.RequireRole(nameof(Role.Approver), nameof(Role.TenantAdmin), nameof(Role.SysAdmin)));

@@ -10,6 +10,7 @@ import {
   DirectoryUser,
   EligibleUser,
   ListUsersParams,
+  ReissuedInvitation,
   ReplaceUserRolesRequest,
   UserDetail,
   UserWriteResult,
@@ -60,10 +61,20 @@ export class UsersService {
 
   // Provisions a colleague and sends them an invitation.
   //
-  // The response carries a live activation link (see `CreatedUser`), so nothing
-  // here logs it, caches it, or hands it anywhere but the caller.
+  // The response no longer carries the raw activation link (hardening pass,
+  // 2026-09-25, finding 2) — see `CreatedUser`.
   create(request: CreateUserRequest): Observable<CreatedUser> {
     return this.http.post<CreatedUser>(`${environment.apiBaseUrl}/users`, request, {
+      context: skipErrorToast(),
+    });
+  }
+
+  // Hardening pass, 2026-09-25 (finding 3). The recovery path for an expired,
+  // lost, or never-delivered invitation — safe to call more than once, since
+  // the server supersedes any still-live token before issuing a new one. See
+  // `ReissuedInvitation` for why this, too, carries no raw link.
+  reissueInvitation(id: string): Observable<ReissuedInvitation> {
+    return this.http.post<ReissuedInvitation>(`${environment.apiBaseUrl}/users/${id}/invitation`, null, {
       context: skipErrorToast(),
     });
   }

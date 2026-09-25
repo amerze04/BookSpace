@@ -301,7 +301,7 @@ public class UserWriteHandlerTests
     {
         var admin = Admin();
 
-        await ReplaceRoles(admin.Id, [Role.TenantAdmin, Role.Approver]);
+        await ReplaceRoles(admin.Id, [Role.TenantAdmin, Role.Approver, Role.Member]);
 
         Assert.Contains(Role.TenantAdmin, admin.Roles);
         Assert.Equal(0, _users.LastAdminCountQueries);
@@ -328,7 +328,7 @@ public class UserWriteHandlerTests
         var admin = Admin();
         var member = Member();
 
-        await ReplaceRoles(member.Id, [Role.TenantAdmin]);
+        await ReplaceRoles(member.Id, [Role.TenantAdmin, Role.Member]);
         // ...and now the original can give it up.
         await ReplaceRoles(admin.Id, [Role.Member]);
 
@@ -342,7 +342,7 @@ public class UserWriteHandlerTests
         Admin();
         var member = Member();
 
-        await ReplaceRoles(member.Id, [Role.Approver]);
+        await ReplaceRoles(member.Id, [Role.Approver, Role.Member]);
 
         Assert.Equal(1, _unitOfWork.Executions);
     }

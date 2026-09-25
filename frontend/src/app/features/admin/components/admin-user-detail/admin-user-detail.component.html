@@ -22,20 +22,24 @@
   <section class="panel">
     <h2 class="panel-heading">Roles</h2>
     <p class="panel-detail">
-      What this person can do in your organization. At least one role is required — to remove
-      every role, deactivate the account instead.
+      What this person can do in your organization. <strong>Member</strong> is always on — every
+      tenant user keeps member access regardless of any other role — so it can't be unticked. To
+      remove all access, deactivate the account instead.
     </p>
 
     <div class="role-checkboxes" role="group" aria-label="Roles">
       @for (role of assignableRoles; track role) {
-        <label class="checkbox-line">
+        <label class="checkbox-line" [class.checkbox-line--locked]="role === 'Member'">
           <input
             type="checkbox"
             [checked]="selectedRoles().has(role)"
-            [disabled]="savingRoles()"
+            [disabled]="savingRoles() || role === 'Member'"
             (change)="toggleRole(role)"
           />
           <span>{{ roleDisplayLabel(role) }}</span>
+          @if (role === 'Member') {
+            <span class="checkbox-note">always on</span>
+          }
         </label>
       }
     </div>
@@ -62,6 +66,43 @@
       </button>
     </div>
   </section>
+
+  @if (canResendInvitation()) {
+    <!--
+      Hardening pass, 2026-09-25 (finding 3). Only ever shown when the server
+      would actually accept it — an already-activated or deactivated account
+      is never offered this, rather than offered and then explained away.
+    -->
+    <section class="panel">
+      <h2 class="panel-heading">Invitation</h2>
+      <p class="panel-detail">
+        This person hasn't set a password yet. Resend the invitation if the original link expired,
+        never arrived, or was lost.
+      </p>
+
+      @if (resendRejection(); as rejection) {
+        @if (rejection.formMessage) {
+          <p class="form-error" role="alert">{{ rejection.formMessage }}</p>
+        }
+      }
+
+      @if (resendResult(); as result) {
+        @if (result.invitationEmailSent) {
+          <p class="form-success" role="status"><strong>Invitation resent.</strong></p>
+        } @else {
+          <p class="form-error" role="alert">
+            The account is fine, but the email didn't send. Try resending again.
+          </p>
+        }
+      }
+
+      <div class="form-actions">
+        <button type="button" class="secondary-action" [disabled]="resending()" (click)="resendInvitation()">
+          {{ resending() ? 'Resending…' : 'Resend invitation' }}
+        </button>
+      </div>
+    </section>
+  }
 
   @if (user.isActive) {
     <section class="danger-zone">

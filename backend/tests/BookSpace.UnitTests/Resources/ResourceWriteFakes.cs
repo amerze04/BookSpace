@@ -242,11 +242,28 @@ internal sealed class FakeUserRepository : IUserRepository
     public Task<User?> FindForUpdateAsync(Guid userId, CancellationToken cancellationToken) =>
         Task.FromResult(Users.FirstOrDefault(u => u.Id == userId));
 
+    // ---- Hardening pass, 2026-09-25 (finding 1) ----
+    //
+    // Projected from the same `Users` list, matching FindDetailAsync below —
+    // the fake has one notion of who exists and what state they are in, not two
+    // that a test could accidentally let disagree.
+    public Task<bool> IsCurrentlyActiveTenantAdminAsync(Guid userId, CancellationToken cancellationToken)
+    {
+        var user = Users.FirstOrDefault(u => u.Id == userId);
+        return Task.FromResult(user is not null && user.IsActive && user.Roles.Contains(Role.TenantAdmin));
+    }
+
     // ---- User management phase 7: GET /users/{id} ----
     //
     // Projected from the same `Users` list FindForUpdateAsync reads, so a test
     // that seeds one person's state sees it from both — the fake has no second
     // notion of who exists.
+    // Hardening pass, 2026-09-25 (finding 3). A settable set rather than a
+    // real ActivationTokens table — this fake has no second aggregate, and a
+    // test that cares says so by adding the id here, matching how every other
+    // signal on this fake is a plain collection a test populates directly.
+    public HashSet<Guid> ActivatedUserIds { get; } = [];
+
     public Task<GetUserByIdQueryResponse?> FindDetailAsync(Guid userId, CancellationToken cancellationToken)
     {
         var user = Users.FirstOrDefault(u => u.Id == userId);
@@ -259,7 +276,8 @@ internal sealed class FakeUserRepository : IUserRepository
                 user.IsActive,
                 user.Roles.ToList(),
                 user.CreatedAtUtc,
-                user.UpdatedAtUtc));
+                user.UpdatedAtUtc,
+                ActivatedUserIds.Contains(user.Id)));
     }
 
     // The last-admin guard's locking read. Counted from `Users` rather than

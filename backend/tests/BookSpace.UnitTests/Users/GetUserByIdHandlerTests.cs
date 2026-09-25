@@ -32,6 +32,20 @@ public class GetUserByIdHandlerTests
         Assert.Equal([Role.Approver, Role.TenantAdmin], response.Roles.OrderBy(r => r.ToString()));
         Assert.Equal(user.CreatedAtUtc, response.CreatedAtUtc);
         Assert.Equal(user.UpdatedAtUtc, response.UpdatedAtUtc);
+        Assert.False(response.IsActivated);
+    }
+
+    // Hardening pass, 2026-09-25 (finding 3) — what the detail screen uses to
+    // decide whether "Resend invitation" applies at all.
+    [Fact]
+    public async Task ReportsWhenTheAccountHasBeenActivated()
+    {
+        var user = User(Role.Member);
+        _users.ActivatedUserIds.Add(user.Id);
+
+        var response = await GetById(user.Id);
+
+        Assert.True(response.IsActivated);
     }
 
     // A deactivated user is still readable by id — only the directory's default

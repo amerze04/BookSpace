@@ -12,6 +12,16 @@ namespace BookSpace.Application.Features.Users.GetUserById;
 // CreatedByUserId/UpdatedByUserId stay off the wire for the same reason
 // GetResourceQueryResponse leaves them off — a bare Guid a client cannot
 // resolve to a person, and one that would leak who administers the tenant.
+//
+// **IsActivated, added in the 2026-09-25 hardening pass (finding 3).** Whether
+// this account has ever completed activation — the only way `User.SetPassword`
+// is ever called (see `ActivateAccountCommandRequestHandler`) is by consuming
+// an activation token, so this is computed from `ActivationTokens` rather than
+// carried as a separate flag on `User` that could drift from it. It is what
+// the detail screen uses to decide whether "Resend invitation" makes sense at
+// all — resending to an already-activated account is refused server-side
+// (`UserAlreadyActivatedException`) and should not be offered in the first
+// place.
 public sealed record GetUserByIdQueryResponse(
     Guid Id,
     string FullName,
@@ -19,4 +29,5 @@ public sealed record GetUserByIdQueryResponse(
     bool IsActive,
     IReadOnlyList<Role> Roles,
     DateTime CreatedAtUtc,
-    DateTime UpdatedAtUtc);
+    DateTime UpdatedAtUtc,
+    bool IsActivated);

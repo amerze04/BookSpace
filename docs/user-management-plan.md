@@ -179,8 +179,11 @@ per §3.1, the activation flow that makes a created user able to sign in.
 
 - **Self-service change password.** A user who knows their password cannot
   change it. Flagged in §6.
-- **Admin-triggered password reset / re-issuing an invitation.** Flagged in §6,
-  and it is the one exclusion I would push back on — see that section.
+- **Admin-triggered password reset.** Still out — `POST /users/{id}/invitation`
+  (added 2026-09-25) resends to someone who has *never* activated; it refuses
+  `UserAlreadyActivated` outright and is not a way to reset a working
+  password. Re-issuing an invitation, the other half of this bullet, is no
+  longer excluded — see §6.
 - **SysAdmin tenant management (FR-1.3).** Different audience, entirely unbuilt,
   and a package of its own.
 - **Deleting a user.** Never on the table: CLAUDE.md §4.5, nothing is deleted.
@@ -247,14 +250,23 @@ If the provider is down, the alternatives are to fail the whole request — whic
 couples creating a colleague to a third party's uptime, and needs a rollback —
 or to create the user and tell the admin the email did not go out.
 
-**The second, and the create response carries the activation link regardless of
-whether the email succeeded.** The admin is standing right there; they can pass
-it on by chat or in person, which is exactly what they would do anyway in a
-small organization. Shown once, with a plain statement that it will not be shown
-again.
+**The second.** The account is real either way, and `invitationEmailSent`
+tells the admin which happened.
 
-This matters more than it otherwise would because re-issuing an invitation is
-out of scope (§3.4) — so this response is, today, the *only* recovery path.
+**Corrected 2026-09-25, external hardening pass (finding 2).** This section
+used to say the create response "carries the activation link regardless of
+whether the email succeeded," reasoning that the admin was standing right
+there and could pass it on. That was a real vulnerability, not a convenience:
+a TenantAdmin holding the invitee's own activation link could redeem it first,
+set the password themselves, and sign in as the person they just created,
+before that person ever saw the invitation — on *every* call, not only a
+failed one, since nothing on the wire distinguished "I need this because
+delivery failed" from "I am choosing to read someone else's credential." The
+capability is removed outright, not narrowed: neither `POST /users` nor the
+reissue endpoint below ever returns the raw link again. See decision `0029`'s
+2026-09-25 amendment for the full reasoning, and §3.4/§6 below — "no way to
+re-issue an invitation" was this section's stated reason the exclusion needed
+push-back; it is no longer true, and is corrected where it appears.
 See §6.
 
 ### 4.4 Deactivation's 15-minute tail is the requirement, not a gap
@@ -994,15 +1006,17 @@ second one closes anything.** What is true now:
   endpoint once `User.SetPassword` exists (phase 2), so this is cheap to add
   later and cheap to add *during* — but it is not in.
 
-- **No way to re-issue an invitation — and this is the one exclusion I would
-  push back on.** If the provider is down and the admin closes the page, the
-  activation link is gone and that person has **no route into the system at
-  all**; there is no reset, no resend, and no delete to start over with. §4.3's
-  always-show-the-link mitigates it but depends on the admin acting in the
-  moment. The cheapest close is a `POST /users/{id}/invitation` that issues a
-  fresh token and re-sends — a handler and an endpoint, reusing everything
-  phases 2 and 3 already build, and about half a phase's work. **Recorded here
-  as the owner's call; the plan does not assume it.**
+- **~~No way to re-issue an invitation~~ — closed 2026-09-25.** This used to be
+  the one exclusion flagged for push-back: with no reset, no resend and no
+  delete, a provider outage or a closed tab left that person with no route into
+  the system at all. `POST /users/{id}/invitation` is built — TenantAdmin-only,
+  tenant-filtered, refuses `UserAlreadyActivated`/`UserNotActive`, and
+  supersedes any still-live token before issuing a new one — as part of the
+  same external hardening pass that removed §4.3's always-show-the-link
+  fallback (decision `0029`'s amendment). The two changes are the same
+  argument from two directions: the old design needed the link shown because
+  there was no other recovery path, and closing the recovery path properly is
+  what made removing the link safe.
 
 - **`Users` has no `RowVersion`** (§4.5). Consistent with the rest of the
   application today, and closing it is a migration plus a DTO field.

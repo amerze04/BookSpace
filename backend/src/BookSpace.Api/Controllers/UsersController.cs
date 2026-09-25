@@ -6,6 +6,7 @@ using BookSpace.Application.Features.Users.DeactivateUser;
 using BookSpace.Application.Features.Users.GetUserById;
 using BookSpace.Application.Features.Users.ListUsers;
 using BookSpace.Application.Features.Users.ReactivateUser;
+using BookSpace.Application.Features.Users.ReissueInvitation;
 using BookSpace.Application.Features.Users.ReplaceUserRoles;
 using BookSpace.Application.Messaging;
 using BookSpace.Domain.Enums;
@@ -40,6 +41,19 @@ namespace BookSpace.Api.Controllers;
 // Stacking them is what keeps a SysAdmin token out: without TenantMember this
 // endpoint would answer a SysAdmin with an empty page, because the tenant query
 // filter would match nothing, which is a confusing way to say 403.
+//
+// **Hardening pass, 2026-09-25 (finding 1).** The four writes below (Create,
+// Deactivate, Reactivate, ReplaceRoles) — plus ReissueInvitation — also carry
+// AuthorizationPolicies.ActiveTenantAdminWrite, a third, action-level policy
+// that re-reads the actor's own row from the database rather than trusting the
+// JWT's role claim alone. TenantAdmin by role claim is stale for up to 15
+// minutes; on every other TenantAdmin route that staleness only means a
+// revocation takes a few minutes to land (FR-2.4's own promise), but on these
+// five it would let a token minted moments ago reactivate the very account
+// that was just deactivated, or restore the TenantAdmin role that was just
+// taken from it. See ActiveTenantAdminAuthorizationHandler. The two GET actions
+// stay on TenantAdmin alone — they cannot grant or revoke anything, and
+// CLAUDE.md's own rule is not to make a read pay for a check it does not need.
 [ApiController]
 [Route("users")]
 [Authorize(Policy = AuthorizationPolicies.TenantMember)]
@@ -137,6 +151,7 @@ public sealed class UsersController : ControllerBase
     // (§4.3) and it makes this response something to show once and not store —
     // see CreateUserCommandResponse.
     [HttpPost]
+    [Authorize(Policy = AuthorizationPolicies.ActiveTenantAdminWrite)]
     [ProducesResponseType<CreateUserCommandResponse>(StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
@@ -166,6 +181,7 @@ public sealed class UsersController : ControllerBase
     // administrator, and the check runs under a lock inside the write's own
     // transaction (docs/user-management-plan.md §4.5).
     [HttpPost("{id:guid}/deactivate")]
+    [Authorize(Policy = AuthorizationPolicies.ActiveTenantAdminWrite)]
     [ProducesResponseType<DeactivateUserCommandResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
@@ -185,6 +201,7 @@ public sealed class UsersController : ControllerBase
     // No 422 arm — reactivating can only grow the set of active administrators,
     // so the last-admin guard has nothing to say about it.
     [HttpPost("{id:guid}/reactivate")]
+    [Authorize(Policy = AuthorizationPolicies.ActiveTenantAdminWrite)]
     [ProducesResponseType<ReactivateUserCommandResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
@@ -209,6 +226,7 @@ public sealed class UsersController : ControllerBase
     // validator. 422 is LastTenantAdmin, checked under the same lock as
     // deactivation.
     [HttpPut("{id:guid}/roles")]
+    [Authorize(Policy = AuthorizationPolicies.ActiveTenantAdminWrite)]
     [ProducesResponseType<ReplaceUserRolesCommandResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
@@ -224,6 +242,33 @@ public sealed class UsersController : ControllerBase
             new ReplaceUserRolesCommandRequest(id, request.Roles ?? []),
             cancellationToken);
 
+        return Ok(result);
+    }
+
+    // Hardening pass, 2026-09-25 (finding 3). The recovery path an admin did
+    // not have: an expired link, a delivery failure, or a lost email left an
+    // account permanently unreachable, since POST /users cannot recreate an
+    // account that already exists (decision `0010`'s global email uniqueness)
+    // and the raw activation link is no longer handed back at all (finding 2).
+    //
+    // 409 is UserAlreadyActivated — nothing to resend once a real password is
+    // set. 422 is UserNotActive — reactivate first, or the new link would
+    // still refuse to redeem. Idempotent in the sense that matters: calling
+    // this twice is always safe, because the previous still-live token (if
+    // any) is superseded before the new one is issued — never two credentials
+    // outstanding at once.
+    [HttpPost("{id:guid}/invitation")]
+    [Authorize(Policy = AuthorizationPolicies.ActiveTenantAdminWrite)]
+    [ProducesResponseType<ReissueInvitationCommandResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
+    public async Task<IActionResult> ReissueInvitation(Guid id, CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(new ReissueInvitationCommandRequest(id), cancellationToken);
         return Ok(result);
     }
 }

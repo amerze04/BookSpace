@@ -78,6 +78,23 @@ internal sealed class UserRepository : IUserRepository
     public Task<User?> FindForUpdateAsync(Guid userId, CancellationToken cancellationToken) =>
         _context.Users.FirstOrDefaultAsync(u => u.Id == userId, cancellationToken);
 
+    // Hardening pass, 2026-09-25 (finding 1). One AnyAsync rather than a
+    // FirstOrDefaultAsync-then-check: the caller only ever wants a bool, and
+    // this is on the request path of every one of the four user-management
+    // writes, so it is worth being the cheapest query that answers the
+    // question. Goes through the tenant-filtered DbSet like every other read
+    // in this file, so the tenant check falls out of the same WHERE the
+    // ordinary query filter already adds — nothing here duplicates it.
+    public Task<bool> IsCurrentlyActiveTenantAdminAsync(Guid userId, CancellationToken cancellationToken) =>
+        _context.Users
+            .AsNoTracking()
+            .AnyAsync(
+                u => u.Id == userId
+                    && u.IsActive
+                    && EF.Property<ICollection<User.RoleAssignment>>(u, RoleAssignmentsNavigation)
+                        .Any(r => r.Role == Role.TenantAdmin),
+                cancellationToken);
+
     // GET /users/{id} — user management phase 7. AsNoTracking, the read
     // counterpart to FindForUpdateAsync above: nothing here is ever saved.
     // Same navigation-by-name reason as IsEligibleApprover for reading Roles.
@@ -96,7 +113,13 @@ internal sealed class UserRepository : IUserRepository
                     .Select(r => r.Role)
                     .ToList(),
                 u.CreatedAtUtc,
-                u.UpdatedAtUtc))
+                u.UpdatedAtUtc,
+                // Hardening pass, 2026-09-25 (finding 3). A correlated
+                // subquery against ActivationTokens rather than a stored flag
+                // on User — the only way SetPassword is ever called is by
+                // consuming a token, so this is what "activated" actually
+                // means, computed rather than duplicated.
+                _context.ActivationTokens.Any(t => t.UserId == u.Id && t.ConsumedAtUtc != null)))
             .FirstOrDefaultAsync(cancellationToken);
 
     // The last-admin guard's locking read (docs/user-management-plan.md §3.3,

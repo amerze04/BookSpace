@@ -2,50 +2,35 @@
   @if (created(); as result) {
     <!--
       The outcome replaces the form rather than sitting under it: a still-live
-      submit button next to a credential is how a second account gets created.
+      submit button next to a freshly created account is how a second account
+      gets created.
+
+      No credential on this screen any more (hardening pass, 2026-09-25,
+      finding 2) — the account's own detail page is where "Resend invitation"
+      lives if the email did not go out.
     -->
     <section class="outcome" [class.outcome--warning]="!result.invitationEmailSent">
       @if (result.invitationEmailSent) {
         <h2 class="outcome-title">Invitation sent</h2>
         <p class="outcome-lead">
-          We emailed <strong>{{ result.email }}</strong> a link to set their password.
+          We emailed <strong>{{ result.email }}</strong> a link to set their password. It stays valid
+          until {{ result.activationLinkExpiresAtUtc | date: 'medium' }}.
         </p>
       } @else {
         <!--
-          The account exists either way — plan §4.3. What changed is who has to
-          deliver the link, and the copy says that plainly instead of reading
-          like a failure the administrator should retry.
+          The account exists either way. What changed is that nobody has been
+          told, and the fix is to resend from their own page — not a link
+          shown here, which is exactly the capability finding 2 removed.
         -->
         <h2 class="outcome-title">Account created — but the email didn't send</h2>
         <p class="outcome-lead">
-          <strong>{{ result.fullName }}</strong> has an account, but we couldn't email them. Send them
-          the link below yourself.
+          <strong>{{ result.fullName }}</strong> has an account, but we couldn't email them. Open their
+          page and resend the invitation.
         </p>
       }
 
-      <div class="link-block">
-        <label class="link-label" for="activation-link">Activation link</label>
-
-        <div class="link-row">
-          <!--
-            Readonly rather than plain text so it can be selected, tabbed to and
-            read by a screen reader as a value — the fallback that matters when
-            the clipboard API is unavailable.
-          -->
-          <input id="activation-link" class="link-input" type="text" readonly [value]="result.activationLink" />
-          <button type="button" class="copy-button" (click)="copyLink()">
-            {{ linkCopied() ? 'Copied' : 'Copy' }}
-          </button>
-        </div>
-
-        <p class="link-note">
-          <strong>This link is shown once.</strong> It isn't stored anywhere and won't be shown again —
-          copy it now if you need it. It can be used once, and stops working after
-          {{ result.activationLinkExpiresAtUtc | date: 'medium' }}.
-        </p>
-      </div>
-
       <div class="outcome-actions">
+        <a class="primary-button" [routerLink]="['/admin/users', result.id]">View {{ result.fullName }}</a>
         <button type="button" class="secondary-button" (click)="inviteAnother()">Invite someone else</button>
         <a class="secondary-button" routerLink="/admin/users">Back to users</a>
       </div>

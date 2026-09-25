@@ -2,15 +2,19 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.Users.GetUserById;
 using BookSpace.Application.Features.Users.ListUsers;
 using BookSpace.Domain.Enums;
+using BookSpace.Infrastructure.Email;
 using BookSpace.Infrastructure.Persistence;
 using BookSpace.IntegrationTests.Authentication;
 using BookSpace.IntegrationTests.Support;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using MimeKit;
 
 namespace BookSpace.IntegrationTests.Users;
 
@@ -54,6 +58,38 @@ public class GetUserByIdEndpointTests
         Assert.Equal(AcmeApprover, detail.Email);
         Assert.True(detail.IsActive);
         Assert.Equal([Role.Approver], detail.Roles);
+
+        // Seeded directly with a real password hash, never through
+        // POST /users, so no ActivationTokens row exists for them at all —
+        // IsActivated answers "went through this app's own invitation flow",
+        // not "can sign in". Worth pinning so it is not read as a bug later.
+        Assert.False(detail.IsActivated);
+    }
+
+    // Hardening pass, 2026-09-25 (finding 3). The field the detail screen uses
+    // to decide whether "Resend invitation" applies — real provisioning and
+    // real activation this time, not the seeded shortcut above.
+    [Fact]
+    public async Task ReportsActivationForARealProvisionedAccount()
+    {
+        var client = await AuthenticatedClientAsync(AcmeAdmin);
+        var email = $"activated-probe-{Guid.NewGuid():N}@acme.test";
+
+        var created = await client.PostAsJsonAsync("/users", new { email, fullName = "Activated Probe" });
+        created.EnsureSuccessStatusCode();
+        var id = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+
+        var beforeActivation = await GetAsync(client, id);
+        Assert.False(beforeActivation.IsActivated);
+
+        var message = await FindSentMessageToAsync(email);
+        var token = Regex.Match(message.TextBody ?? string.Empty, @"token=(\S+)").Groups[1].Value;
+        (await _host.CreateClient().PostAsJsonAsync(
+                "/auth/activate", new { token, password = "a-perfectly-good-password" }))
+            .EnsureSuccessStatusCode();
+
+        var afterActivation = await GetAsync(client, id);
+        Assert.True(afterActivation.IsActivated);
     }
 
     // Unlike the directory's default scope, this endpoint has no eligibility
@@ -190,6 +226,28 @@ public class GetUserByIdEndpointTests
             "/users?scope=All&pageSize=100", TestJson.Options);
 
         return page!.Items.Single(u => u.Email == email).Id;
+    }
+
+    // Same sink-reading approach as CreateUserEndpointTests — a usable
+    // activation token only ever comes from the sent message (finding 2 took
+    // it out of every response body).
+    private async Task<MimeMessage> FindSentMessageToAsync(string recipient)
+    {
+        await using var scope = _host.CreateScope();
+        var directory = scope.ServiceProvider
+            .GetRequiredService<IOptions<EmailOptions>>().Value.DevelopmentSink.Directory;
+
+        foreach (var path in Directory.GetFiles(directory, "*.eml"))
+        {
+            var message = await MimeMessage.LoadAsync(path);
+            if (message.To.Mailboxes.Any(m =>
+                    string.Equals(m.Address, recipient, StringComparison.OrdinalIgnoreCase)))
+            {
+                return message;
+            }
+        }
+
+        throw new InvalidOperationException($"No message was written to the sink for {recipient}.");
     }
 
     private async Task<HttpClient> AuthenticatedClientAsync(string email)

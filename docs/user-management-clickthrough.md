@@ -18,6 +18,14 @@ API during writing (`curl`, not a browser — noted per step), which is why the
 wording is concrete rather than illustrative; what it has not had is an actual
 person clicking through the Angular app.
 
+**Revised the same day, before its first walk**, by an external hardening pass
+that found a real vulnerability in what path A originally described: the
+outcome screen used to show the admin the raw activation link, which let a
+TenantAdmin redeem their new colleague's own invitation before the colleague
+did. That capability is now removed — the steps below reflect the corrected
+screen, not the one this document originally walked through while being
+written. Marked inline wherever a step changed.
+
 Its own file rather than a section of `user-management-plan.md`, for the same
 reason the other two click-throughs are their own files: held in one hand while
 the other clicks.
@@ -97,29 +105,35 @@ Press **Invite someone**.
       before — and submit.
 
 ### A3 · The outcome
-- [ ] You land on a confirmation, not back on the empty form. It shows an
-      **activation link**, plainly labelled as something shown **once**.
+**Rewritten 2026-09-25 — an external hardening pass removed the activation
+link from this screen.** It used to be shown here, once, for the admin to copy;
+a TenantAdmin holding it could redeem their new colleague's own invitation
+first and sign in as them before the real recipient ever saw it. See decision
+`0029`'s amendment.
+- [ ] You land on a confirmation, not back on the empty form.
 - [ ] It says the invitation was **sent**, not just that the account was
       created — the two are different facts, since a send failure still
       creates the account.
-- [ ] Copy the link, or leave the tab open — you will need it in A5. If you
-      lose it, the new person still has a way in: A5b covers that.
+- [ ] **No activation link appears anywhere on this screen.** Check the page
+      source or select-all if you want to be sure — this is the regression the
+      rewrite exists to catch.
+- [ ] It links to the new person's own page (**View {name}**). Follow it —
+      you will need it in A5b regardless of whether the email sent.
 
 ### A4 · The email, as a real file
 - [ ] Open `backend/src/BookSpace.Api/sent-emails/` and find the newest
       `.eml`. Open it as text if nothing else is handy.
 - [ ] It is addressed to the person you just invited, has both a plain-text
-      and an HTML part, and both contain **the same link** A3 showed you.
-      *Verified during writing: `curl`-created account, `.eml` on disk,
-      byte-identical link.*
+      and an HTML part, and both contain the same link.
 - [ ] The name you typed is escaped correctly in the HTML part even if it had
       an ampersand or an angle bracket in it. *Try this with a name like `A & B`
       if you want to see it — the plain-text part is there specifically for a
       client that refuses the HTML one.*
+- [ ] Copy the link out of the email — this is now the **only** place to get
+      it. You will need it in A5.
 
 ### A5 · Following the link
-- [ ] Open the link from the email (not the one on the outcome screen — prove
-      they really are the same page). It is `/activate`, **outside the
+- [ ] Open the link from the email. It is `/activate`, **outside the
       shell** — no nav, no sidebar, because the person on the other end has no
       account to see one from.
 - [ ] Enter a password under 12 characters. Refused, naming the rule.
@@ -129,13 +143,30 @@ Press **Invite someone**.
       ready. *Deliberate: activation returns no session (204, not a token
       pair), because minting one would duplicate login's own FR-2.4 checks in a
       second place.*
+- [ ] Check the address bar right after the page first loaded, before you
+      submitted: the `?token=…` should be gone from it, even though the form
+      still worked. *Finding 7 — the token is read into memory once and then
+      scrubbed from the visible URL and history, so it does not linger in a
+      browser's back button, a copied link, or a screenshot.*
 
-### A5b · If you had lost the link
-- [ ] Before continuing, note that there is genuinely no recovery if this
-      link had been lost and the email had failed to send — no resend, no
-      reset. *Flagged in the plan (§6) as the one exclusion the plan itself
-      pushes back on. Not a defect in what was built; a known gap in what was
-      not.*
+### A5b · Resending, from the person's own page
+**Rewritten 2026-09-25** — this used to be "there is no recovery"; there is
+now. On the person's detail page (the **View {name}** link from A3):
+- [ ] A section titled **Invitation** is visible, with a **Resend invitation**
+      button — because this account has not activated yet.
+- [ ] Press it. It reports **Invitation resent**, and a second `.eml` appears
+      in the sent-emails directory for the same address.
+- [ ] The **original** link from A4 no longer activates anything — try it
+      (in a private window, so you do not disturb the session you are about
+      to use in A6): refused, same generic message as an expired or unknown
+      link. *Reissuing supersedes whatever was still live, so an account never
+      has two simultaneously usable links.*
+- [ ] The **new** link (from the second `.eml`) does activate the account —
+      use it for A6 if you tried the original one above.
+- [ ] Now that the account is activated, reload the person's page: **Resend
+      invitation** is gone. *Resending to an already-activated account is
+      refused server-side (`409 UserAlreadyActivated`); the control does not
+      wait to be told that — it is not offered.*
 
 ### A6 · The first sign-in
 - [ ] Sign in with the address you invited and the password just set.

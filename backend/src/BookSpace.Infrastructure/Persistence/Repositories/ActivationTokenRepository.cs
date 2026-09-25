@@ -27,5 +27,25 @@ internal sealed class ActivationTokenRepository : IActivationTokenRepository
     public Task<ActivationToken?> FindByHashAsync(string tokenHash, CancellationToken cancellationToken) =>
         _context.ActivationTokens.FirstOrDefaultAsync(t => t.TokenHash == tokenHash, cancellationToken);
 
+    // Tracked, not AsNoTracking: the caller (ReissueInvitationCommandRequestHandler)
+    // calls Supersede() on each and needs the change tracked. Uses
+    // IX_ActivationTokens_User, the index this table's own configuration
+    // comment already anticipated needing once reissuing existed.
+    public async Task<IReadOnlyList<ActivationToken>> FindRedeemableForUserAsync(
+        Guid userId,
+        DateTime nowUtc,
+        CancellationToken cancellationToken) =>
+        await _context.ActivationTokens
+            .Where(t => t.UserId == userId
+                && t.ConsumedAtUtc == null
+                && t.SupersededAtUtc == null
+                && t.ExpiresAtUtc > nowUtc)
+            .ToListAsync(cancellationToken);
+
+    public Task<bool> HasEverBeenConsumedAsync(Guid userId, CancellationToken cancellationToken) =>
+        _context.ActivationTokens
+            .AsNoTracking()
+            .AnyAsync(t => t.UserId == userId && t.ConsumedAtUtc != null, cancellationToken);
+
     public void Add(ActivationToken token) => _context.ActivationTokens.Add(token);
 }

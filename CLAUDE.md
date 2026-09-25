@@ -414,7 +414,7 @@ added, add its one-liner to both places.
 26. [`0026`](docs/decisions/0026-notifications-series-anchor.md) — `CK_Notifications_HasContext` now also accepts `RecurrenceRuleId` alone, for the whole-series-cancel notification.
 27. [`0027`](docs/decisions/0027-approver-booking-detail-reach.md) — an Approver may read a booking by id when it is **their own or** on a resource they gate; the union, not the list's intersection.
 28. [`0028`](docs/decisions/0028-approval-gating-without-approvers.md) — a resource may require approval with **no approvers assigned**; FR-3.3's implies-approvers invariant is removed, `ApproversRequired` is deleted, and the request falls back to the tenant's admins.
-29. [`0029`](docs/decisions/0029-user-provisioning-and-invitation-delivery.md) — invitations are emailed synchronously and deliberately not through the `Notifications` outbox; a delivery failure is a return value; the activation token is shaped like a refresh token.
+29. [`0029`](docs/decisions/0029-user-provisioning-and-invitation-delivery.md) — invitations are emailed synchronously and deliberately not through the `Notifications` outbox; a delivery failure is a return value; the activation token is shaped like a refresh token. **Amended 2026-09-25**: the raw activation link is no longer returned to the admin on any call (it let a TenantAdmin redeem a colleague's own invitation first); `POST /users/{id}/invitation` reissues instead, superseding any still-live token.
 30. [`0030`](docs/decisions/0030-email-collision-disclosure-at-creation.md) — `POST /users` answers `EmailAlreadyInUse` identically whether the address is in the caller's tenant or another, and the unique index — not a pre-check — is what decides it.
 31. [`0031`](docs/decisions/0031-last-tenant-admin-guard.md) — a tenant must always keep at least one active `TenantAdmin`; the guard covers both deactivation and role removal, and is checked under `UPDLOCK, HOLDLOCK` inside the write's own transaction.
 
@@ -1821,3 +1821,82 @@ unsplit — this pass alone added a DST fix, a duration-validation fix, an
 empty-state fix, and accessibility changes to that same file; extracting
 child components in the same pass would have compounded the regression
 risk without a matching increase in test coverage.
+
+### Hardening pass — 2026-09-25 (user management)
+Not a work package: an external review of the user-management package
+(phases 1–7, merged as PR #31) across 7 numbered findings — one authorization
+gap, a real credential-exposure vulnerability, a missing recovery path, a
+request-cancellation risk, a frontend route-reuse bug, a data-model
+inconsistency, and a token left in the URL. Every finding verified against the
+actual code before anything changed; none rejected. Full reasoning is in the
+code comments at each fix and in decision `0029`'s 2026-09-25 amendment for
+findings 2–4. Baseline after: 1356 backend unit + 659 integration, 1231
+frontend vitest, both production builds clean.
+
+**Finding 1 — a demoted or deactivated TenantAdmin's still-valid JWT could
+undo its own demotion.** `AuthorizationPolicies.TenantAdmin` is a role-claim
+check, current only as of the access token's own issue time (up to 15 minutes
+stale, decision `0009`) — fine for FR-2.4's promise that a *revocation* lands
+within that window, not fine for a call that *grants* privilege back. A new
+policy, `ActiveTenantAdminWrite`, re-reads the actor's own row
+(`IUserRepository.IsCurrentlyActiveTenantAdminAsync`, tenant-filtered, AC-4's
+fail-closed shape) and is stacked — not substituted — on the five writes that
+can grant or revoke TenantAdmin: create, deactivate, reactivate, replace
+roles, reissue invitation. Deliberately **not** applied to the two GET actions
+or to any other TenantAdmin-gated controller (`ResourcesController` included)
+— out of this pass's scope, and the same class of bug plausibly exists there
+too; flagged, not fixed. Proven with real issued tokens, not a hand-built JWT
+fixture: `StaleAdminTokenAuthorizationTests` signs a second admin in for real,
+then revokes what made that token true underneath it, and asserts the
+already-issued token is refused.
+
+**Findings 2–4 — the activation link, its recovery path, and request
+cancellation.** See decision `0029`'s amendment for the full argument. In
+short: `POST /users` no longer returns the raw activation link on any
+outcome — a TenantAdmin holding it could redeem a colleague's own invitation
+first. `POST /users/{id}/invitation` is the replacement recovery path
+(`ReissueInvitationCommandRequestHandler`), refusing `UserAlreadyActivated`
+(409) and `UserNotActive` (422), and superseding every still-redeemable token
+for that user before issuing a new one — `ActivationToken.SupersededAtUtc`, a
+second concurrency column alongside `ConsumedAtUtc` (migration
+`AddActivationTokenSupersession`), so a reissue racing a redemption is decided
+by the database rather than by whichever request happened to read first. Both
+the create and reissue handlers now send the invitation with
+`CancellationToken.None` rather than the caller's own token: the account and
+its token are already durably committed by that point, and a disconnected
+HTTP request must not be able to cut delivery short with no fallback link left
+to recover from it.
+
+**Finding 5 — `AdminUserDetailComponent` read the route id once.** Angular
+reuses the component across `/admin/users/A` → `/admin/users/B`, and a
+snapshot taken at construction went stale — the same bug class
+`ResourceDetailComponent` fixed in the 2026-09-16 pass, and the same fix:
+`route.paramMap` observed through `switchMap`, so a route change cancels
+whatever fetch is still in flight (not merely ignores its result) before
+starting the next one. Every in-flight write signal (roles selection, open
+confirmations, resend state) is also reset on a route-id change, not only the
+loaded data — reusing the component is exactly what makes stale *write* state
+as much of a bug as a stale *read*.
+
+**Finding 6 — the role editor could save a set missing `Member`.** The
+codebase already knew tenant-member access comes from the `orgId` claim, not
+from holding `Role.Member` (why an empty role set is refused) — but nothing
+stopped `[Approver]` or `[TenantAdmin]` alone from being saved, undersaying
+what the account could do. Settled as: every tenant user always carries
+Member. `ReplaceUserRolesCommandRequestValidator` now requires it; the
+frontend checkbox renders it checked and disabled. **The pre-existing seeded
+`admin@acme.test`/`approver@acme.test` rows are deliberately not backfilled**
+— they predate user management (WP-2) and normalizing them is a data-hygiene
+concern outside this PR's scope; the frontend's `toAssignableRoles` adds
+Member unconditionally when a legacy row is loaded, so the first save through
+this screen self-heals it.
+
+**Finding 7 — the activation token stayed in the visible URL.** `/activate`
+already read the token into the component's own field rather than re-reading
+it later, but never scrubbed the address bar. `ActivateComponent`'s
+constructor now calls `window.history.replaceState` to drop just the `token`
+query parameter (not the whole query string, in case a future link shape
+carries more) once it has been captured — a real navigation was deliberately
+not used, since re-resolving the route would re-trigger the same
+`queryParamMap` read this exists to stop mattering. Activation still works
+afterward, because nothing re-reads the URL.

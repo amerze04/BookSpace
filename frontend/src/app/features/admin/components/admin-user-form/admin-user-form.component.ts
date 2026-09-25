@@ -7,22 +7,23 @@ import { UserRejection, describeUserRejection } from '../../rejection/user-rejec
 
 // User management phase 6. Invite a colleague.
 //
-// **Two screens in one component, and the second is the interesting one.** The
-// form is ordinary; the outcome is not, because `POST /users` hands back a live
-// activation link and this is the only moment it will ever exist outside the
-// recipient's mailbox (plan §4.3). So the outcome replaces the form rather than
-// sitting under it — a still-editable form beside a credential invites a second
+// **Two screens in one component.** The form is ordinary; the outcome used to
+// be the interesting one because `POST /users` handed back a live activation
+// link. That capability was removed in the 2026-09-25 hardening pass (finding
+// 2): a TenantAdmin holding the raw link could redeem their new colleague's
+// own invitation first, set the password themselves, and sign in as that
+// person before the real recipient ever saw it. The outcome now says whether
+// the email went out and points at the new person's own detail screen, where
+// "Resend invitation" (finding 3) is the recovery path if it did not — never a
+// credential shown here.
+//
+// The outcome still replaces the form rather than sitting under it: a
+// still-live submit button beside a freshly created account invites a second
 // submit, and a second submit creates a second account.
 //
-// The link is deliberately **not** persisted anywhere: no storage, no service
-// cache, no route state. Navigating away loses it, and the screen says so
-// rather than pretending otherwise, because the honest instruction is "copy it
-// now" and anything that made it recoverable would be a second place a
-// credential lives.
-//
-// Create only. Editing a person — roles, deactivation — is phase 7's detail
-// screen, and it is a genuinely different shape: this form writes two fields
-// once, that one writes three different endpoints repeatedly. The admin
+// Create only. Editing a person — roles, deactivation, resending — is phase
+// 7's detail screen, and it is a genuinely different shape: this form writes
+// two fields once, that one writes several endpoints repeatedly. The admin
 // resource form merged create and edit because every field was shared; here
 // almost none is.
 //
@@ -60,8 +61,6 @@ export class AdminUserFormComponent {
   // separate "mode" flag, because the two cannot disagree if only one thing
   // says which screen is up.
   protected readonly created = signal<CreatedUser | null>(null);
-
-  protected readonly linkCopied = signal(false);
 
   // A server message outranks the client's until the control is edited, which
   // is why each of these checks the rejection first: the client cannot know the
@@ -147,33 +146,12 @@ export class AdminUserFormComponent {
       });
   }
 
-  // Back to an empty form for the next person. The link is dropped with the
-  // rest of the outcome, which is the point — it was shown once.
+  // Back to an empty form for the next person.
   protected inviteAnother(): void {
     this.created.set(null);
-    this.linkCopied.set(false);
     this.email.set('');
     this.fullName.set('');
     this.rejection.set(null);
-  }
-
-  protected async copyLink(): Promise<void> {
-    const link = this.created()?.activationLink;
-    if (!link) {
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(link);
-      this.linkCopied.set(true);
-    } catch {
-      // Clipboard access can be refused outright (an insecure origin, a denied
-      // permission, an older browser). Swallowed rather than surfaced as a
-      // failure: the link is on screen and selectable, so the administrator has
-      // lost nothing except the shortcut. Telling them the copy failed would
-      // imply the *invitation* had.
-      this.linkCopied.set(false);
-    }
   }
 
   // A rejection carries a message per control, and it has to stop being shown

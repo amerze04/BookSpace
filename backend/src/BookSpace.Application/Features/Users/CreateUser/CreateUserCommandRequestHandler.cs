@@ -121,9 +121,26 @@ public sealed class CreateUserCommandRequestHandler
 
         // After the save, deliberately. A send that raced ahead of a refused
         // insert would invite somebody to an account that does not exist.
+        //
+        // **CancellationToken.None, not the caller's token (hardening pass,
+        // 2026-09-25, finding 4).** The account and its activation token are
+        // already durably committed by this point — SaveChangesAsync above has
+        // returned. If the HTTP request is then cancelled (the administrator's
+        // browser navigates away, a proxy times out) while this send is still
+        // in flight, the caller's token would abort it mid-delivery, and unlike
+        // before this hardening pass there is no raw link in the response for
+        // the admin to fall back on if that happens — the send has to be given
+        // the chance to finish on its own. MailKit still bounds the call with
+        // its own socket timeouts regardless of what token it is given (see
+        // Infrastructure/Email's own note on this), so nothing here can hang
+        // forever; it can only outlive a request that is no longer listening.
+        // If delivery still fails, or nobody ever sees the result of this
+        // request, ReissueInvitationCommandRequestHandler is the recovery path
+        // — the account is never stranded by a send this request cannot wait
+        // for.
         var sendResult = await _emailSender.SendAsync(
             InvitationEmail.For(user.Email, user.FullName, activationLink, expiresAtUtc),
-            cancellationToken);
+            CancellationToken.None);
 
         if (sendResult.Delivered)
         {
@@ -132,12 +149,14 @@ public sealed class CreateUserCommandRequestHandler
         else
         {
             // Warning, not Error, and the request still succeeds: the account is
-            // real and the admin is being handed the link (§4.3). The provider's
-            // own detail is logged by the sender; it is not repeated here and
-            // never reaches the response, because it can name hosts and accounts.
+            // real, and the recovery path is POST /users/{id}/invitation
+            // (hardening pass, 2026-09-25, finding 3) — not a raw link handed
+            // back here (finding 2). The provider's own detail is logged by the
+            // sender; it is not repeated here and never reaches the response,
+            // because it can name hosts and accounts.
             _logger.LogWarning(
                 "User {UserId} was created but the invitation email did not send; "
-                + "the activation link was returned to the administrator instead",
+                + "an administrator can retry via POST /users/{{id}}/invitation",
                 user.Id);
         }
 
@@ -148,7 +167,6 @@ public sealed class CreateUserCommandRequestHandler
             user.IsActive,
             user.Roles.ToList(),
             user.CreatedAtUtc,
-            activationLink,
             expiresAtUtc,
             sendResult.Delivered);
     }

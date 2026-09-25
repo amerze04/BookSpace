@@ -10,6 +10,7 @@ using BookSpace.Infrastructure;
 using BookSpace.Infrastructure.Persistence;
 using BookSpace.Infrastructure.Security;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Serilog;
@@ -77,6 +78,10 @@ try
         });
 
     builder.Services.AddAuthorization(options => options.AddBookSpacePolicies());
+
+    // Hardening pass, 2026-09-25 (finding 1). Scoped, not singleton: it depends
+    // on IUserRepository, which depends on the per-request DbContext.
+    builder.Services.AddScoped<IAuthorizationHandler, ActiveTenantAdminAuthorizationHandler>();
 
     // Frontend origin(s) only — never AllowAnyOrigin. The access token travels
     // as an Authorization header and the refresh token in the request body

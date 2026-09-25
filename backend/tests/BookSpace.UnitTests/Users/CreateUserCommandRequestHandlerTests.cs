@@ -130,16 +130,16 @@ public class CreateUserCommandRequestHandlerTests
         Assert.Equal(NowUtc.AddDays(3), response.ActivationLinkExpiresAtUtc);
     }
 
-    // Only the hash is stored; the plaintext exists in the email and in this
-    // response, and nowhere else (FR-2.3's shape, decision `0011`).
+    // Only the hash is stored; the plaintext exists in the email and nowhere
+    // else — not even in this response any more (hardening pass, 2026-09-25,
+    // finding 2; FR-2.3's shape, decision `0011`).
     [Fact]
     public async Task OnlyTheHashOfTheTokenIsStored()
     {
-        var response = await Handle();
+        await Handle();
 
         var stored = Assert.Single(_activationTokens.Tokens);
-        Assert.DoesNotContain(stored.TokenHash, response.ActivationLink, StringComparison.Ordinal);
-        Assert.Contains(_links.LastRawToken!, response.ActivationLink, StringComparison.Ordinal);
+        Assert.NotEqual(stored.TokenHash, _links.LastRawToken);
     }
 
     // The atomicity claim: the account, its role and its token go in one save.
@@ -191,12 +191,12 @@ public class CreateUserCommandRequestHandlerTests
     [Fact]
     public async Task ItSendsTheInvitationToTheNewUser()
     {
-        var response = await Handle();
+        await Handle();
 
         var sent = Assert.Single(_emails.Sent);
         Assert.Equal("ada@acme.test", sent.To.Address);
         Assert.Equal("Ada Lovelace", sent.To.DisplayName);
-        Assert.Contains(response.ActivationLink, sent.TextBody, StringComparison.Ordinal);
+        Assert.Contains(_links.LastBuiltLink!, sent.TextBody, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -208,11 +208,14 @@ public class CreateUserCommandRequestHandlerTests
     }
 
     // §4.3: creating a colleague must not fail because a third party is down.
-    // The account is real, the admin is told, and the link comes back anyway —
-    // which is the only recovery path there is, since nothing re-issues an
-    // invitation.
+    // The account is real and the admin is told the email did not go out.
+    //
+    // **No link comes back any more (hardening pass, 2026-09-25, finding 2).**
+    // The recovery path is `POST /users/{id}/invitation`
+    // (ReissueInvitationCommandRequestHandler) — the account is not stranded,
+    // it is just not recoverable from *this* response.
     [Fact]
-    public async Task AFailedSendStillCreatesTheUserAndReturnsTheLink()
+    public async Task AFailedSendStillCreatesTheUserButHandsBackNoLink()
     {
         _emails.NextSendFails = true;
 
@@ -221,7 +224,6 @@ public class CreateUserCommandRequestHandlerTests
         Assert.False(response.InvitationEmailSent);
         Assert.Single(_users.Added);
         Assert.Single(_activationTokens.Tokens);
-        Assert.False(string.IsNullOrWhiteSpace(response.ActivationLink));
     }
 
     // The provider's own words can name hosts and accounts (see IEmailSender),
@@ -300,14 +302,61 @@ public class CreateUserCommandRequestHandlerTests
             _clock,
             NullLogger<CreateUserCommandRequestHandler>.Instance);
 
+    // ---- Hardening pass, 2026-09-25 ----
+
+    // Finding 2: the response no longer hands the admin a raw activation link
+    // — the whole point of the fix — so the only fallback when delivery fails
+    // is to check the response's own JSON shape rather than trust the type
+    // system (which would just fail to compile if a field crept back in). A
+    // future contributor cannot restore ActivationLink to the record and slip
+    // it past review without this test naming the fact loudly.
+    [Fact]
+    public async Task TheResponseNeverCarriesTheRawActivationLink()
+    {
+        var response = await Handle();
+
+        var serialized = System.Text.Json.JsonSerializer.Serialize(response);
+
+        // The property key, not a loose substring match — "ActivationLink" is
+        // also a prefix of the (still legitimate) "ActivationLinkExpiresAtUtc".
+        Assert.DoesNotContain("\"ActivationLink\"", serialized, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(_links.LastRawToken!, serialized, StringComparison.Ordinal);
+    }
+
+    // Finding 4: the account and its token are already durably committed by
+    // the time the invitation is sent, so a request that is cancelled after
+    // that point — the administrator's browser navigating away, a proxy
+    // timing out — must not cut the send short. Passing an already-cancelled
+    // token into Handle() is the deterministic way to prove it: if the send
+    // still used the caller's token, this would either throw
+    // OperationCanceledException or never call the sender at all. It does
+    // neither — the whole request completes, and the sender can show it was
+    // never given a cancelled token to begin with.
+    [Fact]
+    public async Task ARequestCancelledBeforeTheSendStepStillDeliversTheInvitation()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var response = await Handler().Handle(Request(), cts.Token);
+
+        Assert.True(response.InvitationEmailSent);
+        Assert.Single(_emails.Sent);
+        Assert.NotNull(_emails.LastReceivedToken);
+        Assert.False(_emails.LastReceivedToken!.Value.IsCancellationRequested);
+    }
+
     private sealed class StubActivationLinkBuilder : IActivationLinkBuilder
     {
         public string? LastRawToken { get; private set; }
 
+        public string? LastBuiltLink { get; private set; }
+
         public string BuildFor(string rawToken)
         {
             LastRawToken = rawToken;
-            return $"https://bookspace.test/activate?token={rawToken}";
+            LastBuiltLink = $"https://bookspace.test/activate?token={rawToken}";
+            return LastBuiltLink;
         }
     }
 
@@ -319,8 +368,15 @@ public class CreateUserCommandRequestHandlerTests
 
         public string FailureDetail { get; set; } = "the provider refused";
 
+        // Hardening pass, 2026-09-25 (finding 4) — what the handler actually
+        // passed, so a test can assert it is not the caller's own (possibly
+        // cancelled) token.
+        public CancellationToken? LastReceivedToken { get; private set; }
+
         public Task<EmailSendResult> SendAsync(EmailMessage message, CancellationToken cancellationToken)
         {
+            LastReceivedToken = cancellationToken;
+
             if (NextSendFails)
             {
                 // Recorded as attempted but not delivered, which is what the

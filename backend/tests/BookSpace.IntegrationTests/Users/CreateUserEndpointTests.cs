@@ -121,17 +121,22 @@ public class CreateUserEndpointTests : IAsyncLifetime
         Assert.Equal(admin.Id, created.CreatedByUserId);
     }
 
-    // **The whole point of the feature, end to end**: the account the admin just
-    // created can be activated with the link in the response and then signed
-    // into — and the admin never knew the password.
+    // **The whole point of the feature, end to end**: the account the admin
+    // just created can be activated with the link in the invitation email and
+    // then signed into — and the admin never knew the password.
+    //
+    // The token comes from the sent message, not the response body — since the
+    // hardening pass (2026-09-25, finding 2) POST /users no longer hands the
+    // raw activation link back to the caller at all.
     [Fact]
-    public async Task TheReturnedLinkActivatesTheAccount()
+    public async Task TheEmailedLinkActivatesTheAccount()
     {
         var client = await AuthenticatedClientAsync(AcmeAdmin);
         var email = UniqueEmail();
 
-        var body = await CreateAsync(client, email);
-        var token = TokenFrom(body.GetProperty("activationLink").GetString()!);
+        await CreateAsync(client, email);
+        var message = await FindSentMessageToAsync(email);
+        var token = TokenFrom(ExtractActivationLink(message));
 
         var anonymous = _host.CreateClient();
         var activate = await anonymous.PostAsJsonAsync(
@@ -165,9 +170,11 @@ public class CreateUserEndpointTests : IAsyncLifetime
     public async Task OnlyAHashOfTheTokenIsStored()
     {
         var client = await AuthenticatedClientAsync(AcmeAdmin);
+        var email = UniqueEmail();
 
-        var body = await CreateAsync(client, UniqueEmail());
-        var rawToken = TokenFrom(body.GetProperty("activationLink").GetString()!);
+        var body = await CreateAsync(client, email);
+        var message = await FindSentMessageToAsync(email);
+        var rawToken = TokenFrom(ExtractActivationLink(message));
 
         var stored = await FindTokenForAsync(body.GetProperty("id").GetGuid());
         Assert.NotEqual(rawToken, stored.TokenHash);
@@ -178,12 +185,27 @@ public class CreateUserEndpointTests : IAsyncLifetime
     public async Task TheLinkPointsAtTheConfiguredActivationPage()
     {
         var client = await AuthenticatedClientAsync(AcmeAdmin);
+        var email = UniqueEmail();
+
+        await CreateAsync(client, email);
+        var message = await FindSentMessageToAsync(email);
+
+        Assert.StartsWith("https://bookspace.test/activate?token=", ExtractActivationLink(message));
+    }
+
+    // Hardening pass, 2026-09-25 (finding 2). The regression this whole change
+    // exists to prevent: a TenantAdmin must never be able to read the raw
+    // credential and redeem it before the invitee does.
+    [Fact]
+    public async Task TheResponseNeverCarriesTheRawActivationLink()
+    {
+        var client = await AuthenticatedClientAsync(AcmeAdmin);
 
         var body = await CreateAsync(client, UniqueEmail());
 
-        Assert.StartsWith(
-            "https://bookspace.test/activate?token=",
-            body.GetProperty("activationLink").GetString());
+        Assert.False(body.TryGetProperty("activationLink", out _));
+        Assert.True(body.TryGetProperty("activationLinkExpiresAtUtc", out _));
+        Assert.True(body.TryGetProperty("invitationEmailSent", out _));
     }
 
     // ---- The invitation ----
@@ -206,12 +228,15 @@ public class CreateUserEndpointTests : IAsyncLifetime
         var client = await AuthenticatedClientAsync(AcmeAdmin);
         var email = UniqueEmail();
 
-        var body = await CreateAsync(client, email);
-        var link = body.GetProperty("activationLink").GetString()!;
+        await CreateAsync(client, email);
 
         var message = await FindSentMessageToAsync(email);
         Assert.Equal("You have been invited to BookSpace", message.Subject);
         Assert.Equal(email, Assert.IsType<MailboxAddress>(Assert.Single(message.To)).Address);
+
+        // Internal consistency: whatever link the text part carries, the HTML
+        // part carries the identical one.
+        var link = ExtractActivationLink(message);
         Assert.Contains(link, message.TextBody, StringComparison.Ordinal);
         Assert.Contains(link, message.HtmlBody, StringComparison.Ordinal);
     }
@@ -381,6 +406,18 @@ public class CreateUserEndpointTests : IAsyncLifetime
 
     private static string TokenFrom(string activationLink) =>
         System.Web.HttpUtility.ParseQueryString(new Uri(activationLink).Query)["token"]!;
+
+    // Hardening pass, 2026-09-25 (finding 2). The link now lives only in the
+    // sent message, never in a response body — this is the one place it can
+    // still be read from for a test that needs a real, usable token.
+    private static string ExtractActivationLink(MimeMessage message)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(
+            message.TextBody ?? string.Empty, @"https://\S+/activate\?token=\S+");
+        return match.Success
+            ? match.Value
+            : throw new InvalidOperationException("No activation link found in the message.");
+    }
 
     private async Task<HttpClient> AuthenticatedClientAsync(string email)
     {

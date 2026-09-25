@@ -95,6 +95,21 @@ public sealed class ActivateAccountCommandRequestHandler
             throw InvalidToken();
         }
 
+        // Hardening pass, 2026-09-25 (findings 2/3). An administrator resent
+        // the invitation while this token was still outstanding, so a newer one
+        // now exists and this one must not still work — the whole point of
+        // superseding is that only the latest link is live. Same answer as
+        // every other refusal here, for the same reason (§4.2's "no oracle").
+        if (token.IsSuperseded)
+        {
+            _logger.LogWarning(
+                "Activation failed: token {TokenId} for user {UserId} was superseded at {SupersededAtUtc}",
+                token.Id,
+                token.UserId,
+                token.SupersededAtUtc);
+            throw InvalidToken();
+        }
+
         var found = await _users.FindByIdAsync(token.UserId, cancellationToken);
 
         // FR-2.4. An invitation can outlive the decision to invite: the admin may

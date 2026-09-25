@@ -26,6 +26,7 @@ internal sealed class ActivationTokenConfiguration : IEntityTypeConfiguration<Ac
         builder.Property(t => t.IssuedAtUtc).IsRequired();
         builder.Property(t => t.ExpiresAtUtc).IsRequired();
         builder.Ignore(t => t.IsConsumed);
+        builder.Ignore(t => t.IsSuperseded);
 
         // Concurrency token, not a new column, and the same trick
         // RefreshTokens.RevokedAtUtc uses: EF appends "AND ConsumedAtUtc IS
@@ -36,6 +37,17 @@ internal sealed class ActivationTokenConfiguration : IEntityTypeConfiguration<Ac
         // what makes "single use" true under concurrency rather than only in
         // sequence. Model metadata only — no DDL.
         builder.Property(t => t.ConsumedAtUtc).IsConcurrencyToken();
+
+        // Hardening pass, 2026-09-25 (findings 2/3). Also a concurrency token,
+        // and deliberately paired with ConsumedAtUtc rather than standing
+        // alone: EF includes *every* concurrency-token property's original
+        // value in an UPDATE's WHERE clause regardless of which one actually
+        // changed, so an activation racing a reissue of the same token has the
+        // same "loser affects zero rows, surfaces as 409" outcome the two
+        // simultaneous activations case above already has — one consistent
+        // answer for "something about this token changed under you" rather
+        // than a second, differently-shaped race with no guard at all.
+        builder.Property(t => t.SupersededAtUtc).IsConcurrencyToken();
 
         // Cascade, like RefreshTokens: a token is meaningless without the user
         // it activates, and this is a single-path cascade (CLAUDE.md §5). In

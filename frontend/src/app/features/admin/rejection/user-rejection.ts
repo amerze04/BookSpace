@@ -1,6 +1,6 @@
 import { Rejection, RejectionCopy, RejectionDialect, describeRejection } from '../../../core/http/rejection';
 
-// Every way `POST /users` and the three user-detail writes can refuse, in an
+// Every way `POST /users` and the four user-detail writes can refuse, in an
 // administrator's vocabulary. The ninth dialect over `core/http/rejection.ts`'s
 // machinery — one binding its own field union, not a widening of
 // `ResourceFieldName`, which is the rule admin console phase 2 set when it made
@@ -16,7 +16,7 @@ import { Rejection, RejectionCopy, RejectionDialect, describeRejection } from '.
 // The codes, read off `UsersController` and its handlers/validators rather
 // than inferred:
 //   `POST /users`:            400 ValidationFailed · 409 EmailAlreadyInUse.
-//   deactivate / reactivate / replace roles:
+//   deactivate / reactivate / replace roles / reissue invitation:
 //                              400 ValidationFailed (roles) · 404 UserNotFound
 //                              · 422 LastTenantAdmin (deactivate and replace
 //                              roles only — reactivate can only grow the
@@ -24,7 +24,10 @@ import { Rejection, RejectionCopy, RejectionDialect, describeRejection } from '.
 //                              two near-identical maps kept in step would be
 //                              the more likely source of a wrong message than
 //                              one map with an unreachable entry, the same call
-//                              approval-rejection.ts makes for approve/reject).
+//                              approval-rejection.ts makes for approve/reject)
+//                              · 409 UserAlreadyActivated / 422 UserNotActive
+//                              (reissue only — hardening pass, 2026-09-25,
+//                              finding 3).
 //
 // `ResourceNotFound` is handled by the shared machinery and cannot arrive on
 // any of these endpoints, so `resourceNotFound` is always false here. It stays
@@ -114,7 +117,8 @@ export function describeUserRejection(error: unknown): UserRejection {
 }
 
 // ---------------------------------------------------------------------------
-// The user detail screen (phase 7): deactivate, reactivate, replace roles
+// The user detail screen (phase 7, extended in the 2026-09-25 hardening pass):
+// deactivate, reactivate, replace roles, and resend the invitation
 // ---------------------------------------------------------------------------
 
 const DETAIL_COPY: Record<string, RejectionCopy<UserFieldName>> = {
@@ -135,6 +139,21 @@ const DETAIL_COPY: Record<string, RejectionCopy<UserFieldName>> = {
     message:
       'This is the only active administrator your organization has left, so this change is '
       + 'refused. Give someone else the administrator role first, then try again.',
+  },
+
+  // Hardening pass, 2026-09-25 (finding 3). Reached only if this control is
+  // shown at a moment its own guard (`isActivated`) should have already hidden
+  // it — a race, not a first-line message, but still worth naming plainly
+  // rather than falling through to the generic one.
+  UserAlreadyActivated: {
+    message: 'This account has already been activated, so there is nothing to resend.',
+  },
+
+  // The fresh link would still refuse to redeem (FR-2.4), so the fix is named
+  // rather than just the refusal — the same shape LastTenantAdmin's copy uses.
+  UserNotActive: {
+    message: 'This account is deactivated, so a new invitation would not work yet. '
+      + 'Reactivate it first, then resend.',
   },
 };
 

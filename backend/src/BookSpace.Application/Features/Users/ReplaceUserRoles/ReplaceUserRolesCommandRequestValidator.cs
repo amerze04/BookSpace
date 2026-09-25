@@ -62,5 +62,21 @@ public sealed class ReplaceUserRolesCommandRequestValidator
         RuleFor(c => c.Roles)
             .Must(roles => roles is null || roles.Distinct().Count() == roles.Count)
             .WithMessage("Roles must not contain duplicates.");
+
+        // Hardening pass, 2026-09-25 (finding 6). Settles a model this codebase
+        // had left half-stated: TenantMember access comes from the orgId claim
+        // alone, not from holding Role.Member (the reason an empty set is
+        // refused above) — but nothing stopped a set like [Approver] or
+        // [TenantAdmin] from being *saved* without Member, leaving a row that
+        // undersells what the account can actually do. The answer is that
+        // every tenant user always carries Member; Approver and TenantAdmin are
+        // additional, independent grants on top of it. A 400 rather than a
+        // reason code, for the same reason as the SysAdmin rule above: the
+        // screen renders Member as a mandatory, non-removable checkbox, so no
+        // legitimate client can send a set missing it.
+        RuleFor(c => c.Roles)
+            .Must(roles => roles is null || roles.Contains(Role.Member))
+            .WithMessage("Roles must include Member — every tenant user keeps member access "
+                + "regardless of any other role, and the stored set should say so.");
     }
 }

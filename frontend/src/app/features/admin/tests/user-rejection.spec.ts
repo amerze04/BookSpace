@@ -148,6 +148,24 @@ describe('describeUserDetailRejection', () => {
     expect(rejection.fieldMessages).toEqual({});
   });
 
+  // Hardening pass, 2026-09-25 (finding 3).
+  it('says there is nothing to resend once an account has activated', () => {
+    const rejection = describeUserDetailRejection(
+      problem(409, { status: 409, title: 'Conflict', reasonCode: 'UserAlreadyActivated' }),
+    );
+
+    expect(rejection.formMessage).toContain('already been activated');
+  });
+
+  it('names reactivation as the fix for resending to a deactivated account', () => {
+    const rejection = describeUserDetailRejection(
+      problem(422, { status: 422, title: 'Rule', reasonCode: 'UserNotActive' }),
+    );
+
+    expect(rejection.formMessage).toContain('deactivated');
+    expect(rejection.formMessage?.toLowerCase()).toContain('reactivate');
+  });
+
   it('maps a roles validation failure onto the roles control', () => {
     const rejection = describeUserDetailRejection(
       problem(400, {
