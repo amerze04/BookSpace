@@ -1,4 +1,5 @@
 using BookSpace.Application.Features.Users.DeactivateUser;
+using BookSpace.Application.Features.Users.GetUserById;
 using BookSpace.Application.Features.Users.ReactivateUser;
 using BookSpace.Application.Features.Users.ReplaceUserRoles;
 using BookSpace.Domain.Enums;
@@ -32,6 +33,8 @@ public class UserWriteValidatorTests
             .Validate(new DeactivateUserCommandRequest(Guid.Empty)).IsValid);
         Assert.False(new ReactivateUserCommandRequestValidator()
             .Validate(new ReactivateUserCommandRequest(Guid.Empty)).IsValid);
+        Assert.False(new GetUserByIdQueryRequestValidator()
+            .Validate(new GetUserByIdQueryRequest(Guid.Empty)).IsValid);
     }
 
     [Fact]
@@ -41,6 +44,8 @@ public class UserWriteValidatorTests
             .Validate(new DeactivateUserCommandRequest(Guid.NewGuid())).IsValid);
         Assert.True(new ReactivateUserCommandRequestValidator()
             .Validate(new ReactivateUserCommandRequest(Guid.NewGuid())).IsValid);
+        Assert.True(new GetUserByIdQueryRequestValidator()
+            .Validate(new GetUserByIdQueryRequest(Guid.NewGuid())).IsValid);
     }
 
     // **Unlike the approver list next door, which takes an empty array as a real

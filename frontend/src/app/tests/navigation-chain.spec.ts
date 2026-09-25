@@ -488,6 +488,46 @@ describe('navigation chain (WP-7 Phase 7 step 1)', () => {
       flushUserDirectory();
     });
 
+    // User management phase 7. The directory's rows became real links in this
+    // phase — before it, following one was the assertion admin console phase 3
+    // made admin-user-list.component.spec.ts stop short of on purpose, the same
+    // way the approvers link waited for its own screen. This walks the whole
+    // loop, directory → person → directory, the same shape phase 7's own
+    // "walks back out of each editor" test uses for the per-resource editors.
+    function directoryUser(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'u1',
+        fullName: 'Member One',
+        email: 'member1@acme.test',
+        isActive: true,
+        roles: ['Member'],
+        ...overrides,
+      };
+    }
+
+    it('walks the directory into a person and back', async () => {
+      harness = await RouterTestingHarness.create('/admin/users');
+      flushUserDirectory([directoryUser()]);
+
+      const toPerson = await follow('.row-title-link');
+      expect(toPerson).toBe('/admin/users/u1');
+
+      httpMock.expectOne(`${API}/users/u1`).flush({
+        ...directoryUser(),
+        createdAtUtc: '2026-09-01T09:00:00Z',
+        updatedAtUtc: '2026-09-01T09:00:00Z',
+      });
+      expect(router.url).toBe('/admin/users/u1');
+      expect(dom().textContent).toContain('Member One');
+
+      // The screen's own way back — an anchor, not a button, for the same
+      // reason the per-resource editors' return legs had to become one.
+      const back = await follow('.inline-link');
+      expect(back).toBe('/admin/users');
+      flushUserDirectory([directoryUser()]);
+      expect(router.url).toBe('/admin/users');
+    });
+
     // **Regression, phase 3.** The admin routes were briefly declared as a
     // componentless `resources` group nested under `admin`. Angular's default
     // `paramsInheritanceStrategy` ('emptyOnly') copies a parent's `data` onto
@@ -611,6 +651,13 @@ describe('navigation chain (WP-7 Phase 7 step 1)', () => {
         '/admin/resources/r1/availability-windows',
         '/admin/resources/r1/approvers',
         '/admin/resources/r1/blackout-periods',
+        // User management phases 6 and 7 — the console's guard is on the
+        // parent route, so these two are bounced the same way rather than
+        // needing their own coverage, and this proves it rather than assuming
+        // it from the route tree.
+        '/admin/users',
+        '/admin/users/new',
+        '/admin/users/u1',
       ]) {
         await harness.navigateByUrl(url);
 

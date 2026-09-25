@@ -3,6 +3,7 @@ using BookSpace.Application.Abstractions;
 using BookSpace.Application.Common.Errors;
 using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.Users;
+using BookSpace.Application.Features.Users.GetUserById;
 using BookSpace.Application.Features.Users.ListUsers;
 using BookSpace.Domain.Entities;
 using BookSpace.Domain.Enums;
@@ -76,6 +77,27 @@ internal sealed class UserRepository : IUserRepository
     // skip the tenant query filter (CLAUDE.md §4.2).
     public Task<User?> FindForUpdateAsync(Guid userId, CancellationToken cancellationToken) =>
         _context.Users.FirstOrDefaultAsync(u => u.Id == userId, cancellationToken);
+
+    // GET /users/{id} — user management phase 7. AsNoTracking, the read
+    // counterpart to FindForUpdateAsync above: nothing here is ever saved.
+    // Same navigation-by-name reason as IsEligibleApprover for reading Roles.
+    public Task<GetUserByIdQueryResponse?> FindDetailAsync(
+        Guid userId,
+        CancellationToken cancellationToken) =>
+        _context.Users
+            .AsNoTracking()
+            .Where(u => u.Id == userId)
+            .Select(u => new GetUserByIdQueryResponse(
+                u.Id,
+                u.FullName,
+                u.Email,
+                u.IsActive,
+                EF.Property<ICollection<User.RoleAssignment>>(u, RoleAssignmentsNavigation)
+                    .Select(r => r.Role)
+                    .ToList(),
+                u.CreatedAtUtc,
+                u.UpdatedAtUtc))
+            .FirstOrDefaultAsync(cancellationToken);
 
     // The last-admin guard's locking read (docs/user-management-plan.md §3.3,
     // §4.5). Raw SQL because the hints are the entire point and LINQ cannot

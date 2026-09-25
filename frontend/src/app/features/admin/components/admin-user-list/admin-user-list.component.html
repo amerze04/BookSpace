@@ -49,11 +49,14 @@
         <li class="user-row" [class.user-row--inactive]="!user.isActive">
           <div class="row-main">
             <!--
-              Not a link. The user detail screen is phase 7; a row leading to a
-              route that does not exist would be worse than one that leads
-              nowhere yet.
+              A real link since phase 7 — the detail screen this row now leads
+              to. Admin console phase 3's approvers link is the reason it waited:
+              a row leading to a route that does not exist yet would be worse
+              than one that leads nowhere.
             -->
-            <h3 class="row-title">{{ user.fullName }}</h3>
+            <a class="row-title-link" [routerLink]="['/admin/users', user.id]">
+              <h3 class="row-title">{{ user.fullName }}</h3>
+            </a>
             <p class="row-email">{{ user.email }}</p>
           </div>
 

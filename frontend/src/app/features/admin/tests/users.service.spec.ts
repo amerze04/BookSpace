@@ -197,4 +197,69 @@ describe('UsersService', () => {
     firstValueFrom(service.create({ email: 'a@b.test', fullName: 'A' })).catch(() => undefined);
     expect(httpMock.expectOne(`${API}/users`).request.context.get(SKIP_ERROR_TOAST)).toBe(true);
   });
+
+  // ---- User management phase 7 ----
+
+  it('reads a single person by id', async () => {
+    const detail = {
+      id: 'u1',
+      fullName: 'Member One',
+      email: 'member1@acme.test',
+      isActive: true,
+      roles: ['Member'],
+      createdAtUtc: '2026-09-01T09:00:00Z',
+      updatedAtUtc: '2026-09-01T09:00:00Z',
+    };
+    const result = firstValueFrom(service.getById('u1'));
+
+    const req = httpMock.expectOne(`${API}/users/u1`);
+    expect(req.request.method).toBe('GET');
+    req.flush(detail);
+
+    expect(await result).toEqual(detail);
+  });
+
+  it('posts a deactivation with no body', () => {
+    firstValueFrom(service.deactivate('u1')).catch(() => undefined);
+
+    const req = httpMock.expectOne(`${API}/users/u1/deactivate`);
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toBeNull();
+
+    req.flush({});
+  });
+
+  it('posts a reactivation with no body', () => {
+    firstValueFrom(service.reactivate('u1')).catch(() => undefined);
+
+    const req = httpMock.expectOne(`${API}/users/u1/reactivate`);
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toBeNull();
+
+    req.flush({});
+  });
+
+  it('replaces the whole role set in one PUT', () => {
+    firstValueFrom(service.replaceRoles('u1', { roles: ['Approver', 'Member'] })).catch(() => undefined);
+
+    const req = httpMock.expectOne(`${API}/users/u1/roles`);
+    expect(req.request.method).toBe('PUT');
+    expect(req.request.body).toEqual({ roles: ['Approver', 'Member'] });
+
+    req.flush({});
+  });
+
+  it('skips the global error toast for all four detail-screen calls', () => {
+    firstValueFrom(service.getById('u1')).catch(() => undefined);
+    expect(httpMock.expectOne(`${API}/users/u1`).request.context.get(SKIP_ERROR_TOAST)).toBe(true);
+
+    firstValueFrom(service.deactivate('u1')).catch(() => undefined);
+    expect(httpMock.expectOne(`${API}/users/u1/deactivate`).request.context.get(SKIP_ERROR_TOAST)).toBe(true);
+
+    firstValueFrom(service.reactivate('u1')).catch(() => undefined);
+    expect(httpMock.expectOne(`${API}/users/u1/reactivate`).request.context.get(SKIP_ERROR_TOAST)).toBe(true);
+
+    firstValueFrom(service.replaceRoles('u1', { roles: ['Member'] })).catch(() => undefined);
+    expect(httpMock.expectOne(`${API}/users/u1/roles`).request.context.get(SKIP_ERROR_TOAST)).toBe(true);
+  });
 });

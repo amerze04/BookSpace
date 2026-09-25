@@ -24,8 +24,8 @@ console on 2026-09-22 and which held up across all seven of its phases.
 | 5 — Deactivate, reactivate, roles, and the last-admin guard | **Done 2026-09-24** |
 | 6 — Frontend: the user directory and the create form | **Done 2026-09-25** |
 | **6b — Frontend: the activation screen** | **Done 2026-09-25** |
-| 7 — Frontend: the user detail screen | Not started |
-| 8 — Wiring, click-through, close | Not started |
+| 7 — Frontend: the user detail screen | **Done 2026-09-25** |
+| 8 — Wiring, click-through, close | **Built 2026-09-25 — awaiting the owner's walk** |
 
 ---
 
@@ -829,6 +829,86 @@ both will otherwise be discovered as surprises.
 `LastTenantAdmin` needs rendering as a refusal an admin can *act* on — "give
 somebody else the administrator role first" — rather than as a wall.
 
+**Done 2026-09-25.** 1212 vitest tests (27 new), production build clean, plus a
+backend addition this phase's own planning missed and a stop-and-ask before
+writing it. What is true before touching this area:
+
+- **`GET /users/{id}` did not exist, and phase 7 could not be built without
+  it.** None of `List` (no id filter), `Create`, `Deactivate`, `Reactivate` or
+  `ReplaceRoles` (all three take an id but answer with the write's own result,
+  not a screen-shaped read) gave a direct link, a bookmark, or a reload
+  anything to load from — the same requirement every other detail screen in
+  the app (`GET /resources/{id}`, `GET /bookings/{id}`) already satisfies.
+  Flagged to the owner rather than routed around (three options: add the
+  endpoint, walk the paged directory client-side by id, or carry the row
+  through router state) — **the owner chose adding the endpoint**, for the
+  same reason this session's own memory already states: cross-screen state
+  belongs in the URL, not hidden client state, and a bookmark has to resolve.
+  `GetUserByIdQueryRequest` (`Features/Users/GetUserById/`) is the fourth query
+  feature on `UsersController`, follows `GetResourceQueryRequest`'s shape
+  exactly (404 covers both "no such user" and another tenant's real id, AC-4),
+  and adds one repository method, `IUserRepository.FindDetailAsync` —
+  `AsNoTracking`, the read counterpart to `FindForUpdateAsync`, which stayed
+  named for what it actually is (a write path's tracked fetch) once a real read
+  path existed beside it. No migration, no new reason code (`UserNotFound`
+  already existed, unused for a 404 read until now). 1315 unit + 637
+  integration tests (3 + 10 new) before the frontend work started.
+- **The initial load does not go through `user-rejection.ts`.** That dialect
+  describes a refused *write*; loading this screen is a read, and its 404 is
+  checked with a plain `error.status === 404`, mirroring
+  `BookingDetailComponent`'s own load rather than the shared `resourceNotFound`
+  machinery — which is wired to the literal code `ResourceNotFound` and cannot
+  fire for `UserNotFound`.
+- **`user-rejection.ts` gained a second dialect, not a wider first one.**
+  `describeUserDetailRejection` (deactivate/reactivate/replace roles) is a
+  separate `RejectionDialect` object from `describeUserRejection` (create),
+  matching `cancel-rejection.ts`'s own split between a booking cancel and a
+  series cancel: the two forms share `UserFieldName`, but "This account could
+  not be created" is actively wrong copy for a refused deactivation, so the
+  generic/unmapped/unknown-outcome strings could not be shared even though the
+  vocabulary is.
+- **`LastTenantAdmin` gets one message for both doors it can come through** —
+  deactivating the account and removing the TenantAdmin role — because the fix
+  is identical either way and the copy has to work regardless of which control
+  triggered it: "Give someone else the administrator role first, then try
+  again." Decision `0031`.
+- **Roles are replace-the-set**, exactly as `PUT /users/{id}/roles` and
+  `admin-plan.md` §4.1 required: a checkbox group over `ASSIGNABLE_ROLES`
+  (`TenantAdmin` / `Approver` / `Member` — `SysAdmin` is never offered, the
+  same privilege-escalation guard the validator itself is), saved in one PUT.
+  An empty selection is refused client-side rather than clamped — the save
+  button disables and the copy says to deactivate instead, echoing the
+  validator's own rule rather than merely deferring to it.
+- **Deactivate and reactivate are two separate, lightweight confirmations, not
+  one shared dialog.** Deactivating a colleague is the one an administrator can
+  get wrong in a way that matters, so its panel states both facts that would
+  otherwise be discovered as surprises: the access-token tail (§4.4 — up to 15
+  minutes, not a bug) and that their existing bookings are not touched (§4.7).
+  Reactivating is the reverse of a reversible state, so its panel is a plain
+  "are you sure" with no acknowledgement tick — the same distinction
+  `admin-resource-form.component.ts` draws between an irreversible archive (a
+  tick) and a reversible one (a plain confirm).
+- **The directory's rows are real links now.** `admin-user-list.component.html`
+  drops the "not a link yet" comment phase 6 left and points each row at
+  `/admin/users/:id`, the same `.row-title-link` pattern
+  `admin-resource-list.component.html` already used — admin console phase 3's
+  own reason for waiting (a route leading nowhere is worse than one that leads
+  nowhere yet) no longer applies once the screen exists.
+- **Proven through the automated suites, not a live click-through.**
+  `GetUserByIdEndpointTests` runs the real id / cross-tenant real id / unknown
+  id cases against a real SQL Server through the real pipeline — the
+  cross-tenant and unknown cases answer byte-identical 404 bodies once
+  `traceId`/`correlationId` are stripped, the same comparison
+  `CreateUserEndpointTests` already used — and 1315 unit + 637 integration
+  tests pass, alongside 1212 vitest tests and a clean production build. **No
+  browser was used**: nobody has clicked deactivate, reactivate, or a roles
+  save against the running frontend and the real dev database the way earlier
+  phases' "Verified live" sections record. Flagged as a verification gap
+  rather than skipped silently — the same honesty WP-7 Phase 1 recorded when
+  no browser-automation tool was available for its own walkthrough. Worth
+  closing before phase 8's click-through, which will exercise this screen
+  properly.
+
 ### Phase 8 — Wiring, click-through, close
 No new screens. Admin-path seams added to `app/tests/navigation-chain.spec.ts`
 following rendered `href`s, the systematic coverage sweep (**enumerate files,
@@ -838,6 +918,71 @@ audit found none), a click-through script, and the write-up.
 **The click-through has a path nothing else in this project has had**: a real
 email arriving, a real link followed, a password set, and a first sign-in. That
 is the one flow no test can stand in for.
+
+**Built 2026-09-25, and deliberately not marked Done — the click-through
+([`docs/user-management-clickthrough.md`](../docs/user-management-clickthrough.md))
+has not been walked by the owner yet, and this package follows the same rule
+`admin-clickthrough.md` and `wp7-clickthrough.md` established: a click-through
+being *written* is not the same claim as it being *walked*, and only the
+second one closes anything.** What is true now:
+
+- **`navigation-chain.spec.ts` gained two seams**: the directory's rows lead
+  into the detail screen and back (`.row-title-link` → `/admin/users/:id` →
+  `.inline-link` back to `/admin/users`), and the admin-only bounce test now
+  covers `/admin/users`, `/admin/users/new` and `/admin/users/:id` alongside
+  the resource routes it already had — the guard sits on the parent route, so
+  this is the proof rather than an assumption. 1215 vitest tests, production
+  build clean.
+- **The coverage sweep found one hole, not the two admin console phase 7's
+  found — but it is the same shape.** Enumerating `features/admin/` end to end
+  turned up nothing missing (`users.models.ts` has no spec, matching the
+  established exemption for a pure-types file — `resources.models.ts` has
+  none either). Enumerating `features/auth/` — the surface phase 2 and 6b
+  added — found `ActivationService` had no spec of its own.
+  `activate.component.spec.ts` already pinned its exact wire shape (method,
+  URL, body) through the component's own HTTP mock, but nothing anywhere
+  asserted that the call **opts out of the global error toast** — which matters
+  more here than on most calls in the app, since the activate screen exists
+  specifically to say no more than the server did, and a toast firing on top
+  of its own inline refusal would be exactly that leak. `password-policy.ts`
+  is exempt for the same reason `users.models.ts` is: pure constants, no logic.
+- **The whole account-creation → email → activation → first-sign-in chain was
+  proven once, live, against a running API and a real SQL Server, with
+  `curl`** — not a browser, so it does not replace path A, but it is the
+  reason path A's own steps are written as concrete facts rather than
+  predictions: a real `POST /users`, a real `.eml` written to
+  `backend/src/BookSpace.Api/sent-emails/` carrying the identical link,
+  `POST /auth/activate` (401 before, 204 to redeem, 200 to sign in after, 401
+  `InvalidActivationToken` on reuse), `GET /users/{id}` for both a real id and
+  an unknown one, the last-admin guard refusing both deactivation and role
+  removal on the tenant's sole administrator (**422 `LastTenantAdmin`**,
+  closing phase 7's own "no live verification yet" gap along the way), and the
+  validation refusals (empty role set, `SysAdmin`, a duplicate email, a
+  Member forbidden from `GET /users/{id}`). Left two accounts behind in the
+  dev tenant as a result — **Clickthrough Probe**, alongside phase 3's own
+  **Create Test** — both real, both harmless, both left in place because users
+  are never deleted (CLAUDE.md §4.5). The click-through script's own "before
+  you start" section says so rather than presenting a clean tenant that no
+  longer exists.
+- **The click-through script itself is the headline deliverable of this
+  phase.** Five paths: A is the chain nothing else has proven with a human —
+  invite, find the email on disk, follow the link, set a password, sign in for
+  the first time, then find the new person from the admin side; B is the
+  roles editor including the empty-set refusal; C is deactivate/reactivate,
+  carrying FR-2.4's tail and the bookings-not-touched fact into the
+  confirmation copy itself, the same discipline `admin-clickthrough.md`'s A6
+  used for archiving; D is the last-admin guard, walked both ways (refused,
+  then made possible by promoting a second admin first, then refused again on
+  the new sole admin); E is deliberate wrong turns — a role-gated screen typed
+  directly, a cross-tenant id, a reused or incomplete activation link, a
+  mid-edit refresh, and the one **known, not a bug** item: `Users` has no
+  `RowVersion` on the wire, so two admins editing one person's roles at once
+  silently last-write-wins, exactly as `admin-plan.md` §4.2 already accepted
+  for the resource editors.
+- **What phase 8 leaves for the owner, and only the owner**: walking paths A–E
+  in a real browser and reporting the result. That is what turns this from
+  "built" into "closed" — the same distinction this package's own plan has
+  drawn at every other phase boundary.
 
 ---
 

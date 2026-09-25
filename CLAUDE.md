@@ -1294,7 +1294,8 @@ console above and the hardening pass below, and deliberately not numbered as a
 WP: WP-8 has not been issued, and §12's rule is that this roadmap mirrors the
 packages the mentor sends rather than an invented build order.
 
-Eight phases plus an unplanned 6b; **1–6b are done (2026-09-23 to 09-25)**. Four questions were put to the owner and answered
+Eight phases plus an unplanned 6b; **1–7 are done, 8 is built and awaiting the
+owner's click-through walk (2026-09-23 to 09-25)**. Four questions were put to the owner and answered
 before the plan was written, because none was answerable from the PRD or §9.
 Read the plan before starting any phase; what follows is only what is needed to
 know the shape.
@@ -1625,6 +1626,82 @@ it. Fixed to `(submit)="$event.preventDefault(); submit()"`, matching
 `defaultPrevented`, and both were verified to fail against the old template.
 **The rule this breaks is already in the repo twice** (WP-7 Phase 3, WP-7 Phase
 6): for anything a person interacts with, drive the rendered DOM.
+
+**Phase 7 — the user detail screen — Done 2026-09-25.** `/admin/users/:id`.
+Roles, status, and the two confirmations (deactivate, reactivate). 1315 unit +
+637 integration + 1212 vitest tests, production build clean. What is true
+before touching this area:
+
+- **`GET /users/{id}` did not exist and the plan had not anticipated it.**
+  None of the four endpoints already on `UsersController` gave a direct link,
+  a bookmark, or a reload anything to load a single user from. Flagged to the
+  owner rather than picked silently (§11); **the owner chose adding the
+  endpoint** over walking the paged directory client-side or carrying the row
+  through router state — the same "state belongs in the URL" reasoning every
+  other detail screen in this app already follows.
+  `GetUserByIdQueryRequest`/`Handler`/`Response` (`Features/Users/GetUserById/`)
+  follows `GetResourceQueryRequest` exactly: 404 covers both "no such user" and
+  another tenant's real id (AC-4). One new repository method,
+  `IUserRepository.FindDetailAsync` — `AsNoTracking`, the read counterpart to
+  `FindForUpdateAsync`. No migration, no new reason code.
+- **`user-rejection.ts` gained a second, separate dialect** —
+  `describeUserDetailRejection` for deactivate/reactivate/replace-roles,
+  alongside the existing `describeUserRejection` for create — matching
+  `cancel-rejection.ts`'s split between a booking cancel and a series cancel.
+  The two share `UserFieldName`, but "This account could not be created" is
+  wrong copy for a refused deactivation, so the generic/unknown-outcome
+  strings could not be shared even though the field vocabulary is.
+- **`LastTenantAdmin` (decision `0031`) gets one message for both doors it can
+  come through** — deactivating the account and removing the TenantAdmin
+  role — naming the fix ("give someone else the administrator role first")
+  rather than only the refusal.
+- **Roles are replace-the-set**, a checkbox group over `ASSIGNABLE_ROLES`
+  (`TenantAdmin` / `Approver` / `Member` — `SysAdmin` is never offered) saved
+  in one `PUT`, per `admin-plan.md` §4.1. An empty selection is refused
+  client-side, not clamped, echoing the validator's own rule.
+- **Deactivate and reactivate are two separate confirmations with different
+  weight.** Deactivate's panel states the access-token tail (§4.4, up to 15
+  minutes) and that bookings are not cancelled (§4.7) — the two facts that
+  would otherwise be discovered as surprises. Reactivate's is a plain confirm
+  with no acknowledgement tick, the same reversible/irreversible distinction
+  `admin-resource-form.component.ts` draws for archive.
+- **The directory's rows are real links now** — `/admin/users/:id`, the same
+  `.row-title-link` pattern the admin resource list uses. Phase 6 left them
+  unlinked on purpose until this screen existed.
+- **No live click-through yet.** Everything above is proven by the automated
+  suites — including `GetUserByIdEndpointTests` against real SQL Server — but
+  nobody has driven this screen from a browser against the running API. Left
+  for phase 8's click-through rather than claimed here.
+
+**Phase 8 — wiring, click-through, close — Built 2026-09-25, deliberately not
+marked Done.** No new screens. 1315 unit + 637 integration + 1215 vitest tests,
+production build clean. Following `admin-clickthrough.md`'s and
+`wp7-clickthrough.md`'s own rule: writing a click-through is not walking one,
+and only the owner's walk closes a package. What is true now:
+
+- **`navigation-chain.spec.ts` gained the directory ↔ detail seam** —
+  `.row-title-link` into `/admin/users/:id` and `.inline-link` back — plus the
+  admin-only-console bounce test now covers all three user-management routes
+  alongside the resource ones.
+- **The coverage sweep (enumerate files, do not scan names) found one hole**:
+  `ActivationService` had no spec of its own. Its wire shape was already pinned
+  through `activate.component.spec.ts`'s HTTP mock, but nothing asserted it
+  opts out of the global error toast — which matters more here than most
+  calls, since the activate screen exists specifically to say no more than the
+  server did.
+- **The account-creation → email → activation → first-sign-in chain was
+  proven live, once, with `curl` against a real running API and SQL
+  Server** — not a browser, so it is not the click-through, but it is why
+  [`docs/user-management-clickthrough.md`](docs/user-management-clickthrough.md)'s
+  own steps are written as facts rather than predictions: a real `POST
+  /users`, the `.eml` it produced read off disk, `POST /auth/activate`
+  redeeming it, a first sign-in, and `LastTenantAdmin` refusing both
+  deactivation and role removal on the tenant's sole administrator — closing
+  phase 7's own "no live verification" gap along the way. Left two disposable
+  Member accounts in the dev tenant as a result (`Create Test` from phase 3,
+  `Clickthrough Probe` from this run) — noted in the script rather than hidden.
+- **What is left, and only the owner can do it**: walking the script's five
+  paths in a real browser and reporting the result.
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across

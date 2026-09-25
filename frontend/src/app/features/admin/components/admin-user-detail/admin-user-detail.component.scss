@@ -1,0 +1,268 @@
+// The admin resource form's vocabulary, reused rather than reinvented — the
+// screens are siblings in the same console and should not read as if they came
+// from different products (admin-plan.md §7).
+
+:host {
+  display: block;
+  max-width: 40rem;
+}
+
+.state-message {
+  margin: 0;
+  padding: 1.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 0.95rem;
+  text-align: center;
+
+  p {
+    margin: 0 0 0.75rem;
+  }
+}
+
+.state-message--error {
+  color: var(--color-error);
+}
+
+.retry-button {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 0.9rem;
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+  }
+}
+
+.detail-header {
+  margin-bottom: 1.25rem;
+}
+
+.detail-heading {
+  margin: 0 0 0.15rem;
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+
+.detail-email {
+  margin: 0 0 0.5rem;
+  color: var(--color-text-secondary);
+  font-size: 0.9rem;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.badge--active {
+  background: #e8f5ee;
+  color: var(--color-success);
+}
+
+.badge--inactive {
+  background: #ece7e9;
+  color: var(--color-text-secondary);
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  margin-bottom: 1.5rem;
+  padding: 1.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.panel-heading {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.panel-detail {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.role-checkboxes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.checkbox-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--color-text);
+  font-size: 0.9rem;
+  cursor: pointer;
+
+  input:disabled {
+    cursor: default;
+  }
+
+  input:disabled + span {
+    color: var(--color-text-secondary);
+  }
+}
+
+.field-warning {
+  margin: 0;
+  color: var(--color-warning);
+  font-size: 0.85rem;
+}
+
+.form-error,
+.form-success {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-md);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.form-error {
+  background: #fdeaea;
+  color: var(--color-error);
+}
+
+.form-success {
+  background: #e8f5ee;
+  color: var(--color-success);
+}
+
+.form-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.primary-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.55rem 1.1rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--color-primary);
+  color: #fff;
+  font-size: 0.9rem;
+  font-weight: 600;
+  font-family: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  align-self: flex-start;
+
+  &:not(:disabled):hover {
+    background: var(--color-primary-hover);
+  }
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+}
+
+.secondary-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.55rem 1.1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 0.9rem;
+  font-weight: 600;
+  font-family: inherit;
+  text-decoration: none;
+  cursor: pointer;
+
+  &:not(:disabled):hover {
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+  }
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+}
+
+.danger-zone {
+  margin-bottom: 1.5rem;
+  padding: 1.25rem 1.5rem;
+  border: 1px solid #f0c9c9;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.danger-heading {
+  margin: 0 0 0.5rem;
+  color: var(--color-error);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.danger-detail {
+  margin: 0 0 0.75rem;
+  color: var(--color-text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.danger-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 0.85rem;
+}
+
+.danger-button {
+  padding: 0.55rem 1.1rem;
+  border: 1px solid var(--color-error);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-error);
+  font-size: 0.9rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+
+  &:not(:disabled):hover {
+    background: var(--color-error);
+    color: #fff;
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+}
+
+.inline-link {
+  color: var(--color-primary);
+  font-weight: 600;
+}

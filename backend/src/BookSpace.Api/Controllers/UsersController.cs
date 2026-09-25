@@ -3,6 +3,7 @@ using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.Users;
 using BookSpace.Application.Features.Users.CreateUser;
 using BookSpace.Application.Features.Users.DeactivateUser;
+using BookSpace.Application.Features.Users.GetUserById;
 using BookSpace.Application.Features.Users.ListUsers;
 using BookSpace.Application.Features.Users.ReactivateUser;
 using BookSpace.Application.Features.Users.ReplaceUserRoles;
@@ -90,6 +91,26 @@ public sealed class UsersController : ControllerBase
                 request.Scope),
             cancellationToken);
 
+        return Ok(result);
+    }
+
+    // User management phase 7. None of the writes below (deactivate, reactivate,
+    // replace roles) returns a single user in a shape meant for a whole screen,
+    // and the directory (List, above) has no id filter — so the user detail
+    // screen had nothing to load from on a direct link, a bookmark, or a reload.
+    //
+    // 404 covers both "no such user" and "another tenant's real id" — the
+    // handler cannot tell them apart, and must not (AC-4). A deactivated user is
+    // still readable by id: only the directory's default *view* could hide one,
+    // and scope=All already does not.
+    [HttpGet("{id:guid}")]
+    [ProducesResponseType<GetUserByIdQueryResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetById(Guid id, CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(new GetUserByIdQueryRequest(id), cancellationToken);
         return Ok(result);
     }
 

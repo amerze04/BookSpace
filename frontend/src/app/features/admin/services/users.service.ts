@@ -10,6 +10,9 @@ import {
   DirectoryUser,
   EligibleUser,
   ListUsersParams,
+  ReplaceUserRolesRequest,
+  UserDetail,
+  UserWriteResult,
 } from '../models/users.models';
 
 // The only consumer of `GET /users`, which admin console phase 1 added for
@@ -61,6 +64,40 @@ export class UsersService {
   // here logs it, caches it, or hands it anywhere but the caller.
   create(request: CreateUserRequest): Observable<CreatedUser> {
     return this.http.post<CreatedUser>(`${environment.apiBaseUrl}/users`, request, {
+      context: skipErrorToast(),
+    });
+  }
+
+  // The user detail screen's load, phase 7. A deactivated user is still
+  // readable by id — only the directory's default *view* hides one, and this
+  // is not that.
+  getById(id: string): Observable<UserDetail> {
+    return this.http.get<UserDetail>(`${environment.apiBaseUrl}/users/${id}`, {
+      context: skipErrorToast(),
+    });
+  }
+
+  // FR-2.4. Idempotent on the server — deactivating an already-inactive user
+  // returns the current state and writes nothing — so this is safe to call
+  // without a client-side guard against a double click.
+  deactivate(id: string): Observable<UserWriteResult> {
+    return this.http.post<UserWriteResult>(`${environment.apiBaseUrl}/users/${id}/deactivate`, null, {
+      context: skipErrorToast(),
+    });
+  }
+
+  // The reverse, and also idempotent. Unlike archiving a resource, this state
+  // is meant to be reversed.
+  reactivate(id: string): Observable<UserWriteResult> {
+    return this.http.post<UserWriteResult>(`${environment.apiBaseUrl}/users/${id}/reactivate`, null, {
+      context: skipErrorToast(),
+    });
+  }
+
+  // FR-1.5. Replace-the-set, matching `ReplaceApprovers` — the whole role list,
+  // never a delta.
+  replaceRoles(id: string, request: ReplaceUserRolesRequest): Observable<UserWriteResult> {
+    return this.http.put<UserWriteResult>(`${environment.apiBaseUrl}/users/${id}/roles`, request, {
       context: skipErrorToast(),
     });
   }

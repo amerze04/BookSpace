@@ -243,16 +243,31 @@ export const routes: Routes = [
               ),
           },
           {
-            // **Before any `users/:id`**, whenever phase 7 adds one — the
-            // router matches in declaration order, and a parameterised route
-            // declared first would swallow `/admin/users/new` and try to load a
-            // user whose id is the string "new". The same trap
-            // `resources/new` documents.
+            // **Before `users/:id` below** — the router matches in declaration
+            // order, and a parameterised route declared first would swallow
+            // `/admin/users/new` and try to load a user whose id is the string
+            // "new". The same trap `resources/new` documents.
             path: 'users/new',
             data: { title: 'Invite someone' },
             loadComponent: () =>
               import('./features/admin/components/admin-user-form/admin-user-form.component').then(
                 (m) => m.AdminUserFormComponent,
+              ),
+          },
+          {
+            // User management phase 7. Reached from the directory's own rows,
+            // which link here for the first time — until now a row led nowhere
+            // (phase 6's deliberate placeholder boundary, matching how the
+            // approvers link waited for admin console phase 5).
+            //
+            // 'Person' is only the fallback crumb: the form replaces it with
+            // the loaded name once it has one, the same convention
+            // `resources/:id` uses for its own fallback of 'Resource'.
+            path: 'users/:id',
+            data: { title: 'Person' },
+            loadComponent: () =>
+              import('./features/admin/components/admin-user-detail/admin-user-detail.component').then(
+                (m) => m.AdminUserDetailComponent,
               ),
           },
           { path: '', pathMatch: 'full', redirectTo: 'resources' },

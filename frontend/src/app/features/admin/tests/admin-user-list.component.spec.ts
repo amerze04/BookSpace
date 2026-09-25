@@ -157,29 +157,26 @@ describe('AdminUserListComponent', () => {
     expect(rows[1].classList.contains('user-row--inactive')).toBe(true);
   });
 
-  // Phase 7 adds the detail screen. Until it exists a row must not link
-  // anywhere — the mistake admin console phase 3 avoided by leaving the
-  // approvers link out until the screen was there.
-  it('does not link a row anywhere yet', async () => {
+  // Phase 7 added the detail screen this now leads to. A real router here, not
+  // the stub the other tests use — RouterLink can only produce an `href` when
+  // it has one to ask, and the href is the whole assertion (the seam
+  // `navigation-chain.spec.ts` follows), matching how the admin resource
+  // list's own row link is tested.
+  it('links each row to its detail screen', async () => {
     TestBed.configureTestingModule({
       imports: [AdminUserListComponent],
-      providers: [
-        provideHttpClient(),
-        provideHttpClientTesting(),
-        { provide: Router, useValue: { navigate: vi.fn().mockResolvedValue(true) } },
-        { provide: ActivatedRoute, useValue: {} },
-      ],
+      providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
     });
     httpMock = TestBed.inject(HttpTestingController);
     const fixture = TestBed.createComponent(AdminUserListComponent);
     fixture.detectChanges();
 
-    httpMock.expectOne((r) => r.url === `${API}/users`).flush(page([user()]));
+    httpMock.expectOne((r) => r.url === `${API}/users`).flush(page([user({ id: 'u1' })]));
     await fixture.whenStable();
     fixture.detectChanges();
 
-    const row = fixture.nativeElement.querySelector('.user-row');
-    expect(row.querySelector('a')).toBeNull();
+    const link = fixture.nativeElement.querySelector('.user-row a');
+    expect(link.getAttribute('href')).toBe('/admin/users/u1');
   });
 
   // A real router here, not the stub the other tests use: RouterLink can only

@@ -1,4 +1,5 @@
 using BookSpace.Application.Common.Pagination;
+using BookSpace.Application.Features.Users.GetUserById;
 using BookSpace.Application.Features.Users.ListUsers;
 using BookSpace.Domain.Entities;
 
@@ -76,6 +77,15 @@ public interface IUserRepository
     // Approver reaches only the ones listing them. Notifying an Approver about a
     // resource they cannot act on would be worse than notifying nobody.
     Task<IReadOnlyCollection<Guid>> FindTenantAdminUserIdsAsync(CancellationToken cancellationToken);
+
+    // GET /users/{id} — user management phase 7, for the user detail screen.
+    // AsNoTracking, unlike FindForUpdateAsync below: this is a read with
+    // nothing to save, and the two names now say which is which — a write
+    // path takes the tracked one, a read path takes this one. Tenant-filtered
+    // like every other read here, so another tenant's real id returns null and
+    // leaves as UserNotFound, indistinguishable from an id that exists
+    // nowhere (AC-4).
+    Task<GetUserByIdQueryResponse?> FindDetailAsync(Guid userId, CancellationToken cancellationToken);
 
     // User management phase 3: POST /users.
     void Add(User user);

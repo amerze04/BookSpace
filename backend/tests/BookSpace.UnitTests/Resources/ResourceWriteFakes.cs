@@ -3,6 +3,7 @@ using BookSpace.Application.Common.Errors;
 using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.Resources.GetResource;
 using BookSpace.Application.Features.Resources.ListResources;
+using BookSpace.Application.Features.Users.GetUserById;
 using BookSpace.Application.Features.Users.ListUsers;
 using BookSpace.Domain.Availability;
 using BookSpace.Domain.Entities;
@@ -240,6 +241,26 @@ internal sealed class FakeUserRepository : IUserRepository
 
     public Task<User?> FindForUpdateAsync(Guid userId, CancellationToken cancellationToken) =>
         Task.FromResult(Users.FirstOrDefault(u => u.Id == userId));
+
+    // ---- User management phase 7: GET /users/{id} ----
+    //
+    // Projected from the same `Users` list FindForUpdateAsync reads, so a test
+    // that seeds one person's state sees it from both — the fake has no second
+    // notion of who exists.
+    public Task<GetUserByIdQueryResponse?> FindDetailAsync(Guid userId, CancellationToken cancellationToken)
+    {
+        var user = Users.FirstOrDefault(u => u.Id == userId);
+        return Task.FromResult(user is null
+            ? null
+            : new GetUserByIdQueryResponse(
+                user.Id,
+                user.FullName,
+                user.Email,
+                user.IsActive,
+                user.Roles.ToList(),
+                user.CreatedAtUtc,
+                user.UpdatedAtUtc));
+    }
 
     // The last-admin guard's locking read. Counted from `Users` rather than
     // returned from a fixed field, so a test sets up a tenant and the guard

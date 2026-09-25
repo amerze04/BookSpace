@@ -1,31 +1,54 @@
 import { Rejection, RejectionCopy, RejectionDialect, describeRejection } from '../../../core/http/rejection';
 
-// Every way `POST /users` can refuse, in an administrator's vocabulary. The
-// ninth dialect over `core/http/rejection.ts`'s machinery — a new one binding
-// its own field union, not a widening of `ResourceFieldName`, which is the rule
-// admin console phase 2 set when it made the machinery generic.
+// Every way `POST /users` and the three user-detail writes can refuse, in an
+// administrator's vocabulary. The ninth dialect over `core/http/rejection.ts`'s
+// machinery — one binding its own field union, not a widening of
+// `ResourceFieldName`, which is the rule admin console phase 2 set when it made
+// the machinery generic.
 //
-// The codes, read off `UsersController`, `CreateUserCommandRequestValidator`
-// and `UserRepository.SaveChangesAsync` rather than inferred:
-//   400 ValidationFailed · 409 EmailAlreadyInUse.
+// **Two dialect objects in this one file, not one**, matching
+// `cancel-rejection.ts`'s own split between a booking cancel and a series
+// cancel: creation and the detail-screen writes share `UserFieldName`, but
+// their generic/unmapped/unknown-outcome wording has to differ — "the account
+// could not be created" would be actively misleading on a screen that is
+// deactivating somebody, not making them.
 //
-// Deliberately absent: `UserNotFound` and `LastTenantAdmin` belong to the three
-// writes on the user detail screen (phase 7), which will extend this dialect
-// when it has controls for them. A code this form cannot receive would be as
-// wrong here as a missing one — the same reason `resource-rejection.ts` leaves
-// out the approvers and availability codes.
+// The codes, read off `UsersController` and its handlers/validators rather
+// than inferred:
+//   `POST /users`:            400 ValidationFailed · 409 EmailAlreadyInUse.
+//   deactivate / reactivate / replace roles:
+//                              400 ValidationFailed (roles) · 404 UserNotFound
+//                              · 422 LastTenantAdmin (deactivate and replace
+//                              roles only — reactivate can only grow the
+//                              active-admin set, but shares the dialect anyway:
+//                              two near-identical maps kept in step would be
+//                              the more likely source of a wrong message than
+//                              one map with an unreachable entry, the same call
+//                              approval-rejection.ts makes for approve/reject).
 //
 // `ResourceNotFound` is handled by the shared machinery and cannot arrive on
-// this endpoint, so `resourceNotFound` is always false here. It stays on the
-// shared shape for the reason `core/http/rejection.ts` gives; this screen
-// simply never reads it.
+// any of these endpoints, so `resourceNotFound` is always false here. It stays
+// on the shared shape for the reason `core/http/rejection.ts` gives; this
+// feature simply never reads it. `UserNotFound` is a **different** code and is
+// not special-cased the same way — it goes through the ordinary copy lookup
+// below, matching how `BlackoutPeriodNotFound` and `BookingNotFound` are
+// handled in their own dialects. The user detail screen's *initial* load uses
+// a plain `error.status === 404` check instead of this dialect at all, mirroring
+// `BookingDetailComponent`'s own load — a dialect describes a refused *write*,
+// and loading the screen is not one.
 
-// Keyed by this form's own control names.
-export type UserFieldName = 'email' | 'fullName';
+// Keyed by every control across both forms. `roles` is phase 7's: FluentValidation
+// reports `PUT /users/{id}/roles`' rule failures (empty set, duplicate,
+// non-enum) under the C# property `Roles`.
+export type UserFieldName = 'email' | 'fullName' | 'roles';
 
 export type UserRejection = Rejection<UserFieldName>;
 
-const USER_COPY: Record<string, RejectionCopy<UserFieldName>> = {
+// ---------------------------------------------------------------------------
+// POST /users — create and invite (phase 3)
+// ---------------------------------------------------------------------------
+
+const CREATE_COPY: Record<string, RejectionCopy<UserFieldName>> = {
   // **The one refusal an administrator will actually meet, and the one whose
   // wording is a security property rather than a matter of tone.**
   //
@@ -48,16 +71,17 @@ const USER_COPY: Record<string, RejectionCopy<UserFieldName>> = {
 
 // FluentValidation reports under the C# property name (`problem-details.ts`
 // records the PascalCase shape). One translation, here, rather than one at
-// every reader. Both properties of CreateUserRequest are mapped, because this
-// form renders a control for both.
-const USER_BACKEND_FIELDS: Record<string, UserFieldName> = {
+// every reader. Only the two `CreateUserRequest` properties are mapped —
+// `Roles` never arrives on this endpoint, so it is left for the detail
+// dialect below.
+const CREATE_BACKEND_FIELDS: Record<string, UserFieldName> = {
   Email: 'email',
   FullName: 'fullName',
 };
 
-const USER_DIALECT: RejectionDialect<UserFieldName> = {
-  copy: USER_COPY,
-  backendFields: USER_BACKEND_FIELDS,
+const CREATE_DIALECT: RejectionDialect<UserFieldName> = {
+  copy: CREATE_COPY,
+  backendFields: CREATE_BACKEND_FIELDS,
 
   unmappedField: {
     message: 'The account could not be created — one of the values sent was not valid.',
@@ -86,5 +110,60 @@ const USER_DIALECT: RejectionDialect<UserFieldName> = {
 };
 
 export function describeUserRejection(error: unknown): UserRejection {
-  return describeRejection(error, USER_DIALECT);
+  return describeRejection(error, CREATE_DIALECT);
+}
+
+// ---------------------------------------------------------------------------
+// The user detail screen (phase 7): deactivate, reactivate, replace roles
+// ---------------------------------------------------------------------------
+
+const DETAIL_COPY: Record<string, RejectionCopy<UserFieldName>> = {
+  // Mid-edit 404: this account left this administrator's reach between loading
+  // the screen and saving. Users are never deleted (CLAUDE.md §4.5), so in
+  // practice this means a stale link or the AC-4 answer for an id that was
+  // never this tenant's — either way there is nothing left here to save.
+  UserNotFound: {
+    message: 'This account could not be found. Go back to the directory and try again.',
+  },
+
+  // Decision `0031`. Covers both doors — deactivating the account and taking
+  // the TenantAdmin role off it — with one message rather than two, because
+  // the fix is the same either way and the wording has to work regardless of
+  // which control triggered it. **Rendered as something to act on, not a
+  // wall**: the way out is named, not just the refusal.
+  LastTenantAdmin: {
+    message:
+      'This is the only active administrator your organization has left, so this change is '
+      + 'refused. Give someone else the administrator role first, then try again.',
+  },
+};
+
+// `Roles` is the only body field any of these three endpoints can name —
+// deactivate and reactivate take no body at all.
+const DETAIL_BACKEND_FIELDS: Record<string, UserFieldName> = {
+  Roles: 'roles',
+};
+
+const DETAIL_DIALECT: RejectionDialect<UserFieldName> = {
+  copy: DETAIL_COPY,
+  backendFields: DETAIL_BACKEND_FIELDS,
+
+  unmappedField: {
+    message: "This change couldn't be saved — the request wasn't valid.",
+    recheckAvailability: false,
+  },
+
+  genericMessage: 'This change could not be saved.',
+
+  // Deactivate and reactivate are idempotent, and replacing the whole role set
+  // with the same set twice is harmless — but the dialect has no way to know
+  // which of the three actions produced an unknown outcome, so it gives the
+  // conservative answer rather than a wrong one: check first, then decide
+  // whether to repeat it.
+  unknownOutcomeMessage:
+    'We could not confirm whether that change was saved. Reload this person before trying again.',
+};
+
+export function describeUserDetailRejection(error: unknown): UserRejection {
+  return describeRejection(error, DETAIL_DIALECT);
 }

@@ -110,3 +110,53 @@ export interface CreatedUser {
   activationLinkExpiresAtUtc: string;
   invitationEmailSent: boolean;
 }
+
+// GET /users/{id} — user management phase 7, added for this screen: none of
+// `List`, `Deactivate`, `Reactivate` or `ReplaceRoles` returns a single user in
+// a shape meant to seed a whole screen, and the directory has no id filter — so
+// a direct link, a bookmark, or a reload had nothing to load from.
+//
+// Extends `DirectoryUser` rather than repeating its fields, the same relationship
+// `DirectoryUser` has to `EligibleUser`: this is what the directory's own row
+// would say about one person, plus the two timestamps a list has no room for.
+//
+// **Not eligibility-filtered at all** — unlike `EligibleUser`, this is not "can
+// this person approve something", it answers with whoever the id names,
+// Member or deactivated included. The picker and this screen ask different
+// questions of the same underlying account.
+export interface UserDetail extends DirectoryUser {
+  createdAtUtc: string;
+  updatedAtUtc: string;
+}
+
+// The 200 body shared by `POST /{id}/deactivate`, `POST /{id}/reactivate` and
+// `PUT /{id}/roles` — `DeactivateUserCommandResponse`,
+// `ReactivateUserCommandResponse` and `ReplaceUserRolesCommandResponse` are
+// three separate C# types (decision `0015`'s per-endpoint rule) but are
+// field-for-field identical, and the three calling components all do the same
+// thing with the result: reseed the screen from what was actually stored. One
+// wire type here mirrors that, without claiming the backend shares it too.
+export interface UserWriteResult {
+  id: string;
+  email: string;
+  fullName: string;
+  isActive: boolean;
+  roles: UserRole[];
+  updatedAtUtc: string;
+}
+
+// The body of `PUT /users/{id}/roles`. Replace-the-set, matching
+// `PUT /resources/{id}/approvers` — see `ReplaceUserRolesCommandRequest` for
+// why: an intermediate state produced by per-role add/remove would depend on
+// request order, and the last-admin guard needs a final set to ask its
+// question of.
+export interface ReplaceUserRolesRequest {
+  roles: UserRole[];
+}
+
+// Every role `PUT /users/{id}/roles` may be asked to assign. `SysAdmin` is
+// deliberately excluded — unlike `UserRole` above, which has to describe what
+// a row *can* hold (a bootstrap SysAdmin row exists), this describes what a
+// TenantAdmin's screen may *offer*, and the validator refuses SysAdmin outright
+// as a privilege-escalation guard, not a formatting rule.
+export const ASSIGNABLE_ROLES: readonly Exclude<UserRole, 'SysAdmin'>[] = ['TenantAdmin', 'Approver', 'Member'];

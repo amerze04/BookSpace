@@ -1,5 +1,5 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { describeUserRejection } from '../rejection/user-rejection';
+import { describeUserDetailRejection, describeUserRejection } from '../rejection/user-rejection';
 
 // The ninth dialect over `core/http/rejection.ts`. Its own spec because admin
 // console phase 7's coverage sweep found `approver-rejection.ts` was the one of
@@ -117,5 +117,77 @@ describe('describeUserRejection', () => {
 
     expect(rejection.resourceNotFound).toBe(false);
     expect(rejection.recheckAvailability).toBe(false);
+  });
+});
+
+// The user detail screen's own dialect (phase 7): deactivate, reactivate,
+// replace roles. A separate object from the create dialect above, matching
+// cancel-rejection.ts's split between a booking cancel and a series cancel —
+// the generic/unknown-outcome wording has to differ, or a refused deactivation
+// would read "This account could not be created."
+describe('describeUserDetailRejection', () => {
+  it('says the account left the administrator’s reach and where to go next', () => {
+    const rejection = describeUserDetailRejection(
+      problem(404, { status: 404, title: 'Not Found', reasonCode: 'UserNotFound' }),
+    );
+
+    expect(rejection.formMessage).toContain('could not be found');
+    expect(rejection.formMessage).toContain('directory');
+  });
+
+  // Decision `0031`. One message has to work for both doors — deactivating the
+  // account and removing the TenantAdmin role — so it is not pointed at a
+  // specific control, and it names the fix rather than only the refusal.
+  it('renders LastTenantAdmin as something to act on, not a wall', () => {
+    const rejection = describeUserDetailRejection(
+      problem(422, { status: 422, title: 'Rule', reasonCode: 'LastTenantAdmin' }),
+    );
+
+    expect(rejection.formMessage).toContain('only active administrator');
+    expect(rejection.formMessage?.toLowerCase()).toContain('give someone else');
+    expect(rejection.fieldMessages).toEqual({});
+  });
+
+  it('maps a roles validation failure onto the roles control', () => {
+    const rejection = describeUserDetailRejection(
+      problem(400, {
+        status: 400,
+        title: 'Validation',
+        reasonCode: 'ValidationFailed',
+        errors: { Roles: ['Roles must contain only: TenantAdmin, Approver, Member.'] },
+      }),
+    );
+
+    expect(rejection.fieldMessages.roles).toContain('Roles must contain only');
+    expect(rejection.formMessage).toBeNull();
+  });
+
+  it('says plainly that it does not recognize a refusal, in this screen’s own words', () => {
+    const rejection = describeUserDetailRejection(
+      problem(422, { status: 422, title: 'Rule', reasonCode: 'SomeRuleThisClientHasNeverHeardOf' }),
+    );
+
+    expect(rejection.formMessage).toBe('This change could not be saved.');
+  });
+
+  // Unlike creation, none of the three writes on this screen is dangerous to
+  // repeat — but the dialect cannot tell which one produced an unknown
+  // outcome, so it gives the conservative answer rather than a wrong one.
+  it.each([
+    ['a request that reached no server', 0],
+    ['a server that could not report what happened', 500],
+  ])('reports an unknown outcome for %s and says to reload first', (_label, status) => {
+    const rejection = describeUserDetailRejection(problem(status, null));
+
+    expect(rejection.outcomeUnknown).toBe(true);
+    expect(rejection.formMessage).toContain('Reload this person');
+  });
+
+  it('never reports a missing resource, because these endpoints answer UserNotFound instead', () => {
+    const rejection = describeUserDetailRejection(
+      problem(422, { status: 422, title: 'Rule', reasonCode: 'LastTenantAdmin' }),
+    );
+
+    expect(rejection.resourceNotFound).toBe(false);
   });
 });
