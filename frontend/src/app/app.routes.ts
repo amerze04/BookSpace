@@ -8,6 +8,25 @@ export const routes: Routes = [
     loadComponent: () => import('./features/auth/components/login/login.component').then((m) => m.LoginComponent),
   },
   {
+    // Where an emailed invitation lands (user management, the activation phase
+    // — inserted between 6 and 7 after the owner found the link resolving to
+    // /login; see the component for how the plan came to miss it).
+    //
+    // A sibling of `login`, outside the shell: the recipient has no account
+    // yet, so `authGuard` would bounce them to the very screen they cannot use.
+    //
+    // **Deliberately no `guestOnlyGuard`**, unlike `login`. Somebody already
+    // signed in on a shared machine must still be able to redeem their own
+    // link, and the backend supports exactly that — the auth interceptor
+    // attaches their bearer token and `POST /auth/activate` handles the
+    // mismatched tenant rather than failing (user management phase 2 built and
+    // tested that case). Bouncing them to the calendar would be this client
+    // refusing something the server allows.
+    path: 'activate',
+    loadComponent: () =>
+      import('./features/auth/components/activate/activate.component').then((m) => m.ActivateComponent),
+  },
+  {
     path: '',
     // Both are needed: canActivate guards entry into the shell itself, but
     // once the shell is active, navigating between its already-loaded
@@ -208,6 +227,32 @@ export const routes: Routes = [
             loadComponent: () =>
               import('./features/admin/components/admin-blackouts/admin-blackouts.component').then(
                 (m) => m.AdminBlackoutsComponent,
+              ),
+          },
+          {
+            // User management phase 6. A sibling of `resources`, not a child of
+            // it: `GET /users` and `POST /users` are top-level routes, unlike
+            // the windows/approvers/blackout screens above, which are all
+            // sub-resources of a resource and can only be reached with one in
+            // hand.
+            path: 'users',
+            data: { title: 'Users' },
+            loadComponent: () =>
+              import('./features/admin/components/admin-user-list/admin-user-list.component').then(
+                (m) => m.AdminUserListComponent,
+              ),
+          },
+          {
+            // **Before any `users/:id`**, whenever phase 7 adds one — the
+            // router matches in declaration order, and a parameterised route
+            // declared first would swallow `/admin/users/new` and try to load a
+            // user whose id is the string "new". The same trap
+            // `resources/new` documents.
+            path: 'users/new',
+            data: { title: 'Invite someone' },
+            loadComponent: () =>
+              import('./features/admin/components/admin-user-form/admin-user-form.component').then(
+                (m) => m.AdminUserFormComponent,
               ),
           },
           { path: '', pathMatch: 'full', redirectTo: 'resources' },

@@ -1,0 +1,121 @@
+<div class="admin-user-form">
+  @if (created(); as result) {
+    <!--
+      The outcome replaces the form rather than sitting under it: a still-live
+      submit button next to a credential is how a second account gets created.
+    -->
+    <section class="outcome" [class.outcome--warning]="!result.invitationEmailSent">
+      @if (result.invitationEmailSent) {
+        <h2 class="outcome-title">Invitation sent</h2>
+        <p class="outcome-lead">
+          We emailed <strong>{{ result.email }}</strong> a link to set their password.
+        </p>
+      } @else {
+        <!--
+          The account exists either way — plan §4.3. What changed is who has to
+          deliver the link, and the copy says that plainly instead of reading
+          like a failure the administrator should retry.
+        -->
+        <h2 class="outcome-title">Account created — but the email didn't send</h2>
+        <p class="outcome-lead">
+          <strong>{{ result.fullName }}</strong> has an account, but we couldn't email them. Send them
+          the link below yourself.
+        </p>
+      }
+
+      <div class="link-block">
+        <label class="link-label" for="activation-link">Activation link</label>
+
+        <div class="link-row">
+          <!--
+            Readonly rather than plain text so it can be selected, tabbed to and
+            read by a screen reader as a value — the fallback that matters when
+            the clipboard API is unavailable.
+          -->
+          <input id="activation-link" class="link-input" type="text" readonly [value]="result.activationLink" />
+          <button type="button" class="copy-button" (click)="copyLink()">
+            {{ linkCopied() ? 'Copied' : 'Copy' }}
+          </button>
+        </div>
+
+        <p class="link-note">
+          <strong>This link is shown once.</strong> It isn't stored anywhere and won't be shown again —
+          copy it now if you need it. It can be used once, and stops working after
+          {{ result.activationLinkExpiresAtUtc | date: 'medium' }}.
+        </p>
+      </div>
+
+      <div class="outcome-actions">
+        <button type="button" class="secondary-button" (click)="inviteAnother()">Invite someone else</button>
+        <a class="secondary-button" routerLink="/admin/users">Back to users</a>
+      </div>
+    </section>
+  } @else {
+    <!--
+      `(submit)` with an explicit preventDefault, not `(ngSubmit)` — matching
+      admin-resource-form. `ngSubmit` is an output of Angular's NgForm
+      directive, which only attaches when FormsModule or ReactiveFormsModule is
+      imported; this component imports neither, so `(ngSubmit)` binds to a DOM
+      event that does not exist, never fires, and lets the browser submit the
+      form natively. The page then reloads and the form appears to reset with
+      nothing else happening — which is exactly what it did.
+    -->
+    <form class="form" (submit)="$event.preventDefault(); submit()">
+      <p class="intro">
+        We'll email them a link to choose a password. They join as a member — you can change that once
+        they're in the list.
+      </p>
+
+      @if (formMessage(); as message) {
+        <div class="form-message" [class.form-message--unknown]="outcomeUnknown()" role="alert">
+          {{ message }}
+        </div>
+      }
+
+      <div class="field">
+        <label for="full-name">Full name</label>
+        <input
+          id="full-name"
+          type="text"
+          autocomplete="off"
+          [attr.maxlength]="fullNameMaxLength"
+          [value]="fullName()"
+          [disabled]="submitting()"
+          [attr.aria-invalid]="fullNameError() ? 'true' : null"
+          [attr.aria-describedby]="fullNameError() ? 'full-name-error' : null"
+          (input)="onFullNameInput($event)"
+        />
+        @if (fullNameError(); as error) {
+          <p id="full-name-error" class="field-error">{{ error }}</p>
+        }
+      </div>
+
+      <div class="field">
+        <label for="email">Email address</label>
+        <input
+          id="email"
+          type="email"
+          autocomplete="off"
+          [attr.maxlength]="emailMaxLength"
+          [value]="email()"
+          [disabled]="submitting()"
+          [attr.aria-invalid]="emailError() ? 'true' : null"
+          [attr.aria-describedby]="emailError() ? 'email-error' : null"
+          (input)="onEmailInput($event)"
+        />
+        @if (emailError(); as error) {
+          <p id="email-error" class="field-error">{{ error }}</p>
+        } @else {
+          <p class="field-hint">This is also how they'll sign in.</p>
+        }
+      </div>
+
+      <div class="form-actions">
+        <button type="submit" class="primary-button" [disabled]="!canSubmit()">
+          {{ submitting() ? 'Sending invitation…' : 'Send invitation' }}
+        </button>
+        <a class="secondary-button" routerLink="/admin/users">Cancel</a>
+      </div>
+    </form>
+  }
+</div>

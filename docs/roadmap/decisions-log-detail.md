@@ -318,5 +318,23 @@ feature, the reasoning matters as much as the answer.
     The translation checks the index *name* as well as the SQL error number,
     since `Users` carries two other unique indexes.
 
+31. [`0031`](../decisions/0031-last-tenant-admin-guard.md) — a tenant must always
+    keep at least one active `TenantAdmin`, refused as `LastTenantAdmin` (422).
+    Worth enforcing because a tenant with none is **unrecoverable through this
+    API**: every endpoint that could grant the role back is TenantAdmin-only,
+    FR-1.3's platform-operator surface has no controller, and decision `0028`
+    routes approval requests on an approverless gated resource to the tenant's
+    admins — so such a tenant would create Pending bookings notifying nobody.
+    The guard covers **both doors** (deactivate, and role removal) and
+    deliberately neither reactivation nor a role edit that keeps the role, since
+    the set can only shrink one way. **Checked under `UPDLOCK, HOLDLOCK` on both
+    `dbo.Users` and `dbo.UserRoles`, inside the write's own
+    `IUnitOfWork.ExecuteAsync`** — it is a read-check-write across two rows, so
+    two admins removing each other concurrently would otherwise both read "there
+    are two". An admin may still step down while another remains: the rule
+    protects the tenant, not a person. It also cost a test that was lying — the
+    HTTP-level concurrency test passed with the hints removed, so a deterministic
+    one that forces the interleaving was added beside it.
+
 If a task needs a decision that isn't listed above and isn't in this log,
 **stop and ask** rather than picking silently.

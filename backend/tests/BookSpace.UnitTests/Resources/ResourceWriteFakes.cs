@@ -231,6 +231,33 @@ internal sealed class FakeUserRepository : IUserRepository
 
     public void Add(User user) => Added.Add(user);
 
+    // ---- User management phase 5: the three writes ----
+
+    // The tracked user a write handler mutates. Stated as a list rather than
+    // looked up by construction argument, so a test says exactly which people
+    // this tenant has.
+    public List<User> Users { get; } = [];
+
+    public Task<User?> FindForUpdateAsync(Guid userId, CancellationToken cancellationToken) =>
+        Task.FromResult(Users.FirstOrDefault(u => u.Id == userId));
+
+    // The last-admin guard's locking read. Counted from `Users` rather than
+    // returned from a fixed field, so a test sets up a tenant and the guard
+    // answers the same question the real repository would — the *lock* is the
+    // part only the integration suite can prove, and it does
+    // (UserWriteEndpointTests' concurrent-removal test).
+    public int LastAdminCountQueries { get; private set; }
+
+    public Task<int> CountOtherActiveTenantAdminsAsync(
+        Guid excludingUserId,
+        CancellationToken cancellationToken)
+    {
+        LastAdminCountQueries++;
+
+        return Task.FromResult(Users.Count(u =>
+            u.Id != excludingUserId && u.IsActive && u.Roles.Contains(Role.TenantAdmin)));
+    }
+
     public Task SaveChangesAsync(CancellationToken cancellationToken)
     {
         if (NextSaveHitsDuplicateEmail)

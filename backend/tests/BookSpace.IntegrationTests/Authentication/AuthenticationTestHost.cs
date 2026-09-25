@@ -19,7 +19,12 @@ namespace BookSpace.IntegrationTests.Authentication;
 public sealed class AuthenticationTestHost : WebApplicationFactory<Program>, IAsyncLifetime
 {
     private static readonly string ConnectionString =
-        IntegrationTestSettings.ConnectionStringFor("BookSpace_AuthTests");
+        IntegrationTestSettings.ConnectionStringFor(DatabaseName);
+
+    // Exposed so a test that has to build its own DbContext outside the DI
+    // container — UserLastAdminGuardConcurrencyTests, which needs a fixed tenant
+    // and the real RLS interceptor — points at this same throwaway database.
+    internal const string DatabaseName = "BookSpace_AuthTests";
 
     // Supplied here rather than committed to appsettings (CLAUDE.md §4.4). Long
     // enough to satisfy the 32-character JwtOptions guard.

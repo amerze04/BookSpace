@@ -160,4 +160,51 @@ describe('LoginComponent (item 15: field error accessibility)', () => {
     expect(email.getAttribute('aria-invalid')).toBeNull();
     expect(email.getAttribute('aria-describedby')).toBeNull();
   });
+
+  // ---- The activation hand-off ----
+  //
+  // `POST /auth/activate` returns 204, not a session, so the activation screen
+  // sends people here rather than signing them in. Without a banner they land
+  // on a bare login form with no sign that anything worked, and the natural
+  // reading is that it did not.
+
+  function createWithQueryParams(params: Record<string, string>) {
+    TestBed.configureTestingModule({
+      imports: [LoginComponent],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: Router, useValue: { navigateByUrl: vi.fn().mockResolvedValue(true) } },
+        { provide: ActivatedRoute, useValue: { snapshot: { queryParamMap: convertToParamMap(params) } } },
+      ],
+    });
+
+    httpMock = TestBed.inject(HttpTestingController);
+    return TestBed.createComponent(LoginComponent);
+  }
+
+  it('confirms a just-set password when arriving from the activation screen', () => {
+    const fixture = createWithQueryParams({ activated: '1' });
+    fixture.detectChanges();
+
+    const banner = fixture.nativeElement.querySelector('.success-message');
+    expect(banner?.textContent).toContain('password is set');
+  });
+
+  it('shows no banner on an ordinary visit', () => {
+    const fixture = createFixture();
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.querySelector('.success-message')).toBeNull();
+  });
+
+  // Carried in the query string rather than router state so it survives a
+  // refresh — but only the value the activation screen actually sends counts,
+  // so a stray `?activated=yes` in a pasted URL shows nothing.
+  it('ignores an activated flag that is not the one the activation screen sends', () => {
+    const fixture = createWithQueryParams({ activated: 'yes' });
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.querySelector('.success-message')).toBeNull();
+  });
 });

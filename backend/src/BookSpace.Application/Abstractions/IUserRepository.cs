@@ -80,6 +80,27 @@ public interface IUserRepository
     // User management phase 3: POST /users.
     void Add(User user);
 
+    // User management phase 5: the tracked user a write path mutates.
+    // Tenant-filtered like every other read here, so another tenant's real id
+    // comes back null and leaves as UserNotFound (AC-4).
+    Task<User?> FindForUpdateAsync(Guid userId, CancellationToken cancellationToken);
+
+    // How many *other* users in this tenant are active TenantAdmins — the
+    // last-admin guard's question (docs/user-management-plan.md §3.3).
+    //
+    // **Takes a lock, and must be called inside IUnitOfWork.ExecuteAsync.** The
+    // guard is a read-check-write across two rows, so without one it is a real
+    // race rather than a theoretical one: two admins each removing the other's
+    // TenantAdmin role at the same moment both read "there are two", both pass,
+    // and the tenant ends with none — which no API in this system can then
+    // repair (see LastTenantAdminException). CLAUDE.md §6's table puts a "must
+    // never" in tiers 1–3, and tier 2 is the locking protocol.
+    //
+    // "Other" excludes the user being written, so the caller asks a question
+    // whose answer does not depend on whether its own change has been applied
+    // yet — zero means this write would empty the set.
+    Task<int> CountOtherActiveTenantAdminsAsync(Guid excludingUserId, CancellationToken cancellationToken);
+
     // Persists everything tracked on this unit of work — the new user, its role
     // assignment, and the activation token added alongside it through
     // IActivationTokenRepository, which shares the same DbContext. One save, so

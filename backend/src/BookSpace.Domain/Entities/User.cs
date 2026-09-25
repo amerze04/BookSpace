@@ -107,6 +107,37 @@ public class User : IAuditable, ITenantOwned
             Touch(actorUserId, nowUtc);
     }
 
+    // User management phase 5: PUT /users/{id}/roles, replace-the-set.
+    //
+    // Set semantics, like Resource.ReplaceApprovers — a repeated value changes
+    // nothing, and the validator rejects duplicates anyway rather than letting
+    // the response quietly contain fewer entries than the request.
+    //
+    // Touches only when the set actually changed, so a client re-sending what is
+    // already stored does not move UpdatedAtUtc. "Last changed" should not come
+    // to mean "last asked about".
+    public void ReplaceRoles(IEnumerable<Role> roles, Guid actorUserId, DateTime nowUtc)
+    {
+        ArgumentNullException.ThrowIfNull(roles);
+
+        var desired = roles.Distinct().ToList();
+        var current = _roleAssignments.Select(r => r.Role).ToList();
+
+        if (desired.Count == current.Count && desired.All(current.Contains))
+        {
+            return;
+        }
+
+        _roleAssignments.RemoveAll(r => !desired.Contains(r.Role));
+
+        foreach (var role in desired.Where(role => !current.Contains(role)))
+        {
+            _roleAssignments.Add(new RoleAssignment(role));
+        }
+
+        Touch(actorUserId, nowUtc);
+    }
+
     public void Deactivate(Guid actorUserId, DateTime nowUtc)
     {
         IsActive = false;

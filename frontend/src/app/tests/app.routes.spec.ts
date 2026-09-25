@@ -184,6 +184,31 @@ describe('shell route guarding (canActivateChild)', () => {
     flushCalendarWindow();
   });
 
+  // **Regression, found by the owner pasting an invitation link on
+  // 2026-09-25.** There was no `/activate` route, so the catch-all
+  // `{ path: '**', redirectTo: 'login' }` swallowed it and the recipient landed
+  // on the login form with their token stranded in the query string. The screen
+  // was missing from the plan entirely — see the component.
+  it('resolves an activation link instead of falling through to login', async () => {
+    const harness = await RouterTestingHarness.create('/activate?token=tok-123');
+
+    expect(router.url).toBe('/activate?token=tok-123');
+    expect(harness.routeDebugElement?.nativeElement.querySelector('form')).not.toBeNull();
+  });
+
+  // No `guestOnlyGuard`, unlike /login. Somebody already signed in on a shared
+  // machine must still be able to redeem their own link, and the backend
+  // supports exactly that — bouncing them here would be the client refusing
+  // something the server allows.
+  it('lets an already-signed-in visitor reach an activation link', async () => {
+    seedSession();
+    const harness = await RouterTestingHarness.create('/settings');
+
+    await harness.navigateByUrl('/activate?token=tok-123');
+
+    expect(router.url).toBe('/activate?token=tok-123');
+  });
+
   it('lets a TenantAdmin into /admin/resources', async () => {
     seedSession(undefined, 'TenantAdmin');
     const harness = await RouterTestingHarness.create('/settings');

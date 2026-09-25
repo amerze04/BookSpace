@@ -181,6 +181,29 @@ public static class ReasonCodes
     // the code that raises it never learns which tenant the other account is in.
     public const string EmailAlreadyInUse = "EmailAlreadyInUse";
 
+    // ErrorKind.NotFound (user management phase 5). No such user visible to this
+    // caller — the id exists nowhere, or it belongs to another tenant, which
+    // after CLAUDE.md §4.2's filters is the same answer from here and must stay
+    // that way (AC-4). Same reasoning as ResourceNotFound and BookingNotFound.
+    public const string UserNotFound = "UserNotFound";
+
+    // ErrorKind.RuleViolation (user management phase 5). The write would leave
+    // the tenant with no active TenantAdmin — by deactivating the last one, or
+    // by taking the role off them.
+    //
+    // Not politeness: a tenant with zero administrators cannot be managed
+    // through any API in this system, there is no SysAdmin rescue path (FR-1.3
+    // has no controller either), and decision `0028` routes approval requests on
+    // a gated resource with no approvers to `FindTenantAdminUserIdsAsync` — so
+    // such a tenant would create Pending bookings notifying nobody. Recovery
+    // would be a database edit.
+    //
+    // Checked under a lock, in the same transaction as the write: it is a
+    // read-check-write across two rows, so two admins removing each other
+    // concurrently would otherwise both read "there are two" and both pass. §6's
+    // own table puts a "must never" in tiers 1–3, and this is tier 2.
+    public const string LastTenantAdmin = "LastTenantAdmin";
+
     // ---- Approvals (WP-5 Phase 3, FR-7.1-7.5, AC-5) ----
 
     // ErrorKind.RuleViolation. Approve or reject called on a booking that is

@@ -225,16 +225,28 @@ describe('ShellComponent primary nav', () => {
   // role (decision 0018: the set that may be assigned as an approver and the
   // set that may approve have to be the same one), and isTenantAdmin is what
   // adds the console.
-  it('gives a TenantAdmin both Approvals and Admin, in that order', () => {
+  // 'Users' joined the list in user management phase 6 — the second admin entry
+  // point, and the only administration screen that is not a sub-resource of
+  // /resources/{id}. It sits after Admin so the two group together.
+  it('gives a TenantAdmin Approvals and both admin entries, in that order', () => {
     seedSession('TenantAdmin');
 
-    expect(labels()).toEqual(['Calendar', 'Resources', 'Approvals', 'Admin']);
+    expect(labels()).toEqual(['Calendar', 'Resources', 'Approvals', 'Admin', 'Users']);
   });
 
   it('handles a multi-role claim arriving as an array', () => {
     seedSession(['Approver', 'TenantAdmin']);
 
-    expect(labels()).toEqual(['Calendar', 'Resources', 'Approvals', 'Admin']);
+    expect(labels()).toEqual(['Calendar', 'Resources', 'Approvals', 'Admin', 'Users']);
+  });
+
+  // Same rule as Admin, and worth its own assertion: the directory is
+  // TenantAdmin-only end to end, so offering it to an Approver would be a link
+  // to a screen whose every request answers 403.
+  it('never offers Users to a plain Approver', () => {
+    seedSession('Approver');
+
+    expect(labels()).not.toContain('Users');
   });
 
   // The same rule adminGuard applies, at the other end: a SysAdmin has no

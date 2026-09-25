@@ -1,0 +1,90 @@
+<div class="admin-user-list">
+  <div class="list-header">
+    <p class="intro">
+      Everyone in your organization, including people who have been deactivated.
+    </p>
+
+    <a class="primary-action" routerLink="/admin/users/new">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+      </svg>
+      Invite someone
+    </a>
+  </div>
+
+  <div class="filter-bar">
+    <input
+      type="search"
+      class="search-input"
+      placeholder="Search by name or email…"
+      aria-label="Search users by name or email"
+      [value]="searchText()"
+      (input)="onSearchInput($event)"
+    />
+  </div>
+
+  @if (loading()) {
+    <p class="state-message">Loading users…</p>
+  } @else if (loadError()) {
+    <div class="state-message state-message--error">
+      <p>Couldn't load users.</p>
+      <button type="button" class="retry-button" (click)="retry()">Try again</button>
+    </div>
+  } @else if (items().length === 0) {
+    <div class="state-message">
+      @if (searchText().trim()) {
+        <p>Nobody matches “{{ searchText().trim() }}”.</p>
+      } @else {
+        <!--
+          Unreachable in practice — the administrator reading this screen is
+          themselves a row in it — but an empty state that reads as a bug is
+          worse than one that never shows.
+        -->
+        <p>No users yet.</p>
+      }
+    </div>
+  } @else {
+    <ul class="user-rows">
+      @for (user of items(); track user.id) {
+        <li class="user-row" [class.user-row--inactive]="!user.isActive">
+          <div class="row-main">
+            <!--
+              Not a link. The user detail screen is phase 7; a row leading to a
+              route that does not exist would be worse than one that leads
+              nowhere yet.
+            -->
+            <h3 class="row-title">{{ user.fullName }}</h3>
+            <p class="row-email">{{ user.email }}</p>
+          </div>
+
+          <div class="row-badges">
+            @for (role of sortedRoles(user); track role) {
+              <span class="badge badge--role">{{ role }}</span>
+            }
+
+            <!--
+              Only the exception is badged. Every healthy account is active, so
+              an "Active" badge on every row would be noise that makes the one
+              row that matters harder to find.
+            -->
+            @if (!user.isActive) {
+              <span class="badge badge--inactive">Deactivated</span>
+            }
+          </div>
+        </li>
+      }
+    </ul>
+
+    @if (totalPages() > 1) {
+      <nav class="pagination" aria-label="User list pages">
+        <button type="button" class="pagination-button" [disabled]="!hasPreviousPage()" (click)="goToPreviousPage()">
+          Previous
+        </button>
+        <span class="pagination-status">Page {{ page() }} of {{ totalPages() }} ({{ totalCount() }} users)</span>
+        <button type="button" class="pagination-button" [disabled]="!hasNextPage()" (click)="goToNextPage()">
+          Next
+        </button>
+      </nav>
+    }
+  }
+</div>

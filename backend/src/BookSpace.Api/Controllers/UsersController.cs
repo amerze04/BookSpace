@@ -2,8 +2,12 @@ using BookSpace.Api.Authorization;
 using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.Users;
 using BookSpace.Application.Features.Users.CreateUser;
+using BookSpace.Application.Features.Users.DeactivateUser;
 using BookSpace.Application.Features.Users.ListUsers;
+using BookSpace.Application.Features.Users.ReactivateUser;
+using BookSpace.Application.Features.Users.ReplaceUserRoles;
 using BookSpace.Application.Messaging;
+using BookSpace.Domain.Enums;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -126,5 +130,79 @@ public sealed class UsersController : ControllerBase
             cancellationToken);
 
         return StatusCode(StatusCodes.Status201Created, result);
+    }
+
+    // User management phase 5. FR-2.4: the write the auth stack has been waiting
+    // for since WP-2 — login already refuses an inactive user, and refresh
+    // refuses *and* revokes the whole token family.
+    //
+    // POST /{id}/deactivate rather than PATCH, matching POST
+    // /resources/{id}/archive: a state transition with no payload. Idempotent —
+    // deactivating an already-inactive user returns the current state and writes
+    // nothing.
+    //
+    // 422 is LastTenantAdmin: a tenant must keep at least one active
+    // administrator, and the check runs under a lock inside the write's own
+    // transaction (docs/user-management-plan.md §4.5).
+    [HttpPost("{id:guid}/deactivate")]
+    [ProducesResponseType<DeactivateUserCommandResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
+    public async Task<IActionResult> Deactivate(Guid id, CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(new DeactivateUserCommandRequest(id), cancellationToken);
+        return Ok(result);
+    }
+
+    // The reverse, and it exists where an "unarchive" pointedly does not:
+    // FR-3.5 makes archiving a resource irreversible on purpose, while
+    // deactivating a person is a reversible state.
+    //
+    // No 422 arm — reactivating can only grow the set of active administrators,
+    // so the last-admin guard has nothing to say about it.
+    [HttpPost("{id:guid}/reactivate")]
+    [ProducesResponseType<ReactivateUserCommandResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Reactivate(Guid id, CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(new ReactivateUserCommandRequest(id), cancellationToken);
+        return Ok(result);
+    }
+
+    // Wire shape for PUT /users/{id}/roles. The id is in the path, so the body
+    // carries only the new set.
+    public sealed record ReplaceUserRolesRequest(IReadOnlyList<Role> Roles);
+
+    // FR-1.5. **Replace-the-set**, matching PUT /resources/{id}/approvers — see
+    // ReplaceUserRolesCommandRequest for why, and note that phase 7's screen
+    // follows this shape rather than the other way round (admin-plan.md §4.1).
+    //
+    // 400 covers an empty set, a duplicate, and SysAdmin — that last one is a
+    // privilege-escalation guard rather than a formatting rule; see the
+    // validator. 422 is LastTenantAdmin, checked under the same lock as
+    // deactivation.
+    [HttpPut("{id:guid}/roles")]
+    [ProducesResponseType<ReplaceUserRolesCommandResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
+    public async Task<IActionResult> ReplaceRoles(
+        Guid id,
+        ReplaceUserRolesRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(
+            new ReplaceUserRolesCommandRequest(id, request.Roles ?? []),
+            cancellationToken);
+
+        return Ok(result);
     }
 }

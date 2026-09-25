@@ -4,7 +4,13 @@ import { Observable } from 'rxjs';
 import { environment } from '../../../../environments/environment';
 import { PagedResult } from '../../../core/http/paged-result';
 import { skipErrorToast } from '../../../core/http/skip-error-toast';
-import { EligibleUser, ListUsersParams } from '../models/users.models';
+import {
+  CreateUserRequest,
+  CreatedUser,
+  DirectoryUser,
+  EligibleUser,
+  ListUsersParams,
+} from '../models/users.models';
 
 // The only consumer of `GET /users`, which admin console phase 1 added for
 // exactly this screen. It lives under `features/admin/` rather than beside
@@ -32,6 +38,32 @@ export class UsersService {
       context: skipErrorToast(),
     });
   }
+
+  // Every user in the tenant — Members and deactivated accounts included.
+  //
+  // **A separate method rather than a `scope` argument on `list`**, even though
+  // it is one endpoint on the server. The two answers are different row types
+  // (`DirectoryUser` carries `isActive`), and a single method would have to
+  // return the wider one to both callers — which would let the picker read a
+  // field that happens to be true of every row it sees, and would put the scope
+  // that must never be sent by accident one optional argument away from the
+  // call that must never send it.
+  listDirectory(params: Omit<ListUsersParams, 'scope'> = {}): Observable<PagedResult<DirectoryUser>> {
+    return this.http.get<PagedResult<DirectoryUser>>(`${environment.apiBaseUrl}/users`, {
+      params: buildParams({ ...params, scope: 'All' }),
+      context: skipErrorToast(),
+    });
+  }
+
+  // Provisions a colleague and sends them an invitation.
+  //
+  // The response carries a live activation link (see `CreatedUser`), so nothing
+  // here logs it, caches it, or hands it anywhere but the caller.
+  create(request: CreateUserRequest): Observable<CreatedUser> {
+    return this.http.post<CreatedUser>(`${environment.apiBaseUrl}/users`, request, {
+      context: skipErrorToast(),
+    });
+  }
 }
 
 // A field is only sent when the caller actually set it, so the backend's own
@@ -50,6 +82,12 @@ function buildParams(params: ListUsersParams): HttpParams {
   }
   if (params.search !== undefined) {
     httpParams = httpParams.set('search', params.search);
+  }
+  // Only ever set by listDirectory. An omitted scope is the eligible-approver
+  // set, which is what every other caller wants and what the backend defaults
+  // to — see UserScope for why the narrow one is the default.
+  if (params.scope !== undefined) {
+    httpParams = httpParams.set('scope', params.scope);
   }
 
   return httpParams;

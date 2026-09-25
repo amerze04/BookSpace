@@ -48,12 +48,65 @@ export interface EligibleUser {
   roles: UserRole[];
 }
 
+// One row of `GET /users?scope=All` — the directory, user management phase 6.
+//
+// The same row the picker gets plus `isActive`, and it extends `EligibleUser`
+// rather than repeating its fields so the relationship is in the type: the
+// directory is a superset of the picker's answer, not a different shape.
+//
+// `isActive` is the field the directory exists for. Without it an administrator
+// cannot tell somebody who left from somebody who was never added — and the
+// picker has no use for it, because an inactive user is not an eligible
+// approver and never appears there.
+export interface DirectoryUser extends EligibleUser {
+  isActive: boolean;
+}
+
+// Which set `GET /users` answers with — `UserScope` on the backend. Omitted
+// means the eligible-approver set, and **that default is deliberate**: a
+// forgotten parameter narrows rather than widens, so the approvers picker
+// cannot start offering people `ReplaceApprovers` would then refuse.
+export type UserScope = 'EligibleApprovers' | 'All';
+
 // `GET /users` query params. All optional; an omitted field lets the backend's
 // own documented default apply rather than this file keeping a second copy of
-// it (the convention `ListResourcesParams` established).
+// it (the convention `ListResourcesParams` established) — which for `scope` is
+// the point rather than a convenience.
 export interface ListUsersParams {
   page?: number;
   pageSize?: number;
   sort?: string;
   search?: string;
+  scope?: UserScope;
+}
+
+// The body of `POST /users`. No password and no roles: the recipient chooses
+// the first through the activation link, and the server assigns `Member` as the
+// second (user management phase 3).
+export interface CreateUserRequest {
+  email: string;
+  fullName: string;
+}
+
+// The 201 body of `POST /users`.
+//
+// **`activationLink` is a live credential**, carried whether or not the
+// invitation email went out. That is the server's deliberate choice — creating
+// a colleague must not fail because an email provider is down, and nothing
+// re-issues an invitation — and it makes this response something to show once
+// and never store. The screen that renders it says so.
+//
+// `invitationEmailSent` is a field rather than something inferred from the
+// status code, because a 201 arrives either way and the outcome reads
+// differently: one is "we have told them", the other is "you will have to".
+export interface CreatedUser {
+  id: string;
+  email: string;
+  fullName: string;
+  isActive: boolean;
+  roles: UserRole[];
+  createdAtUtc: string;
+  activationLink: string;
+  activationLinkExpiresAtUtc: string;
+  invitationEmailSent: boolean;
 }

@@ -302,10 +302,14 @@ Resources and availability (WP-3): `ResourceNotFound`, `InvalidTimeZone`,
 `ApproversRequired`, `ApproverNotEligible`, `BlackoutPeriodElapsed`,
 `BlackoutPeriodNotFound`.
 
-Users (user management phase 3): `EmailAlreadyInUse` — `Conflict`, and one code
-with one message whether the address is in the caller's tenant or another
-(decision `0010` + AC-4). It is raised by `UQ_Users_Email` firing on the insert,
-not by a pre-check, so the path that reports it never learns which.
+Users (user management phases 3 and 5): `EmailAlreadyInUse` — `Conflict`, and
+one code with one message whether the address is in the caller's tenant or
+another (decision `0010` + AC-4). It is raised by `UQ_Users_Email` firing on the
+insert, not by a pre-check, so the path that reports it never learns which.
+`UserNotFound` — `NotFound`, the same answer for an unknown id and another
+tenant's real one. `LastTenantAdmin` — `RuleViolation`, thrown by both the
+deactivate and the role-replace paths and checked under a lock (decision
+`0031`).
 
 Note that `BlackoutPeriod` above is a **booking** rejection despite its name —
 the interval a client asked for is covered by a blackout — so WP-3's blackout
@@ -412,6 +416,8 @@ added, add its one-liner to both places.
 28. [`0028`](docs/decisions/0028-approval-gating-without-approvers.md) — a resource may require approval with **no approvers assigned**; FR-3.3's implies-approvers invariant is removed, `ApproversRequired` is deleted, and the request falls back to the tenant's admins.
 29. [`0029`](docs/decisions/0029-user-provisioning-and-invitation-delivery.md) — invitations are emailed synchronously and deliberately not through the `Notifications` outbox; a delivery failure is a return value; the activation token is shaped like a refresh token.
 30. [`0030`](docs/decisions/0030-email-collision-disclosure-at-creation.md) — `POST /users` answers `EmailAlreadyInUse` identically whether the address is in the caller's tenant or another, and the unique index — not a pre-check — is what decides it.
+31. [`0031`](docs/decisions/0031-last-tenant-admin-guard.md) — a tenant must always keep at least one active `TenantAdmin`; the guard covers both deactivation and role removal, and is checked under `UPDLOCK, HOLDLOCK` inside the write's own transaction.
+
 
 If a task needs a decision that isn't listed above and isn't in this log,
 **stop and ask** rather than picking silently.
@@ -1288,7 +1294,7 @@ console above and the hardening pass below, and deliberately not numbered as a
 WP: WP-8 has not been issued, and §12's rule is that this roadmap mirrors the
 packages the mentor sends rather than an invented build order.
 
-Eight phases; **phases 1–4 are done (2026-09-23/24)**. Four questions were put to the owner and answered
+Eight phases plus an unplanned 6b; **1–6b are done (2026-09-23 to 09-25)**. Four questions were put to the owner and answered
 before the plan was written, because none was answerable from the PRD or §9.
 Read the plan before starting any phase; what follows is only what is needed to
 know the shape.
@@ -1498,6 +1504,127 @@ tests (15 + 21 new), 1114 vitest unchanged, no migration, no new reason code.
   `scope=All` returns that row — so "every user is active" passed alone and
   failed only in a full run. Name the account you mean; `admin@acme.test` is the
   one nothing deactivates.
+
+**Phase 5 — deactivate, reactivate, roles, last-admin guard — Done 2026-09-24.**
+1312 unit + 627 integration tests (45 + 27 new), no migration, two new reason
+codes (`UserNotFound`, `LastTenantAdmin`), decision
+[`0031`](docs/decisions/0031-last-tenant-admin-guard.md). Before touching it:
+
+- **`POST /users/{id}/deactivate`, `POST /users/{id}/reactivate`, `PUT
+  /users/{id}/roles`.** The two state changes follow `POST
+  /resources/{id}/archive` and are **idempotent** — the target state already
+  holding returns it and writes nothing, so `UpdatedAtUtc` never moves on a
+  no-op.
+- **Roles are replace-the-set**, matching `PUT /resources/{id}/approvers`.
+  Per-role POST/DELETE would pass through an intermediate state whose content
+  depends on client ordering, and would make the last-admin guard un-statable.
+  Phase 7's screen follows this shape, not the reverse (`admin-plan.md` §4.1).
+- **An empty role set is a 400**, unlike an empty approver list — a user with no
+  roles keeps full member access via the `orgId` claim, so the row would lie.
+  Deactivate instead; the message says so.
+- **`SysAdmin` cannot be assigned.** `CK_UserRoles_Role` allows the value (the
+  bootstrap row needs it), so the validator is the *only* thing between a
+  TenantAdmin and the platform role. A 400, not a reason code, because no
+  legitimate client can send it.
+- **`LastTenantAdmin` (422) covers deactivation *and* role removal, checked
+  under `UPDLOCK, HOLDLOCK` on both `dbo.Users` and `dbo.UserRoles` inside the
+  write's own `IUnitOfWork.ExecuteAsync`** (decision `0031`). Reactivation takes
+  no lock and opens no transaction on purpose — the set can only grow, and
+  ceremony implying a rule nobody enforces is worse than none.
+- **A green concurrency test that proved nothing, and what replaced it.** The
+  HTTP-level "two admins remove each other" test passed with the lock hints
+  deleted, five runs out of five — the read-to-write window is too narrow for
+  two TestServer requests to interleave by luck. It is kept with an honest
+  comment, and `UserLastAdminGuardConcurrencyTests` forces the interleaving
+  instead (T1 holds the lock 1.5s; T2 starts 300ms later and must block). That
+  one **fails 2/2 with the hints removed**. Its own first version was wrong too
+  — resolved from the host's DI, where `ICurrentTenant` is null outside a
+  request, so everything silently found nothing and an assertion inside a
+  `catch` hid it.
+- **Restoring seeded state means restoring the *set*.** A fixture that used
+  `AddRole` to put the seeded admin's role back left `[Member, TenantAdmin]` and
+  broke one `UserDirectoryEndpointTests` assertion in a full run only.
+
+**Phase 6 — frontend: the user directory and the invite form — Done
+2026-09-25.** 1161 vitest tests (47 new), production build clean, no backend
+change. `/admin/users` and `/admin/users/new`. Before touching this area:
+
+- **The directory's rows are not links, on purpose.** The detail screen is
+  phase 7, and a row leading to a route that does not exist is what admin
+  console phase 3 avoided by leaving the approvers link out until its screen
+  was there. A spec asserts the absence, so phase 7 deletes it deliberately.
+- **`UsersService.listDirectory()` is a separate method from `list()`**, not a
+  `scope` argument on it. The picker and the directory are two callers with two
+  row types, and an optional argument would put the scope that must never be
+  sent by accident one keystroke from the call that must never send it. A spec
+  pins that `list()` sends no scope whatever it is passed.
+- **The invite outcome replaces the form.** `POST /users` returns a live
+  activation link; a still-live submit button beside a credential is how a
+  second account gets created. The link lives in one signal and nowhere else —
+  no storage, no cache, no route state — so navigating away loses it, which is
+  what "shown once" on the screen means. The email-failed case shows the **same
+  link**, framed as a caution rather than an error (plan §4.3): the account is
+  real either way.
+- **`user-rejection.ts` is the ninth dialect**, binding its own `'email' |
+  'fullName'` union rather than widening `ResourceFieldName`. It carries only
+  the two codes `POST /users` can return; phase 7's writes extend it when they
+  have controls. Its `EmailAlreadyInUse` copy is a **security property** —
+  decisions `0010`/`0030` make the server answer identically whichever tenant
+  holds the address, so the message names neither, with tests asserting the
+  absence.
+- **No retry on an unknown outcome, the strictest copy in the console.** `POST
+  /users` has no idempotency key and the first attempt may already have sent an
+  invitation nothing can withdraw, so the instruction is to check the directory.
+- **The nav has a second admin entry, "Users".** The shell's older comment
+  refuses a flat list of admin items because the other admin screens are all
+  sub-resources of `/resources/{id}`; users are not, so this one is genuinely
+  top-level. A tabbed admin console is the better answer at three sections —
+  noted in the shell, not built.
+
+**Phase 6b — the activation screen — Done 2026-09-25, and it was missing from
+the plan.** 1185 vitest tests (22 new). `/activate`.
+
+- **The plan listed three screens and needed four.** `POST /auth/activate`
+  entered scope in §3.1 as a consequence of the emailed-invitation decision;
+  that consequence was tracked on the backend and never reached §8's screen
+  list, while phase 8 said "No new screens" *and* required a click-through that
+  follows a real link and sets a password. **Found by the owner pasting an
+  invitation link** and landing on `/login?token=…` — there was no `/activate`
+  route, so the catch-all swallowed it. Numbered 6b rather than renumbering 7
+  and 8.
+- **A sibling of `/login`, outside the shell, and deliberately not behind
+  `guestOnlyGuard`.** Somebody already signed in on a shared machine must be
+  able to redeem their own link, and phase 2 built and tested exactly that case
+  on the server — bouncing them would be the client refusing what the server
+  allows.
+- **On success it navigates to `/login?activated=1`, not into the app**
+  (owner's call). The endpoint returns 204, not a session, and minting one stays
+  with the login handler that owns FR-2.4's checks. The flag is in the URL, not
+  router state, so the banner survives a refresh.
+- **One message for every refusal**, because the server answers 401
+  `InvalidActivationToken` identically for expired, used, unknown and
+  deactivated (§4.2, inheriting `0018`). A test asserts the message does not
+  vary. It still says what to do — nothing re-issues an invitation, so "ask your
+  administrator" is the only route left.
+- **No tenth rejection dialect**: one code, no field, no vocabulary. A short
+  function shaped like login's `handleLoginError` instead.
+- **`features/auth/password-policy.ts` mirrors the server's 12–128.** The
+  message, not the guarantee — on the one screen where somebody is inventing a
+  password rather than recalling one. A confirm field too, because there is no
+  password reset (§3.4), so a typo is permanent.
+
+**A bug the suite missed and the owner found by clicking, 2026-09-25.** The
+invite form used `(ngSubmit)` without importing `FormsModule` or
+`ReactiveFormsModule` — `ngSubmit` is an output of Angular's `NgForm` directive,
+so with neither imported the binding listened for an event that never fires and
+the browser submitted natively: page reload, fields cleared, no request. **All
+eighteen of that component's tests called `component.submit()` directly**, which
+exercises the handler and says nothing about whether anything on screen reaches
+it. Fixed to `(submit)="$event.preventDefault(); submit()"`, matching
+`admin-resource-form`; two regression tests now click the real button and assert
+`defaultPrevented`, and both were verified to fail against the old template.
+**The rule this breaks is already in the repo twice** (WP-7 Phase 3, WP-7 Phase
+6): for anything a person interacts with, drive the rendered DOM.
 
 ### Hardening pass — 2026-09-15
 Not a work package: a response to an external code review (15 items across

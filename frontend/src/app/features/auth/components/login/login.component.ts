@@ -36,6 +36,16 @@ export class LoginComponent {
   // an explicit signal is that something.
   private readonly touchedFields = signal<Set<FieldName>>(new Set());
 
+  // Set by the activation screen, which sends people here rather than signing
+  // them in — `POST /auth/activate` returns 204, not a session, so minting one
+  // stays with the login handler that owns FR-2.4's account-state checks.
+  //
+  // Carried in the query string rather than router state, so the banner
+  // survives a refresh and the two screens share nothing but an address. Read
+  // from the snapshot: this component is created by that navigation, so there
+  // is no later value to miss.
+  protected readonly justActivated = signal(false);
+
   constructor(
     formBuilder: FormBuilder,
     private readonly auth: AuthService,
@@ -46,6 +56,8 @@ export class LoginComponent {
       email: ['', [Validators.required, Validators.email]],
       password: ['', Validators.required],
     });
+
+    this.justActivated.set(route.snapshot.queryParamMap.get('activated') === '1');
   }
 
   protected markTouched(field: FieldName): void {

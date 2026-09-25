@@ -70,6 +70,52 @@ internal sealed class UserRepository : IUserRepository
     // re-check it.
     public void Add(User user) => _context.Users.Add(user);
 
+    // Tracked, not AsNoTracking: the caller mutates it through the domain
+    // methods and the change has to be saved. FirstOrDefaultAsync, never Find()
+    // — Find can answer from the change tracker without querying, which would
+    // skip the tenant query filter (CLAUDE.md §4.2).
+    public Task<User?> FindForUpdateAsync(Guid userId, CancellationToken cancellationToken) =>
+        _context.Users.FirstOrDefaultAsync(u => u.Id == userId, cancellationToken);
+
+    // The last-admin guard's locking read (docs/user-management-plan.md §3.3,
+    // §4.5). Raw SQL because the hints are the entire point and LINQ cannot
+    // express them — the same reason CLAUDE.md §4.1 gives for dbo.CreateBooking,
+    // though this needs no stored procedure: that rule is about *booking* writes.
+    //
+    // UPDLOCK stops two transactions holding this read at once, so the second
+    // admin blocks rather than reading the same "there are two" the first did.
+    // HOLDLOCK makes it a range lock held to commit, so nobody can insert or
+    // reactivate a TenantAdmin into the range underneath either of them. Both
+    // tables are hinted: the role assignment is as much part of the answer as
+    // the user row, and locking only one leaves the other free to move.
+    //
+    // No OrgId predicate, deliberately. Row-level security scopes this to the
+    // caller's tenant on the connection itself (§4.2 mechanism 3), and
+    // dbo.UserRoles is reachable only through the join to the filtered
+    // dbo.Users. A hand-written WHERE would be a fourth isolation mechanism
+    // that could be forgotten — the thing §4.2 exists to avoid.
+    //
+    // Interpolated FormattableString, so `excludingUserId` is a parameter and
+    // not concatenated text (CLAUDE.md §5).
+    public async Task<int> CountOtherActiveTenantAdminsAsync(
+        Guid excludingUserId,
+        CancellationToken cancellationToken)
+    {
+        var counts = await _context.Database
+            .SqlQuery<int>(
+                $"""
+                SELECT COUNT(*) AS [Value]
+                FROM dbo.Users AS u WITH (UPDLOCK, HOLDLOCK)
+                INNER JOIN dbo.UserRoles AS r WITH (UPDLOCK, HOLDLOCK) ON r.UserId = u.Id
+                WHERE u.IsActive = 1
+                  AND r.Role = 'TenantAdmin'
+                  AND u.Id <> {excludingUserId}
+                """)
+            .ToListAsync(cancellationToken);
+
+        return counts.Single();
+    }
+
     // Also persists the ActivationToken the create handler added through
     // IActivationTokenRepository: both repositories hold this same scoped
     // DbContext, so one SaveChanges covers the account, its role and the only
