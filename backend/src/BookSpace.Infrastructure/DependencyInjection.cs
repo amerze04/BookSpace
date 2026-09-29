@@ -98,6 +98,11 @@ public static class DependencyInjection
         services.AddScoped<IBookingRepository, BookingRepository>();
         services.AddScoped<IRecurrenceRuleRepository, RecurrenceRuleRepository>();
 
+        // WP-8 Phase 1: scoped like every other repository, resolved fresh
+        // inside PeriodicJobRunner's own per-run scope, never held by the
+        // singleton hosted service itself.
+        services.AddScoped<IJobLeaseRepository, JobLeaseRepository>();
+
         // Scoped, like the repositories, and for the same reason: it wraps the
         // request's own DbContext and its transaction (CLAUDE.md §5).
         services.AddScoped<IUnitOfWork, UnitOfWork>();

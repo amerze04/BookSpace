@@ -1900,3 +1900,96 @@ carries more) once it has been captured — a real navigation was deliberately
 not used, since re-resolving the route would re-trigger the same
 `queryParamMap` read this exists to stop mattering. Activation still works
 afterward, because nothing re-reads the URL.
+
+### WP-8 — Background Jobs, Notifications & Integrations — **In progress** (started 2026-09-29)
+Source doc: `docs/Work Packages - Week 7 and 8.pdf`. Plan:
+[`docs/wp8-plan.md`](docs/wp8-plan.md). Mentor-issued — the first new work
+package since WP-7; everything between (admin console, user management, both
+hardening passes) was owner-initiated. WP-9 (AI-Assisted Booking) arrived in
+the same document and follows this one, per §11's standing rule not to start
+a later WP's tasks before this one's acceptance criteria are met.
+
+- [ ] Hosted-service foundation: fresh DI scope per run, honour
+      `CancellationToken`, configurable poll interval/batch size.
+- [ ] Scale/resilience: bounded batches, filtered-index queries, per-item
+      failure isolation, retry with backoff and a cap.
+- [ ] Logging: correlation id per run, structured run-summary logs, an
+      unhandled exception never kills the host.
+- [ ] Multi-instance safety: a service lock with an identifiable owner, a
+      lease, and heartbeat renewal.
+- [ ] The three jobs: reminder dispatch (FR-9.2), no-show release (FR-9.1),
+      stale-approval expiry (FR-9.3).
+- [ ] A transactional email provider integrated through the retry/backoff
+      path.
+- [ ] An ICS feed a member can subscribe to.
+
+Read against the codebase rather than cold, most of WP-8's own task list
+turns out to already be schema-level groundwork from WP-1 and user
+management, laid specifically so these jobs could be dropped in later — see
+`docs/wp8-plan.md` §1 for the full inventory (decision `0004`'s no-show
+definition, `ApprovalRequest.Expire()`, the three `Organizations` config
+columns, all three filtered indexes, and `IEmailSender` are already there).
+WP-8's own "OPEN DECISION" about what a no-show is was therefore already
+answered by decision `0004` before this package existed; nothing to redecide.
+
+The owner asked to have every remaining call made rather than walk through
+each one ("I'll be learning as we go") — all nine are recorded as D1–D9 in
+the plan doc, to be written up as numbered decisions (`0032` onward) when
+Phase 6 closes. The headline ones: a lease table over `sp_getapplock`
+(defensible either way, but a lease gives an identifiable owner and survives
+across a scope's several short-lived connections); `dbo.JobLeases` gets no
+EF entity at all, because nothing ever reads it through LINQ (the same
+bucket stored procedures and RLS policies are already in, per §5); and ICS is
+a subscribable, tokenised per-user feed link (decision `0011`'s bearer-secret
+shape, reused a third time) rather than a JWT-protected endpoint, since a
+subscribing calendar app cannot attach one.
+
+**Phase 1 — hosted-service + lease foundation — Done 2026-09-29.** No real
+job yet; this is purely the infrastructure every job in Phases 2–4 builds on.
+1356 unit + 668 integration tests (9 new). What is true now:
+
+- **`dbo.JobLeases` has no EF entity, no `DbSet`, and no LINQ consumer
+  anywhere** — hand-written into a migration (`AddJobLeases`), exactly like
+  the stored-procedure migrations, with the same reasoning: EF will not
+  scaffold what nothing reads back through it. `IJobLeaseRepository` talks to
+  it over one atomic, parameterised `UPDATE ... WITH (UPDLOCK, HOLDLOCK)`
+  (`ExecuteSqlInterpolatedAsync`, never string concatenation) and reads
+  rows-affected — the same compare-and-swap shape `dbo.CreateBooking` uses
+  for capacity, scaled down to a single row. No stored procedure: that
+  heavier tool is reserved for aggregating a *range* of rows under a range
+  lock, which a one-row lease isn't.
+- **One row per known job name is seeded at migration time**
+  (`ReminderDispatch`, `NoShowRelease`, `StaleApprovalExpiry`), each with an
+  already-expired lease, so the repository's `UPDATE` has no insert-if-
+  missing branch to race on — every acquire, including the very first one a
+  later phase's job ever makes, goes through the same "expired lease" path.
+- **`PeriodicJobRunner`** is the one hosted-service base all three jobs will
+  extend: resolves its own DI scope per run, catches and logs any unhandled
+  exception from a run without stopping the host, logs a structured
+  picked-up/succeeded/failed/elapsed summary per tick, and releases its lease
+  on clean shutdown (best-effort — an unreleased lease still expires on its
+  own). `RunOnceAsync` is public and separate from the `BackgroundService`
+  timer loop specifically so a test can call it directly and assert on the
+  returned `JobRunOutcome`, instead of waiting on real wall-clock polling —
+  the same reasoning `UserLastAdminGuardConcurrencyTests` already gives for
+  talking to the repository/unit-of-work layer directly.
+- **`LeaseDuration` must be several whole seconds, never sub-second** — found
+  writing `PeriodicJobRunnerTests`, not reasoned about in advance.
+  `IClock.UtcNow` is truncated to the second (§4.3, `SystemClock`'s own
+  header), so a 200ms lease is not observable at all: two calls milliseconds
+  apart can read the identical truncated instant, at which point "expires in
+  200ms" and "expires now" become indistinguishable and a test asserting the
+  lease is *not* yet expired fails outright. Every job's `LeaseDuration` in
+  Phases 2–4 has to be chosen with this floor in mind.
+- **`TenantBypassScope` is deliberately untouched in this phase.**
+  `JobLeases` has no `OrgId`, no query filter, and no RLS policy — it is
+  global job-ownership state, not tenant data, so acquiring a lease needs no
+  bypass at all. The reminder dispatch job (Phase 2) is the first thing that
+  actually has to scan tenant-owned tables across every org in one tick, and
+  that is where the scope's "only `AuthenticationUserRepository` may call
+  `Enter()`" comment has to change — deferred there on purpose rather than
+  widened early against nothing that needs it yet.
+- **No hosted service is registered in `Program.cs` yet.** There is nothing
+  to run in production until Phase 2 builds the first real job; Phase 1 is
+  proven entirely through `PeriodicJobRunnerTests`' fake jobs against the
+  real lease repository and a real SQL Server.
