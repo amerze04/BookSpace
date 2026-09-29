@@ -176,6 +176,24 @@ every tenant in one tick, which is what forces `TenantBypassScope`'s
 "only `AuthenticationUserRepository` may call `Enter()`" comment to become
 false. That change belongs with the job that needs it.
 
+**D10 — a `Reminder` whose `Booking` is no longer `Confirmed` is handled
+silently by the dispatch job itself, not voided by every cancellation path.**
+Found while building Phase 2, not anticipated when D1–D9 were written — a
+scheduled reminder for a booking that gets cancelled (or, less commonly,
+whose approval is later rejected) before the reminder fires would otherwise
+still go out, telling someone about a meeting that no longer exists.
+`INotificationRepository.BuildEmailAsync` loads the `Booking` for every
+`Reminder`-kind row and returns `null` — "nothing to send" — whenever its
+`Status` is no longer `Confirmed`; `NotificationDispatchJob` treats a `null`
+build result as a successful, non-retried outcome. Rejected in favour of
+teaching every cancellation path (single-booking cancel, whole-series cancel,
+the blackout cascade — three today, and counting) to find and delete or void
+the matching `Reminder` row: that approach needs every *current and future*
+way a booking stops being `Confirmed` to remember this one rule, where the
+chosen approach needs nothing to remember it at all — the check sits at the
+one place the consequence (an email going out) actually happens. No schema
+change; `Notification` gained no new column for this.
+
 ---
 
 ## 3. Phases
@@ -267,8 +285,10 @@ other package here has been delivered (admin console, user management).
 - Update CLAUDE.md §7 and §12 (WP-8 marked done), `STATE-OF-THE-APP.md`.
 - Write decisions `0032` (job lease strategy, D1/D2), `0033` (stale-approval
   → `ApprovalExpired` + system-initiated rejection, D3/D3a), `0034` (ICS
-  feed token model, D6/D7) — numbers confirmed against the log's actual
-  state at write time.
+  feed token model, D6/D7), `0035` (notification dispatch: `TenantBypassScope`
+  widened for job repositories, and a moot `Reminder` handled by the job
+  rather than voided at every cancellation path — D9/D10) — numbers
+  confirmed against the log's actual state at write time.
 
 ---
 

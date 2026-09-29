@@ -1909,19 +1909,30 @@ hardening passes) was owner-initiated. WP-9 (AI-Assisted Booking) arrived in
 the same document and follows this one, per §11's standing rule not to start
 a later WP's tasks before this one's acceptance criteria are met.
 
-- [ ] Hosted-service foundation: fresh DI scope per run, honour
-      `CancellationToken`, configurable poll interval/batch size.
-- [ ] Scale/resilience: bounded batches, filtered-index queries, per-item
-      failure isolation, retry with backoff and a cap.
-- [ ] Logging: correlation id per run, structured run-summary logs, an
-      unhandled exception never kills the host.
-- [ ] Multi-instance safety: a service lock with an identifiable owner, a
-      lease, and heartbeat renewal.
-- [ ] The three jobs: reminder dispatch (FR-9.2), no-show release (FR-9.1),
-      stale-approval expiry (FR-9.3).
-- [ ] A transactional email provider integrated through the retry/backoff
-      path.
-- [ ] An ICS feed a member can subscribe to.
+- [x] Hosted-service foundation: fresh DI scope per run, honour
+      `CancellationToken`, configurable poll interval/batch size. —
+      `PeriodicJobRunner` (Phase 1).
+- [x] Scale/resilience: bounded batches, filtered-index queries, per-item
+      failure isolation, retry with backoff and a cap. — proven by
+      `NotificationDispatchJob` (Phase 2); the same base class carries it
+      into Phases 3/4 for free.
+- [x] Logging: correlation id per run, structured run-summary logs, an
+      unhandled exception never kills the host. — `PeriodicJobRunner`
+      (Phase 1).
+- [x] Multi-instance safety: a service lock with an identifiable owner, a
+      lease, and heartbeat renewal. — `dbo.JobLeases` +
+      `JobLeaseRepository` (Phase 1).
+- [x] Reminder job: email members a configurable interval before a booking
+      (FR-9.2). — Phase 2.
+- [ ] No-show job: release confirmed bookings after a grace period (FR-9.1).
+      — Phase 3.
+- [ ] Stale-approval job: expire un-actioned approval requests (FR-9.3). —
+      Phase 4.
+- [x] A transactional email provider integrated through the retry/backoff
+      path. — `IEmailSender` (already existed, user management Phase 1)
+      called from inside `NotificationDispatchJob`'s retry/backoff loop
+      (Phase 2).
+- [ ] An ICS feed a member can subscribe to. — Phase 5.
 
 Read against the codebase rather than cold, most of WP-8's own task list
 turns out to already be schema-level groundwork from WP-1 and user
@@ -1933,9 +1944,12 @@ WP-8's own "OPEN DECISION" about what a no-show is was therefore already
 answered by decision `0004` before this package existed; nothing to redecide.
 
 The owner asked to have every remaining call made rather than walk through
-each one ("I'll be learning as we go") — all nine are recorded as D1–D9 in
-the plan doc, to be written up as numbered decisions (`0032` onward) when
-Phase 6 closes. The headline ones: a lease table over `sp_getapplock`
+each one ("I'll be learning as we go") — nine were made up front and
+recorded as D1–D9 in the plan doc before Phase 1 started; a tenth (D10, the
+moot-`Reminder` handling) was found and decided mid-build, during Phase 2,
+and added to the plan doc after the fact rather than before. All ten are to
+be written up as numbered decisions (`0032` onward) when Phase 6 closes. The
+headline ones: a lease table over `sp_getapplock`
 (defensible either way, but a lease gives an identifiable owner and survives
 across a scope's several short-lived connections); `dbo.JobLeases` gets no
 EF entity at all, because nothing ever reads it through LINQ (the same
@@ -2064,3 +2078,19 @@ true now:
   afterward. A shared fixture with real business constraints (capacity,
   availability) is exactly the kind of thing that looks safe with `--filter`
   on one file and is not safe in the full suite.
+
+**Where this stands, for picking WP-8 back up in a fresh session**:
+Phases 1 and 2 are done and merged to the `feature/background-jobs` branch
+(commits `eeda61f`, `135c1d0`); the baseline going into Phase 3 is 1360
+backend unit + 684 backend integration tests, all green, confirmed stable
+across repeated full runs. **Phase 3 — no-show release (FR-9.1) + a new
+`POST /bookings/{id}/check-in` endpoint — is next**; its task breakdown,
+what already exists to build on (`Booking.IsNoShow`/`MarkNoShow`,
+`Organizations.NoShowGraceMinutes`, `IX_Bookings_NoShowSweep` — all already
+in place since earlier work packages), and the open questions already
+answered for it (decision D5: owner-only check-in, no time-window
+restriction, idempotent on repeat) are in
+[`docs/wp8-plan.md`](docs/wp8-plan.md)'s own Phase 3 section. `STATE-OF-THE-APP.md`
+has not been refreshed for any of WP-8 yet (still dated 2026-09-23, from
+before the admin console even closed) — this CLAUDE.md section is the
+current source of truth for WP-8 until the whole package closes.
