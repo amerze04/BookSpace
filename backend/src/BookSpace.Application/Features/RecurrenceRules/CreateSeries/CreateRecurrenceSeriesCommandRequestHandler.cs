@@ -139,6 +139,11 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
         // read on a series that turns out fully Confirmed.
         var expiryHours = await _bookings.FindApprovalExpiryHoursAsync(resource.OrgId, cancellationToken);
 
+        // WP-8 Phase 2, FR-8.3: fetched once for the same reason expiryHours
+        // is — one tenant-wide setting, not one that could differ between
+        // occurrences of the same series.
+        var reminderLeadMinutes = await _bookings.FindReminderLeadMinutesAsync(resource.OrgId, cancellationToken);
+
         // Decision 0028's fallback recipients, resolved **once for the whole
         // series** rather than per occurrence: the approver list belongs to the
         // resource, not to the occurrence, so it cannot differ between them. A
@@ -257,7 +262,7 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
 
                 var (bookingId, reasonCode) = await CreateOccurrenceAsync(
                     resource, approvalRecipients, rule.Id, userId, occurrence.OccurrenceDate, interval, request.Quantity, request.Title,
-                    status, expiryHours, nowUtc, cancellationToken);
+                    status, expiryHours, reminderLeadMinutes, nowUtc, cancellationToken);
 
                 reports.Add(bookingId is { } id
                     ? RecurrenceOccurrenceReport.ForCreated(occurrence.OccurrenceDate, id)
@@ -541,6 +546,7 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
         string? title,
         BookingStatus status,
         int? expiryHours,
+        int reminderLeadMinutes,
         DateTime nowUtc,
         CancellationToken cancellationToken)
     {
@@ -556,8 +562,10 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
             nowUtc,
             expiryHours is null ? null : nowUtc.AddHours(expiryHours.Value));
 
-        var confirmedNotifications = NotificationsFor(approvalRecipients, bookingId, userId, BookingStatus.Confirmed, nowUtc);
-        var pendingNotifications = NotificationsFor(approvalRecipients, bookingId, userId, BookingStatus.Pending, nowUtc);
+        var confirmedNotifications = NotificationsFor(
+            approvalRecipients, bookingId, userId, BookingStatus.Confirmed, interval.StartUtc, reminderLeadMinutes, nowUtc);
+        var pendingNotifications = NotificationsFor(
+            approvalRecipients, bookingId, userId, BookingStatus.Pending, interval.StartUtc, reminderLeadMinutes, nowUtc);
 
         return await _unitOfWork.ExecuteAsync(
             async token =>
@@ -621,9 +629,16 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
     // approver and not the booker — duplicated rather than shared, on the
     // same footing CreateBookingCommandRequestValidator's header gives for
     // not sharing its own instant rules: two call sites and no third in
-    // sight.
+    // sight. WP-8 Phase 2's Reminder addition is duplicated for the same
+    // reason (see the one-off handler's own comment on its NotificationsFor).
     private static IReadOnlyList<Notification> NotificationsFor(
-        IReadOnlyCollection<Guid> approvalRecipients, Guid bookingId, Guid userId, BookingStatus status, DateTime nowUtc)
+        IReadOnlyCollection<Guid> approvalRecipients,
+        Guid bookingId,
+        Guid userId,
+        BookingStatus status,
+        DateTime startsAtUtc,
+        int reminderLeadMinutes,
+        DateTime nowUtc)
     {
         if (status == BookingStatus.Confirmed)
         {
@@ -631,6 +646,9 @@ public sealed class CreateRecurrenceSeriesCommandRequestHandler
             [
                 Notification.ForBooking(
                     Guid.NewGuid(), bookingId, userId, NotificationKind.Confirmed, nowUtc, userId, nowUtc),
+                Notification.ForBooking(
+                    Guid.NewGuid(), bookingId, userId, NotificationKind.Reminder,
+                    Notification.ReminderSendAtUtc(startsAtUtc, reminderLeadMinutes, nowUtc), userId, nowUtc),
             ];
         }
 

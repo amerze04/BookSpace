@@ -157,6 +157,13 @@ public sealed class CreateBookingCommandRequestHandler
         // hazard the comment above exists to avoid. The cost is one extra cheap
         // read on the ordinary Confirmed path.
         var expiryHours = await _bookings.FindApprovalExpiryHoursAsync(resource.OrgId, cancellationToken);
+
+        // WP-8 Phase 2, FR-8.3: fetched unconditionally for the same reason
+        // expiryHours is — a downgrade to Pending under dbo.CreateBooking's
+        // own lock means the *pending* path is taken instead, and the read
+        // must not sit inside a block a 1205 retry could run twice.
+        var reminderLeadMinutes = await _bookings.FindReminderLeadMinutesAsync(resource.OrgId, cancellationToken);
+
         var approval = new ApprovalRequest(
             Guid.NewGuid(),
             bookingId,
@@ -176,8 +183,10 @@ public sealed class CreateBookingCommandRequestHandler
             ? resource.ApproverUserIds
             : await _users.FindTenantAdminUserIdsAsync(cancellationToken);
 
-        var confirmedNotifications = NotificationsFor(approvalRecipients, bookingId, userId, BookingStatus.Confirmed, nowUtc);
-        var pendingNotifications = NotificationsFor(approvalRecipients, bookingId, userId, BookingStatus.Pending, nowUtc);
+        var confirmedNotifications = NotificationsFor(
+            approvalRecipients, bookingId, userId, BookingStatus.Confirmed, startsAtUtc, reminderLeadMinutes, nowUtc);
+        var pendingNotifications = NotificationsFor(
+            approvalRecipients, bookingId, userId, BookingStatus.Pending, startsAtUtc, reminderLeadMinutes, nowUtc);
 
         return await _unitOfWork.ExecuteAsync(
             async token =>
@@ -259,13 +268,23 @@ public sealed class CreateBookingCommandRequestHandler
     //   WP-5's.
     //
     // SendAtUtc = now: both kinds are news rather than reminders, so they are due
-    // as soon as the dispatch job next runs. Reminder rows (FR-8.3) are
-    // deliberately not written here — see docs/wp4-plan.md.
+    // as soon as the dispatch job next runs.
+    //
+    // WP-8 Phase 2, FR-8.3: the Reminder row wp4-plan.md deferred to "the
+    // notifications package" is written here now, alongside Confirmed — the
+    // only place a one-off booking's own confirmation exists. Its SendAtUtc
+    // is computed, not now, via Notification.ReminderSendAtUtc (decision D4).
+    // If the booking is later cancelled before the reminder fires, the
+    // dispatch job itself recognises the booking is no longer Confirmed and
+    // skips sending without retrying (decision D10) — nothing here has to
+    // reach back in to delete or void this row.
     private static IReadOnlyList<Notification> NotificationsFor(
         IReadOnlyCollection<Guid> approvalRecipients,
         Guid bookingId,
         Guid userId,
         BookingStatus status,
+        DateTime startsAtUtc,
+        int reminderLeadMinutes,
         DateTime nowUtc)
     {
         if (status == BookingStatus.Confirmed)
@@ -274,6 +293,9 @@ public sealed class CreateBookingCommandRequestHandler
             [
                 Notification.ForBooking(
                     Guid.NewGuid(), bookingId, userId, NotificationKind.Confirmed, nowUtc, userId, nowUtc),
+                Notification.ForBooking(
+                    Guid.NewGuid(), bookingId, userId, NotificationKind.Reminder,
+                    Notification.ReminderSendAtUtc(startsAtUtc, reminderLeadMinutes, nowUtc), userId, nowUtc),
             ];
         }
 

@@ -43,28 +43,55 @@ public class NotificationTests
     }
 
     [Fact]
-    public void RecordSendAttempt_OnSuccess_SetsSentAtUtcAndClearsError()
+    public void MarkOutcome_OnSuccess_SetsSentAtUtcAndClearsError_WithoutTouchingAttempts()
     {
         var notification = Notification.ForBooking(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), NotificationKind.Reminder, NowUtc, null, NowUtc);
-        notification.RecordSendAttempt(NowUtc.AddMinutes(1), succeeded: false, error: "SMTP timeout");
+        notification.MarkOutcome(NowUtc.AddMinutes(1), succeeded: false, error: "SMTP timeout");
 
         var sentAt = NowUtc.AddMinutes(2);
-        notification.RecordSendAttempt(sentAt, succeeded: true);
+        notification.MarkOutcome(sentAt, succeeded: true);
 
-        Assert.Equal(2, notification.Attempts);
+        // WP-8 Phase 2: Attempts is owned by the claim step
+        // (INotificationRepository.ClaimDueAsync), never by MarkOutcome — see
+        // MarkOutcome's own header for why incrementing here too would
+        // double-count every attempt against MaxAttempts' retry cap.
+        Assert.Equal(0, notification.Attempts);
         Assert.Equal(sentAt, notification.SentAtUtc);
         Assert.Null(notification.LastError);
     }
 
     [Fact]
-    public void RecordSendAttempt_OnFailure_SetsLastErrorAndLeavesSentAtUtcNull()
+    public void MarkOutcome_OnFailure_SetsLastErrorAndLeavesSentAtUtcNull()
     {
         var notification = Notification.ForBooking(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), NotificationKind.Reminder, NowUtc, null, NowUtc);
 
-        notification.RecordSendAttempt(NowUtc.AddMinutes(1), succeeded: false, error: "SMTP timeout");
+        notification.MarkOutcome(NowUtc.AddMinutes(1), succeeded: false, error: "SMTP timeout");
 
-        Assert.Equal(1, notification.Attempts);
+        Assert.Equal(0, notification.Attempts);
         Assert.Null(notification.SentAtUtc);
         Assert.Equal("SMTP timeout", notification.LastError);
+    }
+
+    [Fact]
+    public void ReminderSendAtUtc_ReturnsTheLeadTimeWhenItIsStillInTheFuture()
+    {
+        var startsAtUtc = NowUtc.AddHours(2);
+
+        var result = Notification.ReminderSendAtUtc(startsAtUtc, leadMinutes: 30, NowUtc);
+
+        Assert.Equal(startsAtUtc.AddMinutes(-30), result);
+    }
+
+    [Fact]
+    public void ReminderSendAtUtc_ClampsToNowWhenTheLeadTimeHasAlreadyPassed()
+    {
+        // Decision D4 (docs/wp8-plan.md): a short-notice booking confirmed
+        // inside its own lead time is reminded once, immediately, rather than
+        // silently never — never a past instant.
+        var startsAtUtc = NowUtc.AddMinutes(10);
+
+        var result = Notification.ReminderSendAtUtc(startsAtUtc, leadMinutes: 60, NowUtc);
+
+        Assert.Equal(NowUtc, result);
     }
 }

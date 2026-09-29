@@ -79,15 +79,22 @@ internal sealed class FakeBookingRepository : IBookingRepository
         BookingCreationResult result = BookingCreationResult.Created,
         int? remainingCapacity = null,
         int? approvalExpiryHours = null,
-        BookingStatus? actualStatusOverride = null)
+        BookingStatus? actualStatusOverride = null,
+        int reminderLeadMinutes = 60)
     {
         _result = result;
         _remainingCapacity = remainingCapacity;
         _actualStatusOverride = actualStatusOverride;
         ApprovalExpiryHours = approvalExpiryHours;
+        ReminderLeadMinutes = reminderLeadMinutes;
     }
 
     public int? ApprovalExpiryHours { get; }
+
+    // WP-8 Phase 2: an arbitrary but fixed default, like every other fake's
+    // stand-in for an Organizations setting nothing here asserts the exact
+    // value of unless a test overrides it.
+    public int ReminderLeadMinutes { get; }
 
     public NewBooking? Created { get; private set; }
 
@@ -120,6 +127,9 @@ internal sealed class FakeBookingRepository : IBookingRepository
 
     public Task<int?> FindApprovalExpiryHoursAsync(Guid orgId, CancellationToken cancellationToken) =>
         Task.FromResult(ApprovalExpiryHours);
+
+    public Task<int> FindReminderLeadMinutesAsync(Guid orgId, CancellationToken cancellationToken) =>
+        Task.FromResult(ReminderLeadMinutes);
 
     public Task SaveChangesAsync(CancellationToken cancellationToken)
     {

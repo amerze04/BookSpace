@@ -17,10 +17,16 @@ internal sealed class FakeApprovalBookingRepository : IBookingRepository
 
     public FakeApprovalBookingRepository(
         BookingApprovalResult result = BookingApprovalResult.Approved,
-        int? remainingCapacity = null)
+        int? remainingCapacity = null,
+        int reminderLeadMinutes = 60)
     {
         _outcome = new BookingApprovalOutcome(result, remainingCapacity);
+        ReminderLeadMinutes = reminderLeadMinutes;
     }
+
+    // WP-8 Phase 2: an arbitrary but fixed default — nothing here asserts the
+    // exact value unless a test overrides it.
+    public int ReminderLeadMinutes { get; }
 
     // ---- Arrangement ----
 
@@ -117,4 +123,7 @@ internal sealed class FakeApprovalBookingRepository : IBookingRepository
 
     public Task<int?> FindApprovalExpiryHoursAsync(Guid orgId, CancellationToken cancellationToken) =>
         throw new NotSupportedException();
+
+    public Task<int> FindReminderLeadMinutesAsync(Guid orgId, CancellationToken cancellationToken) =>
+        Task.FromResult(ReminderLeadMinutes);
 }

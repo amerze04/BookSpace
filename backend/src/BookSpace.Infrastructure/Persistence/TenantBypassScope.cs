@@ -12,9 +12,16 @@ namespace BookSpace.Infrastructure.Persistence;
 // TenantSessionContextInterceptor observes it when the connection opens.
 // Deliberately not DI-registered: every producer and the sole consumer live
 // in this assembly, so a static keeps it out of service lifetimes entirely.
-// Only AuthenticationUserRepository may call Enter() — see CLAUDE.md §4.2
-// ("IgnoreQueryFilters() is allowed only in explicitly named ... methods");
-// the same restriction applies here for the same reason.
+//
+// Two named exceptions may call Enter(), and CLAUDE.md §4.2's own restriction
+// ("IgnoreQueryFilters() is allowed only in explicitly named ... methods")
+// covers both for the same reason: AuthenticationUserRepository runs before a
+// tenant is known (login, refresh, activation), and — since WP-8 Phase 2,
+// docs/wp8-plan.md decision D9 — NotificationRepository runs with no tenant
+// at all, because a background job's one dispatch run claims due
+// notifications across every organisation in a single tick and there is no
+// ICurrentTenant to read one from. No third caller is sanctioned without the
+// same review.
 internal static class TenantBypassScope
 {
     private static readonly AsyncLocal<bool> IsActiveLocal = new();

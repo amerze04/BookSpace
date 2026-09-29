@@ -314,11 +314,33 @@ public class CreateBookingCommandRequestHandlerTests
 
         var response = await harness.Handler.Handle(Request(resource), default);
 
-        var notification = Assert.Single(harness.Bookings.AddedNotifications);
-        Assert.Equal(NotificationKind.Confirmed, notification.Kind);
+        var notification = Assert.Single(
+            harness.Bookings.AddedNotifications, n => n.Kind == NotificationKind.Confirmed);
         Assert.Equal(ActorId, notification.RecipientUserId);
         Assert.Equal(response.Id, notification.BookingId);
         Assert.Equal(NowUtc, notification.SendAtUtc);
+        Assert.Null(notification.SentAtUtc);
+    }
+
+    // WP-8 Phase 2, FR-8.3: a Confirmed booking also gets a Reminder row,
+    // scheduled at StartsAtUtc minus the org's configured lead time (here
+    // FakeBookingRepository's own default, 60 minutes) — never sent by this
+    // handler, only scheduled for the dispatch job to pick up later.
+    [Fact]
+    public async Task EnqueuesAReminderScheduledAtTheConfiguredLeadTime()
+    {
+        var resource = Room();
+        var harness = Build(resource);
+
+        // A start hour distinct from NowUtc (08:00), so the expected reminder
+        // instant (10:00) cannot be mistaken for decision D4's now-clamp.
+        var response = await harness.Handler.Handle(Request(resource, startHour: 11, endHour: 12), default);
+
+        var notification = Assert.Single(
+            harness.Bookings.AddedNotifications, n => n.Kind == NotificationKind.Reminder);
+        Assert.Equal(ActorId, notification.RecipientUserId);
+        Assert.Equal(response.Id, notification.BookingId);
+        Assert.Equal(At(10), notification.SendAtUtc);
         Assert.Null(notification.SentAtUtc);
     }
 

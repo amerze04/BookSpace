@@ -1993,3 +1993,74 @@ job yet; this is purely the infrastructure every job in Phases 2–4 builds on.
   to run in production until Phase 2 builds the first real job; Phase 1 is
   proven entirely through `PeriodicJobRunnerTests`' fake jobs against the
   real lease repository and a real SQL Server.
+
+**Phase 2 — reminder dispatch job (FR-9.2) + the notification backbone —
+Done 2026-09-29.** The first real job, and it turns out to send far more than
+its name suggests. 1360 unit + 684 integration tests (4 + 25 new — 6 of the
+25 are Phase 1's own, re-run after this phase's fixture changes). What is
+true now:
+
+- **`NotificationDispatchJob` sends every notification kind this codebase has
+  ever queued**, not only reminders — `Confirmed`/`Rejected`/`Cancelled`/
+  `ApprovalRequested`/`NoShowReleased`/`RecurrenceOccurrenceSkipped`/
+  `SeriesCancelled` rows have been piling up unsent in `Notifications` since
+  WP-4/5, because nothing before this ever dispatched anything. The seeded
+  `dbo.JobLeases` row was renamed `NotificationDispatch`
+  (`RenameReminderDispatchJobLease` migration) to stop the name promising a
+  narrower job than the one that actually runs — `AddHostedService
+  <NotificationDispatchJob>()` is now registered in `AddInfrastructure`.
+- **Reminder rows are scheduled at booking-confirm time** — one-off auto-
+  confirm (`CreateBookingCommandRequestHandler`), approval-confirm
+  (`ApproveBookingCommandRequestHandler`), and per-occurrence auto-confirm
+  (`CreateRecurrenceSeriesCommandRequestHandler`) — the dependency wp4-plan.md
+  flagged and deliberately left unbuilt ("cancelling would then have to void
+  them"). `Notification.ReminderSendAtUtc` (decision D4) clamps to now rather
+  than scheduling into the past for a short-notice booking.
+- **Cancelling never has to void a scheduled Reminder** (decision D10,
+  answering wp4-plan.md's own open question): `NotificationRepository
+  .BuildEmailAsync` loads the Booking and, for a `Reminder` whose `Status` is
+  no longer `Confirmed`, returns null — the job records that as handled and
+  moves on, never sending and never retrying. No cancellation path anywhere
+  had to be touched.
+- **Claiming is one atomic `UPDATE TOP (n) ... WITH (UPDLOCK, READPAST) ...
+  OUTPUT`** (`INotificationRepository.ClaimDueAsync`), bumping `Attempts` as
+  the claim itself — Attempts counts how many times a worker has *picked a
+  row up to try it*, not how many outcomes were recorded. This superseded a
+  speculative `Notification.RecordSendAttempt` (written in WP-4/5 before any
+  job existed to say what shape it would need) with `Notification
+  .MarkOutcome`, which never touches `Attempts`. The retry cap and
+  exponential backoff (`2^Attempts * BackoffBaseSeconds` since the row's own
+  last claim) are both enforced inside that same WHERE clause.
+- **`TenantBypassScope` now has two named callers**, exactly as
+  docs/wp8-plan.md decision D9 said it would: `NotificationRepository
+  .BuildEmailAsync` joins to `Bookings`/`RecurrenceRules`/`Resources`/`Users`
+  across every tenant in one tick, and none of those tables has a query
+  filter that a per-request `ICurrentTenant` could satisfy, because there is
+  no request. `Notifications` itself needed no bypass at all — it carries no
+  tenant column, filter, or RLS policy.
+- **No config section is required to boot** — `NotificationDispatchOptions`'
+  own property defaults match what `appsettings.json` now documents
+  explicitly, unlike `EmailOptions`/`JwtOptions`, where an absent section is
+  a boot failure. Still `ValidateOnStart` with `[Range]` guards, so a
+  nonsensical override (zero or negative) fails the boot rather than
+  spinning the job in a tight loop.
+- **`AuthenticationTestHost` strips every `IHostedService`** now that one
+  actually exists — hundreds of unrelated tests assert on `Notifications`
+  rows (`SentAtUtc` still null, `Attempts` still 0) moments after creating
+  them, and a live background job actually claiming and sending them
+  mid-suite would make those assertions depend on scheduling luck. Every job
+  is driven directly via `RunOnceAsync` in its own tests, never the ambient
+  timer loop.
+- **Testing gotcha found running the new suite repeatedly, not on the first
+  pass**: two new test files each created a booking on the seeded
+  "Conference Room A" (`Capacity` 1) to satisfy `Notifications`' own foreign
+  keys. A fixed date felt safe, but that resource is booked by tests all
+  over this ~680-test suite, and a capacity of 1 makes any two of them
+  collide unpredictably depending on run order — passed on the first full
+  run, failed on the second, passed again on a third. Fixed by giving each
+  file its own dedicated, `Capacity: 1000` resource (created and torn down
+  in `InitializeAsync`/`DisposeAsync`) that nothing else in the suite can
+  ever contend for — confirmed stable across four consecutive full runs
+  afterward. A shared fixture with real business constraints (capacity,
+  availability) is exactly the kind of thing that looks safe with `--filter`
+  on one file and is not safe in the full suite.

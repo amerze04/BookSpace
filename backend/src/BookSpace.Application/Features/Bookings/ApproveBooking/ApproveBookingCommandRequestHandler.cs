@@ -65,15 +65,24 @@ public sealed class ApproveBookingCommandRequestHandler
 
         var nowUtc = _clock.UtcNow;
 
+        // WP-8 Phase 2, FR-8.3: an approval is the other path a booking
+        // reaches Confirmed by (CreateBookingCommandRequestHandler's own
+        // NotificationsFor is the first), so it needs the same Reminder row
+        // — nothing else schedules one for a booking that started Pending.
+        var reminderLeadMinutes = await _bookings.FindReminderLeadMinutesAsync(booking.OrgId, cancellationToken);
+
         // Built once, outside the retryable delegate — a 1205 retry re-runs
-        // the whole delegate, and a freshly constructed notification Add()-ed
+        // the whole delegate, and freshly constructed notifications Add()-ed
         // unconditionally inside it would double-insert on a retry, the same
         // hazard WP-5 Phase 1's series-creation handler found and fixed. The
-        // same instance is safe to Add() again on retry: EF treats a repeat
+        // same instances are safe to Add() again on retry: EF treats a repeat
         // Add of an already-tracked reference as a no-op rather than a
         // duplicate.
         var notification = Notification.ForBooking(
             Guid.NewGuid(), booking.Id, booking.UserId, NotificationKind.Confirmed, nowUtc, actorUserId, nowUtc);
+        var reminderNotification = Notification.ForBooking(
+            Guid.NewGuid(), booking.Id, booking.UserId, NotificationKind.Reminder,
+            Notification.ReminderSendAtUtc(booking.StartsAtUtc, reminderLeadMinutes, nowUtc), actorUserId, nowUtc);
 
         return await _unitOfWork.ExecuteAsync(
             async token =>
@@ -103,7 +112,7 @@ public sealed class ApproveBookingCommandRequestHandler
                     approvalRequest.Decide(ApprovalDecision.Approved, actorUserId, nowUtc, request.Note);
                 }
 
-                _bookings.AddNotifications([notification]);
+                _bookings.AddNotifications([notification, reminderNotification]);
 
                 await _bookings.SaveChangesAsync(token);
 

@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 
 namespace BookSpace.IntegrationTests.Authentication;
@@ -31,8 +32,12 @@ public sealed class AuthenticationTestHost : WebApplicationFactory<Program>, IAs
     private const string TestSigningKey = "integration-test-signing-key-0123456789";
 
     // Under the OS temp directory, not the repository, and deleted with the
-    // database in DisposeAsync.
-    private static readonly string EmailSinkDirectory =
+    // database in DisposeAsync. Internal, not private: WP-8 Phase 2's
+    // dispatch-job tests send real emails here too and have to clean up
+    // exactly the files they wrote, the same way CreateUserEndpointTests'
+    // own TryFindSentMessageToAsync depends on this directory holding only
+    // what the test currently running put there.
+    internal static readonly string EmailSinkDirectory =
         Path.Combine(Path.GetTempPath(), "BookSpace.IntegrationTests", "sent-emails");
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -90,7 +95,20 @@ public sealed class AuthenticationTestHost : WebApplicationFactory<Program>, IAs
         // endpoints yet, so without it there is nothing for the authorization
         // policies to guard in a test.
         builder.ConfigureServices(services =>
-            services.AddControllers().AddApplicationPart(typeof(PolicyProbeController).Assembly));
+        {
+            services.AddControllers().AddApplicationPart(typeof(PolicyProbeController).Assembly);
+
+            // WP-8 Phase 2: strips NotificationDispatchJob (and any future
+            // hosted service) from this shared host. Hundreds of unrelated
+            // tests assert on Notification rows — SentAtUtc still null,
+            // Attempts still 0 — moments after creating them; a live
+            // background job actually claiming and sending them mid-suite
+            // would make those assertions flaky depending on scheduling luck,
+            // not on the behaviour under test. Every job here is proven
+            // directly (RunOnceAsync) or against its own repository, never by
+            // letting the ambient host's timer loop run it.
+            services.RemoveAll<IHostedService>();
+        });
     }
 
     public async Task InitializeAsync()

@@ -117,11 +117,33 @@ public class Notification
         DateTime nowUtc) =>
         new(id, null, recurrenceRuleId, null, recipientUserId, NotificationKind.SeriesCancelled, sendAtUtc, createdByUserId, nowUtc);
 
-    // FR-9.4 / AC-6: workers claim rows with UPDLOCK, READPAST — this just
-    // records the outcome of one attempt, it doesn't do any locking itself.
-    public void RecordSendAttempt(DateTime nowUtc, bool succeeded, string? error = null)
+    // WP-8 Phase 2, decision D4 (docs/wp8-plan.md): a reminder due before the
+    // booking was even confirmed — a short-notice booking made inside its own
+    // lead time — is sent once, immediately, rather than silently skipped.
+    // Never returns a past instant: SendAtUtc <= now is exactly what makes a
+    // row due the moment it is created, so the dispatch job picks it up on
+    // its very next tick instead of never.
+    public static DateTime ReminderSendAtUtc(DateTime startsAtUtc, int leadMinutes, DateTime nowUtc)
     {
-        Attempts++;
+        var wanted = startsAtUtc.AddMinutes(-leadMinutes);
+        return wanted > nowUtc ? wanted : nowUtc;
+    }
+
+    // WP-8 Phase 2 (docs/wp8-plan.md). Two-phase, matching how
+    // NotificationRepository/NotificationDispatchJob actually use this row:
+    // **claiming already incremented Attempts** (INotificationRepository
+    // .ClaimDueAsync, one atomic UPDLOCK/READPAST statement per §7 — Attempts
+    // counts how many times a worker has *picked this row up to try it*, not
+    // how many outcomes were recorded), so this only ever records what the
+    // attempt just claimed turned out to be. Incrementing again here would
+    // double-count every attempt against MaxAttempts' cap.
+    //
+    // Superseded a speculative RecordSendAttempt that both incremented and
+    // recorded in one call, written before any dispatch job existed to say
+    // which shape it would actually need — it had no caller yet, so nothing
+    // else needed to change.
+    public void MarkOutcome(DateTime nowUtc, bool succeeded, string? error = null)
+    {
         UpdatedAtUtc = nowUtc;
         if (succeeded)
         {

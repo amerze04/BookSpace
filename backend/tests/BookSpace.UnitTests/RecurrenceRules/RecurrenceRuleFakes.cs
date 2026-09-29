@@ -121,14 +121,20 @@ internal sealed class FakeSeriesBookingRepository : IBookingRepository
     public FakeSeriesBookingRepository(
         IEnumerable<BookingCreationOutcome>? outcomes = null,
         BookingCreationResult defaultResult = BookingCreationResult.Created,
-        int? approvalExpiryHours = null)
+        int? approvalExpiryHours = null,
+        int reminderLeadMinutes = 60)
     {
         _outcomes = new Queue<BookingCreationOutcome>(outcomes ?? []);
         _default = new BookingCreationOutcome(defaultResult, null);
         ApprovalExpiryHours = approvalExpiryHours;
+        ReminderLeadMinutes = reminderLeadMinutes;
     }
 
     public int? ApprovalExpiryHours { get; }
+
+    // WP-8 Phase 2: an arbitrary but fixed default, like ApprovalExpiryHours
+    // above — nothing here asserts the exact value unless a test overrides it.
+    public int ReminderLeadMinutes { get; }
 
     // Every attempted booking, whichever way it was decided — the report the
     // handler builds is asserted against the response, this list is for
@@ -187,6 +193,9 @@ internal sealed class FakeSeriesBookingRepository : IBookingRepository
 
     public Task<int?> FindApprovalExpiryHoursAsync(Guid orgId, CancellationToken cancellationToken) =>
         Task.FromResult(ApprovalExpiryHours);
+
+    public Task<int> FindReminderLeadMinutesAsync(Guid orgId, CancellationToken cancellationToken) =>
+        Task.FromResult(ReminderLeadMinutes);
 
     public Task SaveChangesAsync(CancellationToken cancellationToken)
     {

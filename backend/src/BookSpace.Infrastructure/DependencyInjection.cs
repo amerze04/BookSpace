@@ -1,5 +1,6 @@
 using BookSpace.Application.Abstractions;
 using BookSpace.Infrastructure.Email;
+using BookSpace.Infrastructure.Jobs;
 using BookSpace.Infrastructure.Persistence;
 using BookSpace.Infrastructure.Persistence.Repositories;
 using BookSpace.Infrastructure.Security;
@@ -102,6 +103,17 @@ public static class DependencyInjection
         // inside PeriodicJobRunner's own per-run scope, never held by the
         // singleton hosted service itself.
         services.AddScoped<IJobLeaseRepository, JobLeaseRepository>();
+
+        // WP-8 Phase 2. No annotation-only ValidateOnStart posture here on
+        // purpose — see NotificationDispatchOptions' own header for why a
+        // missing section is not a boot failure the way EmailOptions'
+        // absence is.
+        services.AddOptions<NotificationDispatchOptions>()
+            .Bind(configuration.GetSection(NotificationDispatchOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        services.AddScoped<INotificationRepository, NotificationRepository>();
+        services.AddHostedService<NotificationDispatchJob>();
 
         // Scoped, like the repositories, and for the same reason: it wraps the
         // request's own DbContext and its transaction (CLAUDE.md §5).

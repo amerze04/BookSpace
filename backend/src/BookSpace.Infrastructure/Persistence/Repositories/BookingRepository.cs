@@ -613,6 +613,13 @@ internal sealed class BookingRepository : IBookingRepository
             .Select(o => o.ApprovalExpiryHours)
             .FirstOrDefaultAsync(cancellationToken);
 
+    public Task<int> FindReminderLeadMinutesAsync(Guid orgId, CancellationToken cancellationToken) =>
+        _context.Organizations
+            .AsNoTracking()
+            .Where(o => o.Id == orgId)
+            .Select(o => o.ReminderLeadMinutes)
+            .FirstAsync(cancellationToken);
+
     public Task SaveChangesAsync(CancellationToken cancellationToken) =>
         _context.SaveChangesAsync(cancellationToken);
 

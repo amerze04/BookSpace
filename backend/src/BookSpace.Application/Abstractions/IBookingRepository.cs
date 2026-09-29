@@ -209,6 +209,13 @@ public interface IBookingRepository
     // booking is being made against.
     Task<int?> FindApprovalExpiryHoursAsync(Guid orgId, CancellationToken cancellationToken);
 
+    // Organizations.ReminderLeadMinutes (WP-8 Phase 2, FR-8.3) — NOT NULL,
+    // unlike ApprovalExpiryHours, so this always answers a real configured
+    // value rather than an absent one. Drives when a Reminder notification
+    // becomes due (Notification.ReminderSendAtUtc); the actual send is the
+    // dispatch job's job (docs/wp8-plan.md).
+    Task<int> FindReminderLeadMinutesAsync(Guid orgId, CancellationToken cancellationToken);
+
     // Separate from the mutations, as on the other repositories: the handler owns
     // the unit of work, so one save covers everything it staged.
     Task SaveChangesAsync(CancellationToken cancellationToken);

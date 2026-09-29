@@ -345,9 +345,12 @@ public class CreateRecurrenceSeriesCommandRequestHandlerTests
         // pre-check-refused case above.
         Assert.Equal(3, harness.Bookings.Attempted.Count);
 
-        // Nothing lingers from the declined attempt: exactly two notifications
-        // (Confirmed, one per created occurrence), never three.
-        Assert.Equal(2, harness.Bookings.AddedNotifications.Count);
+        // Nothing lingers from the declined attempt: exactly four notifications
+        // — Confirmed and Reminder (WP-8 Phase 2, FR-8.3) for each of the two
+        // created occurrences, never three or six.
+        Assert.Equal(4, harness.Bookings.AddedNotifications.Count);
+        Assert.Equal(2, harness.Bookings.AddedNotifications.Count(n => n.Kind == NotificationKind.Confirmed));
+        Assert.Equal(2, harness.Bookings.AddedNotifications.Count(n => n.Kind == NotificationKind.Reminder));
     }
 
     // A single declined occurrence, on an approval-gated resource, is again

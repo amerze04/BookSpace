@@ -80,11 +80,38 @@ public class ApproveBookingCommandRequestHandlerTests
         await Handler(bookings, Admin, Role.TenantAdmin).Handle(
             new ApproveBookingCommandRequest(booking.Id), CancellationToken.None);
 
-        var notification = Assert.Single(bookings.AddedNotifications);
-        Assert.Equal(NotificationKind.Confirmed, notification.Kind);
+        var notification = Assert.Single(
+            bookings.AddedNotifications, n => n.Kind == NotificationKind.Confirmed);
         Assert.Equal(booking.Id, notification.BookingId);
         Assert.Equal(Owner, notification.RecipientUserId);
         Assert.Equal(Admin, notification.CreatedByUserId);
+    }
+
+    // WP-8 Phase 2, FR-8.3: approval is the other path a booking reaches
+    // Confirmed by, so it needs the same Reminder row
+    // CreateBookingCommandRequestHandler's own auto-confirm path gets.
+    [Fact]
+    public async Task EnqueuesAReminderScheduledAtTheConfiguredLeadTime()
+    {
+        var booking = PendingBooking();
+        var bookings = new FakeApprovalBookingRepository
+        {
+            Reachable = booking,
+            ExistingApprovalRequest = PendingApprovalRequest(booking.Id),
+        };
+
+        await Handler(bookings, Admin, Role.TenantAdmin).Handle(
+            new ApproveBookingCommandRequest(booking.Id), CancellationToken.None);
+
+        var notification = Assert.Single(
+            bookings.AddedNotifications, n => n.Kind == NotificationKind.Reminder);
+        Assert.Equal(booking.Id, notification.BookingId);
+        Assert.Equal(Owner, notification.RecipientUserId);
+        Assert.Equal(Admin, notification.CreatedByUserId);
+        // FakeApprovalBookingRepository's default lead time is 60 minutes,
+        // and Starts is ten days out — comfortably past NowUtc either way, so
+        // this is the computed lead time rather than decision D4's now-clamp.
+        Assert.Equal(Starts.AddMinutes(-60), notification.SendAtUtc);
     }
 
     // ---- Who may reach the booking (decision 0018/0002 reapplied) -----------
