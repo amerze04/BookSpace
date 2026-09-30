@@ -58,7 +58,24 @@ public abstract class PeriodicJobRunner : BackgroundService
     // milliseconds apart can read the identical truncated instant, at which
     // point "expires in 200ms" and "expires now" become indistinguishable.
     // Found exactly this way while writing PeriodicJobRunnerTests.
+    //
+    // No longer the only thing standing between a slow run and a lease
+    // takeover — see HeartbeatInterval below — but still has to comfortably
+    // exceed one heartbeat tick's own round trip, or a slow renew call could
+    // outlive the interval meant to precede the next one.
     protected abstract TimeSpan LeaseDuration { get; }
+
+    // How often RunOnceAsync renews the lease *while RunAsync is still in
+    // flight*, so a run that outlives LeaseDuration does not lose ownership
+    // mid-flight — the gap this class's own LeaseDuration comment used to
+    // only warn about rather than close. Half the lease duration is the
+    // standard renew-before-expiry safety margin: even if one heartbeat tick
+    // is delayed (a GC pause, thread-pool starvation, a slow renew call
+    // itself), there is still a second chance before the lease actually
+    // expires. Virtual so an unusual job could override it; no job needs to
+    // today.
+    protected virtual TimeSpan HeartbeatInterval =>
+        TimeSpan.FromTicks(LeaseDuration.Ticks / 2);
 
     // The job's actual work. Receives the scope's own IServiceProvider (for
     // resolving scoped repositories/DbContext) and the clock's current time,
@@ -101,10 +118,22 @@ public abstract class PeriodicJobRunner : BackgroundService
             return new JobRunOutcome(false, null, null);
         }
 
+        // Renews the lease in the background for as long as RunAsync is in
+        // flight. workCts is what RunAsync actually receives: if a heartbeat
+        // is ever refused (another instance already won the lease — this one
+        // fell behind by more than LeaseDuration between heartbeats) or
+        // throws, exclusive ownership is already gone, and the only correct
+        // response is to stop working immediately rather than let RunAsync
+        // keep going against a batch a second instance may now also be
+        // processing.
+        using var heartbeatLoopCts = new CancellationTokenSource();
+        using var workCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var heartbeatTask = RunHeartbeatLoopAsync(workCts, heartbeatLoopCts.Token);
+
         var stopwatch = Stopwatch.StartNew();
         try
         {
-            var summary = await RunAsync(scope.ServiceProvider, clock.UtcNow, cancellationToken);
+            var summary = await RunAsync(scope.ServiceProvider, clock.UtcNow, workCts.Token);
             stopwatch.Stop();
 
             _logger.LogInformation(
@@ -112,6 +141,24 @@ public abstract class PeriodicJobRunner : BackgroundService
                 JobName, summary.PickedUp, summary.Succeeded, summary.Failed, stopwatch.ElapsedMilliseconds);
 
             return new JobRunOutcome(true, summary, null);
+        }
+        // Cancellation that did *not* come from the caller's own token means
+        // the heartbeat lost the lease and cancelled workCts instead — a
+        // per-run failure like any other, not app shutdown, so it is caught
+        // and reported rather than left to propagate: letting it through
+        // uncaught would reach ExecuteAsync's own catch, which only expects
+        // stoppingToken to be the source and would otherwise take the whole
+        // hosted service down with it (WP-8's own "must never silently kill
+        // the hosted service" requirement, applied to this new failure mode
+        // too).
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            stopwatch.Stop();
+            _logger.LogWarning(
+                "{JobName} run stopped after {ElapsedMs}ms because its lease was lost mid-flight",
+                JobName, stopwatch.ElapsedMilliseconds);
+
+            return new JobRunOutcome(true, null, new OperationCanceledException("Lease lost mid-run."));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -125,6 +172,70 @@ public abstract class PeriodicJobRunner : BackgroundService
                 JobName, stopwatch.ElapsedMilliseconds);
 
             return new JobRunOutcome(true, null, ex);
+        }
+        finally
+        {
+            // Stops the loop below regardless of how RunAsync finished —
+            // success, a caught failure, or the cancellation case above —
+            // and waits for it to actually unwind before this method returns,
+            // so no heartbeat renewal is ever still in flight (on this scope,
+            // or the next tick's) after RunOnceAsync hands control back.
+            heartbeatLoopCts.Cancel();
+            try
+            {
+                await heartbeatTask;
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected: this is exactly how the loop below stops.
+            }
+        }
+    }
+
+    // Renews the lease once per HeartbeatInterval until stopLoop is
+    // cancelled (RunAsync finished, one way or another). Uses its own fresh
+    // DI scope per tick rather than RunOnceAsync's own scope: that scope's
+    // DbContext is busy doing RunAsync's actual work concurrently with this
+    // loop, and DbContext is not thread-safe.
+    private async Task RunHeartbeatLoopAsync(CancellationTokenSource workCts, CancellationToken stopLoop)
+    {
+        try
+        {
+            while (true)
+            {
+                await Task.Delay(HeartbeatInterval, stopLoop);
+
+                using var heartbeatScope = _scopeFactory.CreateScope();
+                var leases = heartbeatScope.ServiceProvider.GetRequiredService<IJobLeaseRepository>();
+                var clock = heartbeatScope.ServiceProvider.GetRequiredService<IClock>();
+
+                bool renewed;
+                try
+                {
+                    renewed = await leases.TryAcquireOrRenewAsync(
+                        JobName, _ownerId, LeaseDuration, clock.UtcNow, stopLoop);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(
+                        ex, "{JobName} heartbeat failed to renew its lease; stopping the run", JobName);
+                    workCts.Cancel();
+                    return;
+                }
+
+                if (!renewed)
+                {
+                    _logger.LogWarning(
+                        "{JobName} lost its lease to another instance mid-run; stopping the run", JobName);
+                    workCts.Cancel();
+                    return;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The ordinary path: RunAsync finished and RunOnceAsync's own
+            // finally block cancelled stopLoop.
         }
     }
 

@@ -2196,9 +2196,65 @@ is true now:
   by id in one second query — rather than N+1 lookups or an `Include()` that
   isn't available.
 
+**Cross-cutting addition, 2026-09-30 — lease heartbeat renewal.** Not a new
+phase: a gap in `PeriodicJobRunner` itself (shared by all three jobs),
+raised as a direct question — "if a run takes longer than `LeaseDuration`,
+what happens?" — and closed rather than left as a documented risk.
+1388 unit + 705 integration tests (2 new, both in
+`PeriodicJobRunnerTests.cs`). What changed:
+
+- **Before this, `LeaseDuration` was renewed exactly once per tick**, at the
+  very top of `RunOnceAsync`, before `RunAsync` (the actual work) ever ran.
+  Nothing renewed it again while a run was in flight — the `LeaseDuration`
+  property's own comment already warned "must comfortably exceed how long
+  one run can take, or a slow run loses its own lease mid-flight," but
+  warning about it is not the same as preventing it.
+- **`PeriodicJobRunner.RunOnceAsync` now runs a background renewal loop
+  alongside `RunAsync`** for as long as it is in flight, ticking once per
+  `HeartbeatInterval` (a new `protected virtual` property, defaulting to
+  `LeaseDuration / 2` — the standard renew-before-expiry safety margin, so
+  one missed or delayed tick still leaves a second chance before the lease
+  actually expires). The heartbeat uses its **own** DI scope per tick, never
+  `RunAsync`'s — `DbContext` is not thread-safe, and that scope's one is busy
+  with the actual work at the same time.
+- **A heartbeat that fails to renew — another instance already won the
+  lease — cancels the run**, rather than letting `RunAsync` keep processing
+  a batch a second instance may now also be working through. `RunAsync`
+  receives a linked token (`workCts`) instead of the caller's own, so this
+  is a targeted cancellation the job's own per-item `catch (Exception ex)
+  when (ex is not OperationCanceledException)` blocks already let through
+  correctly, unchanged, in all three jobs.
+- **That cancellation had to be told apart from the app shutting down**, or
+  it would have escaped as an uncaught `OperationCanceledException` into
+  `ExecuteAsync`'s own catch — which only expects `stoppingToken` to be the
+  source — and taken the whole hosted service down with it, exactly the
+  failure mode WP-8 already requires jobs never produce. `RunOnceAsync` now
+  distinguishes the two by checking the *caller's own* token
+  (`!cancellationToken.IsCancellationRequested`), not the linked one, and
+  reports a lease-lost-mid-run as an ordinary failed `JobRunOutcome`
+  instead of propagating.
+- **Proven by measurement, not by reasoning about it.** The first version of
+  `AHeartbeatRenewsTheLeaseDuringALongRunSoASecondInstanceCannotTakeItOver`
+  used a 1-second lease (matching `ACrashedOwnersLeaseIsTakenOverByTheNextInstance`'s
+  own choice) and failed — instrumenting the real `dbo.JobLeases` row
+  directly showed the lease genuinely was being renewed, just with only a
+  few hundred milliseconds of real margin left by the time a competing
+  attempt ran a moment later. `IClock.UtcNow`'s whole-second truncation
+  (§4.3) means a renewal's new expiry is only ever "truncated-now +
+  `LeaseDuration`," so a 1-second lease leaves too little real-time slack
+  once that truncation is accounted for. Fixed by widening to a 3-second
+  lease in the test, not by changing the mechanism — confirmed stable across
+  three consecutive full runs afterward.
+- **`LosingTheLeaseMidRunStopsTheWorkPromptlyInsteadOfRunningToCompletion`**
+  proves the other half by forcing the loss directly (an out-of-band
+  `UPDATE dbo.JobLeases` from the test, not timing-dependent luck): a
+  10-second fake job's run stops within about one more heartbeat tick,
+  reporting a failed outcome rather than running to completion.
+
 **Where this stands, for picking WP-8 back up in a fresh session**:
-Phases 1–4 are done. The baseline going into Phase 5 is 1388 backend unit +
-703 backend integration tests, all green. **Phase 5 — the ICS feed — is
+Phases 1–4 are done, plus the heartbeat addition above. The baseline going
+into Phase 5 is 1388 backend unit + 705 backend integration tests, all
+green. **Phase 5 — the ICS feed — is
 next**; its task breakdown (`CalendarFeedTokens`, `POST /users/me
 /calendar-feed-token`, the anonymous `GET /calendar-feed/{token}.ics`, and
 decisions D6/D7 on the token model and the hand-rolled ICS writer) is in
