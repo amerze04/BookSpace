@@ -394,4 +394,47 @@ public class BookingTests
 
         Assert.Throws<InvalidOperationException>(() => booking.Reject(Guid.NewGuid(), NowUtc));
     }
+
+    // ---- ExpireApproval (WP-8 Phase 4, FR-9.3, decision D3a) ----------------
+
+    [Fact]
+    public void ExpireApproval_SetsStatusRejectedWithNullActor()
+    {
+        var booking = CreateValid(BookingStatus.Pending);
+        var later = NowUtc.AddHours(24);
+
+        booking.ExpireApproval(later);
+
+        Assert.Equal(BookingStatus.Rejected, booking.Status);
+        Assert.Null(booking.UpdatedByUserId);
+        Assert.Equal(later, booking.UpdatedAtUtc);
+    }
+
+    [Theory]
+    [InlineData(BookingStatus.Confirmed)]
+    [InlineData(BookingStatus.Cancelled)]
+    [InlineData(BookingStatus.Rejected)]
+    [InlineData(BookingStatus.Completed)]
+    [InlineData(BookingStatus.NoShow)]
+    public void ExpireApproval_ThrowsWhenNotPending(BookingStatus status)
+    {
+        var booking = CreateValid(status);
+
+        Assert.Throws<InvalidOperationException>(() => booking.ExpireApproval(NowUtc));
+    }
+
+    // The transition is identical to Reject's; only the actor differs. A
+    // second expiry (or a Reject after an Expire, or vice versa) refuses
+    // rather than overwriting, exactly as a second Reject would — the
+    // booking is no longer Pending either way.
+    [Fact]
+    public void ExpireApproval_RefusesASecondCallAfterItAlreadyExpired()
+    {
+        var booking = CreateValid(BookingStatus.Pending);
+
+        booking.ExpireApproval(NowUtc);
+
+        Assert.Throws<InvalidOperationException>(() => booking.ExpireApproval(NowUtc.AddMinutes(1)));
+        Assert.Throws<InvalidOperationException>(() => booking.Reject(Guid.NewGuid(), NowUtc.AddMinutes(1)));
+    }
 }

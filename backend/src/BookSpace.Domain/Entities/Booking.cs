@@ -202,6 +202,28 @@ public class Booking : IAuditable, ITenantOwned
         UpdatedByUserId = actorUserId;
     }
 
+    // WP-8 Phase 4 (docs/wp8-plan.md, decision D3a). The stale-approval
+    // expiry job's own rejection: nobody decided in time, so the request is
+    // refused the same way a human refusing it would refuse it — the
+    // *booking's* status has no room for a third outcome, only the
+    // ApprovalRequest (Decision = Expired, via ApprovalRequest.Expire) and
+    // the Notification (Kind = ApprovalExpired) carry the more precise fact.
+    //
+    // Guarded by the same CanBeRejected() predicate Reject uses — the
+    // transition is identical, only the actor and calling context (a job,
+    // not a person) differ. UpdatedByUserId stays null, mirroring
+    // MarkNoShow's null-actor pattern: the transition was driven by a rule,
+    // not by an edit.
+    public void ExpireApproval(DateTime nowUtc)
+    {
+        if (!CanBeRejected())
+            throw new InvalidOperationException($"Booking {Id} in status {Status} cannot be expired.");
+
+        Status = BookingStatus.Rejected;
+        UpdatedAtUtc = nowUtc;
+        UpdatedByUserId = null;
+    }
+
     // WP-8 Phase 3 (docs/wp8-plan.md, decision D5). Guarded so the handler can
     // refuse with a reason code (BookingNotCheckable) instead of catching
     // CheckIn's exception, mirroring CanBeRejected's shape.

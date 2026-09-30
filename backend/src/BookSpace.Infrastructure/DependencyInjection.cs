@@ -124,6 +124,15 @@ public static class DependencyInjection
         services.AddScoped<INoShowReleaseRepository, NoShowReleaseRepository>();
         services.AddHostedService<NoShowReleaseJob>();
 
+        // WP-8 Phase 4, FR-9.3. Same ValidateOnStart posture as its two
+        // siblings above.
+        services.AddOptions<StaleApprovalExpiryOptions>()
+            .Bind(configuration.GetSection(StaleApprovalExpiryOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        services.AddScoped<IStaleApprovalExpiryRepository, StaleApprovalExpiryRepository>();
+        services.AddHostedService<StaleApprovalExpiryJob>();
+
         // Scoped, like the repositories, and for the same reason: it wraps the
         // request's own DbContext and its transaction (CLAUDE.md §5).
         services.AddScoped<IUnitOfWork, UnitOfWork>();

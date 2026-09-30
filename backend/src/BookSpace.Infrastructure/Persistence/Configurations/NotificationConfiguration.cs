@@ -15,8 +15,12 @@ internal sealed class NotificationConfiguration : IEntityTypeConfiguration<Notif
             // OccurrenceDate together (RecurrenceOccurrenceSkipped).
             t.HasCheckConstraint("CK_Notifications_HasContext",
                 "[BookingId] IS NOT NULL OR [RecurrenceRuleId] IS NOT NULL");
+            // WP-8 Phase 4: widened for 'ApprovalExpired' (decision D3). A
+            // strict widening — every row that satisfied the constraint
+            // before still does, same pattern as decision 0026's own
+            // widening and the AddApprovalDecisionWithdrawn migration.
             t.HasCheckConstraint("CK_Notifications_Kind",
-                "[Kind] IN ('Confirmed','Rejected','Cancelled','Reminder','ApprovalRequested','NoShowReleased','RecurrenceOccurrenceSkipped','SeriesCancelled')");
+                "[Kind] IN ('Confirmed','Rejected','Cancelled','Reminder','ApprovalRequested','NoShowReleased','RecurrenceOccurrenceSkipped','SeriesCancelled','ApprovalExpired')");
         });
         builder.HasKey(n => n.Id).HasName("PK_Notifications");
 

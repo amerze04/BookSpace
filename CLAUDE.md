@@ -1928,8 +1928,8 @@ a later WP's tasks before this one's acceptance criteria are met.
       (FR-9.2). — Phase 2.
 - [x] No-show job: release confirmed bookings after a grace period (FR-9.1).
       — `NoShowReleaseJob` (Phase 3).
-- [ ] Stale-approval job: expire un-actioned approval requests (FR-9.3). —
-      Phase 4.
+- [x] Stale-approval job: expire un-actioned approval requests (FR-9.3). —
+      `StaleApprovalExpiryJob` (Phase 4).
 - [x] A transactional email provider integrated through the retry/backoff
       path. — `IEmailSender` (already existed, user management Phase 1)
       called from inside `NotificationDispatchJob`'s retry/backoff loop
@@ -2147,14 +2147,62 @@ now:
   sibling: a booking either qualifies or it doesn't, and a lost race is
   resolved once inside `TryReleaseAsync`, never retried by the job.
 
+**Phase 4 — stale-approval expiry (FR-9.3) — Done 2026-09-30.** 1388 unit +
+703 integration tests (7 + 6 new). One migration
+(`AddApprovalExpiredNotificationKind`, EF-generated from the
+`NotificationConfiguration` change — a strict widening, same pattern as
+`AddApprovalDecisionWithdrawn`). `ApprovalRequest.Expire()`,
+`Organizations.ApprovalExpiryHours` and `IX_ApprovalRequests_Pending` all
+already existed; `ApprovalRequest.ExpiresAtUtc` was confirmed already
+populated at creation time (`CreateBookingCommandRequestHandler`, line
+~167) — no extra wiring needed there, exactly as `docs/wp8-plan.md`'s Phase
+4 section anticipated. No new endpoint and no new reason code — this phase
+is purely a background job, a domain method and a notification kind. What
+is true now:
+
+- **`Booking.ExpireApproval(DateTime nowUtc)` is `Reject`'s transition with
+  a null actor**, guarded by the same `CanBeRejected()` predicate — decision
+  D3a. The *booking's* `Status` has no room for a third outcome beyond
+  `Rejected`; only `ApprovalRequest.Decision` (`Expired`, via `Expire()`,
+  already existed) and the notification's own `Kind` carry the more precise
+  fact that nobody decided in time rather than someone saying no.
+- **`ApprovalExpired` is genuinely its own `NotificationKind`, not a reuse of
+  `Rejected`** (decision D3) — `CK_Notifications_Kind` widened accordingly,
+  and `NotificationRepository.ComposeForBooking` gained the composing arm
+  `NotificationDispatchJob` needs to actually email it.
+- **No new concurrency token was needed on `ApprovalRequests`, and that is a
+  deliberate finding, not an oversight.** A human deciding (Reject, plain EF;
+  Approve, `dbo.ApproveBooking` under its own lock) and the job's own
+  `ExpireApproval` both mutate the *same* `Booking` row inside one
+  `SaveChangesAsync`/procedure call, and `Bookings.RowVersion` (decision
+  0023) is what catches the race either way: whichever write commits second
+  gets `DbUpdateConcurrencyException`, which rolls back that whole
+  transaction — the `ApprovalRequest` change included, even though that
+  table carries no version column of its own. `IStaleApprovalExpiryRepository
+  .TryExpireAsync` catches it and reports "lost the race, not a failure,"
+  the identical shape Phase 3's `NoShowReleaseRepository.TryReleaseAsync`
+  uses — proven with the same forced-interleaving technique
+  (`ARaceWithAConcurrentDecisionDoesNotOverwriteIt`).
+- **`TenantBypassScope` now has four named callers.** `StaleApprovalExpiryRepository`
+  reads `ApprovalRequests` unbypassed (it carries no query filter or RLS
+  policy at all — not one of §4.2's six tables, same situation as
+  `Notifications`) but wraps every `Bookings` read *and* write in the bypass,
+  learning Phase 3's own lesson up front this time: RLS governs `UPDATE`
+  visibility exactly as it governs `SELECT`, so the save needs the bypass
+  as much as the read does.
+- **`ApprovalRequest` has no navigation property to `Booking`** (only the FK,
+  `BookingId`), so `FindExpiredCandidatesAsync` loads the pair in two plain
+  queries — every candidate `ApprovalRequest`, then every matching `Booking`
+  by id in one second query — rather than N+1 lookups or an `Include()` that
+  isn't available.
+
 **Where this stands, for picking WP-8 back up in a fresh session**:
-Phases 1–3 are done. The baseline going into Phase 4 is 1381 backend unit +
-697 backend integration tests, all green. **Phase 4 — stale-approval expiry
-(FR-9.3) — is next**; its task breakdown (`Booking.ExpireApproval`, the new
-`ApprovalExpired` notification kind widening `CK_Notifications_Kind`,
-`StaleApprovalExpiryJob`, and confirming whether `ApprovalRequest
-.ExpiresAtUtc` is already populated at creation time) is in
-[`docs/wp8-plan.md`](docs/wp8-plan.md)'s own Phase 4 section. `STATE-OF-THE-APP.md`
+Phases 1–4 are done. The baseline going into Phase 5 is 1388 backend unit +
+703 backend integration tests, all green. **Phase 5 — the ICS feed — is
+next**; its task breakdown (`CalendarFeedTokens`, `POST /users/me
+/calendar-feed-token`, the anonymous `GET /calendar-feed/{token}.ics`, and
+decisions D6/D7 on the token model and the hand-rolled ICS writer) is in
+[`docs/wp8-plan.md`](docs/wp8-plan.md)'s own Phase 5 section. `STATE-OF-THE-APP.md`
 has not been refreshed for any of WP-8 yet (still dated 2026-09-23, from
 before the admin console even closed) — this CLAUDE.md section is the
 current source of truth for WP-8 until the whole package closes.

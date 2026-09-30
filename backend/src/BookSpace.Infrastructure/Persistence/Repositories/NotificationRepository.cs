@@ -195,10 +195,10 @@ internal sealed class NotificationRepository : INotificationRepository
     // No design or copy requirements exist for these (no FR specifies wording)
     // — kept plain and factual, one arm per Kind this dispatch job can
     // actually see anchored to a Booking. The default arm throws rather than
-    // guessing: a new Booking-anchored kind added later (ApprovalExpired,
-    // WP-8 Phase 4) needs a line here before it can ever be emailed, the same
-    // "one arm per reason, default throws" shape ReasonCodes' own mapping
-    // switches use.
+    // guessing: a new Booking-anchored kind needs a line here before it can
+    // ever be emailed (ApprovalExpired, WP-8 Phase 4, was exactly this case),
+    // the same "one arm per reason, default throws" shape ReasonCodes' own
+    // mapping switches use.
     private static (string Subject, string Body) ComposeForBooking(
         NotificationKind kind, string resourceName, string when) =>
         kind switch
@@ -221,6 +221,9 @@ internal sealed class NotificationRepository : INotificationRepository
             NotificationKind.NoShowReleased => (
                 $"Booking released — {resourceName}",
                 $"Your booking for {resourceName} on {when} was released as a no-show; the slot is bookable again."),
+            NotificationKind.ApprovalExpired => (
+                $"Approval request expired — {resourceName}",
+                $"Your request for {resourceName} on {when} expired before anyone decided on it."),
             _ => throw new InvalidOperationException(
                 $"Notification kind '{kind}' is not anchored to a Booking."),
         };
