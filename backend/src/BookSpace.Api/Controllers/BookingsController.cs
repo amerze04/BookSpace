@@ -3,6 +3,7 @@ using BookSpace.Application.Common.Pagination;
 using BookSpace.Application.Features.Bookings;
 using BookSpace.Application.Features.Bookings.ApproveBooking;
 using BookSpace.Application.Features.Bookings.CancelBooking;
+using BookSpace.Application.Features.Bookings.CheckIn;
 using BookSpace.Application.Features.Bookings.CreateBooking;
 using BookSpace.Application.Features.Bookings.GetBooking;
 using BookSpace.Application.Features.Bookings.ListBookings;
@@ -275,6 +276,30 @@ public sealed class BookingsController : ControllerBase
         var result = await _sender.Send(
             new ApproveBookingCommandRequest(id, request?.Note),
             cancellationToken);
+
+        return Ok(result);
+    }
+
+    // WP-8 Phase 3, decision D5. Owner-only, no body — check-in carries no
+    // reason or note. Idempotent: a repeat call answers 200 again with the
+    // original CheckedInAtUtc rather than 409, since there is nothing here a
+    // second call could overwrite.
+    //
+    //   200 — Confirmed (unchanged), CheckedInAtUtc set
+    //   404 BookingNotFound — not this caller's own booking: another
+    //       member's, another tenant's, or nonexistent, all byte-identical.
+    //       No admin widening, unlike cancel/approve/reject — decision D5.
+    //   409 BookingNotCheckable — not currently Confirmed
+    [HttpPost("{id:guid}/check-in")]
+    [ProducesResponseType<CheckInCommandResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> CheckIn(Guid id, CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(new CheckInCommandRequest(id), cancellationToken);
 
         return Ok(result);
     }

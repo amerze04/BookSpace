@@ -98,6 +98,11 @@ public class AppExceptionCatalogueTests
             (ReasonCodes.UserAlreadyActivated, ErrorKind.Conflict),
         [typeof(UserNotActiveException)] =
             (ReasonCodes.UserNotActive, ErrorKind.RuleViolation),
+
+        // WP-8 Phase 3. Conflict rather than RuleViolation: the booking's
+        // current state, not the request, is what refuses this.
+        [typeof(BookingNotCheckableException)] =
+            (ReasonCodes.BookingNotCheckable, ErrorKind.Conflict),
     };
 
     // AuthenticationException is excluded deliberately, and it is the one

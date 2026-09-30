@@ -249,6 +249,10 @@ internal sealed class FakeSeriesBookingRepository : IBookingRepository
         Guid bookingId, BookingOwnerFilter owner, CancellationToken cancellationToken) =>
         throw new NotSupportedException();
 
+    public Task<Booking?> FindForCheckInAsync(
+        Guid bookingId, Guid ownerUserId, CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
     public Task<BookingApprovalOutcome> ApproveAsync(
         Guid bookingId, Guid approverUserId, bool callerIsTenantAdmin, DateTime nowUtc,
         CancellationToken cancellationToken) =>

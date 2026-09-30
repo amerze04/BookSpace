@@ -274,7 +274,9 @@ at a throw site as a literal. Authentication's five codes stay in
 Bookings (declared by FR-4.5, first thrown in WP-4): `SlotUnavailable`,
 `CapacityExceeded`, `OutsideAvailability`, `BlackoutPeriod`,
 `ResourceArchived`, plus WP-4's own `BookingNotFound`,
-`BookingNotCancellable`, `BookingDurationOutOfRange` and `BookingInThePast`.
+`BookingNotCancellable`, `BookingDurationOutOfRange` and `BookingInThePast`,
+plus WP-8 Phase 3's own `BookingNotCheckable` (`Conflict`, 409 — the
+booking's current state refuses check-in, not a rule the request violated).
 
 `SlotUnavailable` and `CapacityExceeded` are both `Conflict` and are split by
 what is left, not by the resource: **nothing free at any instant inside the
@@ -1924,8 +1926,8 @@ a later WP's tasks before this one's acceptance criteria are met.
       `JobLeaseRepository` (Phase 1).
 - [x] Reminder job: email members a configurable interval before a booking
       (FR-9.2). — Phase 2.
-- [ ] No-show job: release confirmed bookings after a grace period (FR-9.1).
-      — Phase 3.
+- [x] No-show job: release confirmed bookings after a grace period (FR-9.1).
+      — `NoShowReleaseJob` (Phase 3).
 - [ ] Stale-approval job: expire un-actioned approval requests (FR-9.3). —
       Phase 4.
 - [x] A transactional email provider integrated through the retry/backoff
@@ -2079,18 +2081,80 @@ true now:
   availability) is exactly the kind of thing that looks safe with `--filter`
   on one file and is not safe in the full suite.
 
+**Phase 3 — no-show release (FR-9.1) + `POST /bookings/{id}/check-in` —
+Done 2026-09-30.** 1381 unit + 697 integration tests (21 + 13 new). No
+migration — `IX_Bookings_NoShowSweep`, `Organizations.NoShowGraceMinutes`
+and the seeded `'NoShowRelease'` lease row all already existed. What is true
+now:
+
+- **`Booking.CheckIn` had to change to actually be idempotent.** It already
+  guarded on `Status == Confirmed`, but nothing stopped a second call from
+  re-stamping `CheckedInAtUtc` to a later instant — decision D5's own
+  wording ("not... a silently-rewritten timestamp") was not yet true of the
+  code it was written against. `CanBeCheckedIn()` mirrors `CanBeRejected`'s
+  shape for the handler's reason code; `CheckIn` itself now no-ops once
+  `CheckedInAtUtc` is already set, so a repeat call while still Confirmed
+  changes nothing and a call on any other status still throws (caught by the
+  handler as `BookingNotCheckable`, 409 — Conflict, not RuleViolation: the
+  booking's current state refuses this, not a rule the request violated).
+- **`POST /bookings/{id}/check-in` is owner-only with *no* TenantAdmin
+  widening, unlike Cancel/Approve/Reject** (decision D5). `IBookingRepository
+  .FindForCheckInAsync(bookingId, ownerUserId, ...)` takes the caller's id
+  directly rather than a `BookingOwnerFilter`, so there is no `AnyOwner` a
+  future caller could hand it by mistake — a structural narrowing, the same
+  shape `BookingOwnerFilter`'s own header uses to rule out an *accidental*
+  widening, applied here in the direction of preventing one that was never
+  supposed to exist. An admin checking in someone else's booking gets the
+  same 404 as any other member.
+- **`NoShowReleaseJob` sweeps `Bookings` across every organisation in one
+  tick**, evaluating decision 0004's predicate against each row's *own*
+  `Organizations.NoShowGraceMinutes` via a correlated subquery (Booking has
+  no navigation to Organization — only the denormalized `OrgId`, decision
+  0006 — mirroring `BookingRepository.ListAsync`'s resource-name lookup).
+  `INoShowReleaseRepository` is `TenantBypassScope`'s **third** sanctioned
+  caller (alongside `AuthenticationUserRepository` and
+  `NotificationRepository`), its header comment updated accordingly.
+- **The check-in/no-show race is real and is handled, not hand-waved.** A
+  booking checked in between the sweep's read and its release must not be
+  silently overwritten. `TryReleaseAsync` mutates the tracked `Booking`,
+  saves, and treats a `DbUpdateConcurrencyException` (the row's `RowVersion`
+  moved) as "lost the race, not a failure" — proven live in
+  `ARaceWithAConcurrentCheckInDoesNotOverwriteIt`, which forces the
+  interleaving with a second, independent `DbContext` rather than trusting
+  it to happen by luck (the same technique `UserLastAdminGuardConcurrencyTests`
+  and `NoShowReleaseJobTests`' own sibling in Phase 6 use). Every tracked
+  entry is detached afterward regardless of outcome, so one booking's
+  conflict — or any other failure — cannot poison the next booking's save
+  within the same batch's shared `DbContext`.
+- **A real bug caught before it shipped, worth recording because it is
+  exactly the kind CLAUDE.md §4.2 warns about**: the first draft of
+  `TryReleaseAsync` entered `TenantBypassScope` only around the *read*
+  (`FindNoShowCandidatesAsync`), matching `NotificationRepository
+  .RecordOutcomeAsync`'s save — but that method's own comment says *why* it
+  needs no bypass: `Notifications` carries no RLS policy at all. `Bookings`
+  is one of §4.2's six RLS-protected tables, and RLS's filter predicate
+  governs `UPDATE` visibility exactly as it governs `SELECT` — saving a
+  no-show release with no tenant session context set would have matched
+  zero rows at the engine level, which EF's optimistic-concurrency check
+  cannot tell apart from a genuine `RowVersion` conflict. Fixed by wrapping
+  `TryReleaseAsync`'s own body in `TenantBypassScope.Enter()` too, found by
+  reasoning through the RLS mechanism rather than by a failing test — the
+  fixture's dedicated, uncontended resource meant nothing would have
+  exercised the failure path to catch it by luck.
+- **No config section is required to boot**, same posture as
+  `NotificationDispatchOptions` — `NoShowReleaseOptions`' own defaults match
+  `appsettings.json`. It carries no retry/backoff knobs, unlike its Phase 2
+  sibling: a booking either qualifies or it doesn't, and a lost race is
+  resolved once inside `TryReleaseAsync`, never retried by the job.
+
 **Where this stands, for picking WP-8 back up in a fresh session**:
-Phases 1 and 2 are done and merged to the `feature/background-jobs` branch
-(commits `eeda61f`, `135c1d0`); the baseline going into Phase 3 is 1360
-backend unit + 684 backend integration tests, all green, confirmed stable
-across repeated full runs. **Phase 3 — no-show release (FR-9.1) + a new
-`POST /bookings/{id}/check-in` endpoint — is next**; its task breakdown,
-what already exists to build on (`Booking.IsNoShow`/`MarkNoShow`,
-`Organizations.NoShowGraceMinutes`, `IX_Bookings_NoShowSweep` — all already
-in place since earlier work packages), and the open questions already
-answered for it (decision D5: owner-only check-in, no time-window
-restriction, idempotent on repeat) are in
-[`docs/wp8-plan.md`](docs/wp8-plan.md)'s own Phase 3 section. `STATE-OF-THE-APP.md`
+Phases 1–3 are done. The baseline going into Phase 4 is 1381 backend unit +
+697 backend integration tests, all green. **Phase 4 — stale-approval expiry
+(FR-9.3) — is next**; its task breakdown (`Booking.ExpireApproval`, the new
+`ApprovalExpired` notification kind widening `CK_Notifications_Kind`,
+`StaleApprovalExpiryJob`, and confirming whether `ApprovalRequest
+.ExpiresAtUtc` is already populated at creation time) is in
+[`docs/wp8-plan.md`](docs/wp8-plan.md)'s own Phase 4 section. `STATE-OF-THE-APP.md`
 has not been refreshed for any of WP-8 yet (still dated 2026-09-23, from
 before the admin console even closed) — this CLAUDE.md section is the
 current source of truth for WP-8 until the whole package closes.

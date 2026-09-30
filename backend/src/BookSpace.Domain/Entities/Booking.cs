@@ -202,10 +202,29 @@ public class Booking : IAuditable, ITenantOwned
         UpdatedByUserId = actorUserId;
     }
 
+    // WP-8 Phase 3 (docs/wp8-plan.md, decision D5). Guarded so the handler can
+    // refuse with a reason code (BookingNotCheckable) instead of catching
+    // CheckIn's exception, mirroring CanBeRejected's shape.
+    public bool CanBeCheckedIn() => Status == BookingStatus.Confirmed;
+
+    // **Idempotent on repeat** (decision D5), and this is where it differs
+    // from Cancel/Reject: a second check-in while still Confirmed is a no-op
+    // that leaves the original CheckedInAtUtc untouched, mirroring the
+    // deactivate/reactivate convention (user management phase 5) rather than
+    // Cancel's "refuse a second call". There is nothing here for a second
+    // call to silently overwrite — check-in has exactly one actor by
+    // construction (the owner) and one fact worth keeping (when they first
+    // arrived) — unlike Cancel, where a second actor's reason and timestamp
+    // would quietly replace the first.
     public void CheckIn(DateTime nowUtc)
     {
-        if (Status != BookingStatus.Confirmed)
+        if (!CanBeCheckedIn())
             throw new InvalidOperationException($"Cannot check in a booking in status {Status}.");
+
+        if (CheckedInAtUtc is not null)
+        {
+            return;
+        }
 
         CheckedInAtUtc = nowUtc;
         UpdatedAtUtc = nowUtc;

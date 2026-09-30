@@ -145,6 +145,12 @@ public static class ReasonCodes
     // the room you are already sitting in is the ordinary case.
     public const string BookingInThePast = "BookingInThePast";
 
+    // ErrorKind.Conflict (WP-8 Phase 3, docs/wp8-plan.md decision D5). Check-in
+    // called on a booking that is not currently Confirmed. A 409, not a 422:
+    // unlike a rule the request violated, this is a fact about the booking's
+    // current state that a fresh GET would already show.
+    public const string BookingNotCheckable = "BookingNotCheckable";
+
     // ---- Recurring series (WP-5, FR-5.1 / FR-5.4) ----
 
     // ErrorKind.RuleViolation. Every occurrence RecurrenceExpansion produced for

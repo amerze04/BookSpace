@@ -115,6 +115,15 @@ public static class DependencyInjection
         services.AddScoped<INotificationRepository, NotificationRepository>();
         services.AddHostedService<NotificationDispatchJob>();
 
+        // WP-8 Phase 3, FR-9.1. Same ValidateOnStart posture as its sibling
+        // above — see NoShowReleaseOptions' own header.
+        services.AddOptions<NoShowReleaseOptions>()
+            .Bind(configuration.GetSection(NoShowReleaseOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        services.AddScoped<INoShowReleaseRepository, NoShowReleaseRepository>();
+        services.AddHostedService<NoShowReleaseJob>();
+
         // Scoped, like the repositories, and for the same reason: it wraps the
         // request's own DbContext and its transaction (CLAUDE.md §5).
         services.AddScoped<IUnitOfWork, UnitOfWork>();

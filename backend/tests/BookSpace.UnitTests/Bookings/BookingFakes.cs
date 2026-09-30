@@ -207,6 +207,25 @@ internal sealed class FakeBookingRepository : IBookingRepository
         return Task.FromResult(Cancellable);
     }
 
+    // ---- The check-in (WP-8 Phase 3) ----
+
+    // The tracked booking the check-in handler will mutate. Null is the
+    // "not visible to this caller" answer, same as Cancellable.
+    public Booking? CheckInable { get; set; }
+
+    public Guid? RequestedCheckInId { get; private set; }
+
+    public Guid? CheckInOwnerUserId { get; private set; }
+
+    public Task<Booking?> FindForCheckInAsync(
+        Guid bookingId, Guid ownerUserId, CancellationToken cancellationToken)
+    {
+        RequestedCheckInId = bookingId;
+        CheckInOwnerUserId = ownerUserId;
+
+        return Task.FromResult(CheckInable);
+    }
+
     // ---- The whole-series cancel (WP-5 Phase 2) — unused by this file's
     // single-booking tests, so a fixed empty answer is enough to satisfy the
     // interface. CancelRecurrenceSeriesCommandRequestHandlerTests exercises

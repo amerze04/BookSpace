@@ -115,6 +115,10 @@ internal sealed class FakeApprovalBookingRepository : IBookingRepository
         Guid bookingId, BookingOwnerFilter owner, CancellationToken cancellationToken) =>
         throw new NotSupportedException();
 
+    public Task<Booking?> FindForCheckInAsync(
+        Guid bookingId, Guid ownerUserId, CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
     public Task<IReadOnlyList<Booking>> FindOccurrencesToCancelAsync(
         Guid recurrenceRuleId, DateTime nowUtc, CancellationToken cancellationToken) =>
         throw new NotSupportedException();

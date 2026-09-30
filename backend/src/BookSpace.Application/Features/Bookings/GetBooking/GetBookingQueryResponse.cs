@@ -15,8 +15,9 @@ namespace BookSpace.Application.Features.Bookings.GetBooking;
 //   FR-5.2 makes each occurrence independently viewable through exactly this
 //   endpoint. A client that learns to read it now needs no change in WP-5.
 //
-//   CheckedInAtUtc — FR-4.x check-in. Nothing writes it yet (§7's no-show job is
-//   out of WP-4's scope), so it is null in practice today.
+//   CheckedInAtUtc — set by POST /bookings/{id}/check-in (WP-8 Phase 3,
+//   decision D5); null until the owner checks in, and permanently null on a
+//   booking the no-show release job later releases.
 //
 //   The three cancellation fields — who called it off, when, and why. They are
 //   the record decision 0002 asks for, and CancelledByUserId differing from

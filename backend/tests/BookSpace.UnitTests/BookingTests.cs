@@ -92,6 +92,41 @@ public class BookingTests
         Assert.Throws<InvalidOperationException>(() => booking.CheckIn(NowUtc));
     }
 
+    // ---- Check-in idempotence (WP-8 Phase 3, decision D5) -------------------
+
+    [Fact]
+    public void CanBeCheckedIn_IsTrueOnlyForConfirmed()
+    {
+        Assert.True(CreateValid(BookingStatus.Confirmed).CanBeCheckedIn());
+    }
+
+    [Theory]
+    [InlineData(BookingStatus.Pending)]
+    [InlineData(BookingStatus.Cancelled)]
+    [InlineData(BookingStatus.Rejected)]
+    [InlineData(BookingStatus.Completed)]
+    [InlineData(BookingStatus.NoShow)]
+    public void CanBeCheckedIn_IsFalseForAnythingElse(BookingStatus status)
+    {
+        Assert.False(CreateValid(status).CanBeCheckedIn());
+    }
+
+    // The point of decision D5: unlike Cancel, a repeat call must not
+    // overwrite the first arrival with a second, later instant.
+    [Fact]
+    public void CheckIn_IsIdempotent_ASecondCallLeavesTheFirstTimestampUntouched()
+    {
+        var booking = CreateValid(BookingStatus.Confirmed);
+        var first = NowUtc.AddMinutes(1);
+        var second = NowUtc.AddMinutes(30);
+
+        booking.CheckIn(first);
+        booking.CheckIn(second);
+
+        Assert.Equal(first, booking.CheckedInAtUtc);
+        Assert.Equal(first, booking.UpdatedAtUtc);
+    }
+
     [Fact]
     public void IsNoShow_ReturnsTrue_WhenConfirmedNotCheckedInAndPastGrace()
     {

@@ -124,6 +124,22 @@ public interface IBookingRepository
         BookingOwnerFilter owner,
         CancellationToken cancellationToken);
 
+    // ---- The check-in (WP-8 Phase 3, docs/wp8-plan.md decision D5) ----
+
+    // The tracked booking, for check-in — **strictly the caller's own**, with
+    // no TenantAdmin widening, unlike FindForCancellationAsync. Decision D5:
+    // there is no FR asking for front-desk-style check-in on someone else's
+    // behalf, and inventing one would be scope creep. Takes the caller's id
+    // directly rather than a BookingOwnerFilter, so there is no "AnyOwner"
+    // this method could ever be handed by mistake — a future caller cannot
+    // widen it by constructing the wrong filter, because there is no filter
+    // to construct.
+    //
+    // Null covers "no such id", "another tenant's id" and "another member's
+    // booking" identically (AC-4), same reasoning as FindForCancellationAsync.
+    Task<Booking?> FindForCheckInAsync(
+        Guid bookingId, Guid ownerUserId, CancellationToken cancellationToken);
+
     // ---- The whole-series cancel (WP-5 Phase 2, FR-5.3, decision 0002) ----
 
     // Every occurrence of a series still worth cancelling: Pending or

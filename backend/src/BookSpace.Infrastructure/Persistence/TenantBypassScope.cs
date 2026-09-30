@@ -13,15 +13,15 @@ namespace BookSpace.Infrastructure.Persistence;
 // Deliberately not DI-registered: every producer and the sole consumer live
 // in this assembly, so a static keeps it out of service lifetimes entirely.
 //
-// Two named exceptions may call Enter(), and CLAUDE.md §4.2's own restriction
-// ("IgnoreQueryFilters() is allowed only in explicitly named ... methods")
-// covers both for the same reason: AuthenticationUserRepository runs before a
-// tenant is known (login, refresh, activation), and — since WP-8 Phase 2,
-// docs/wp8-plan.md decision D9 — NotificationRepository runs with no tenant
-// at all, because a background job's one dispatch run claims due
-// notifications across every organisation in a single tick and there is no
-// ICurrentTenant to read one from. No third caller is sanctioned without the
-// same review.
+// Three named exceptions may call Enter(), and CLAUDE.md §4.2's own
+// restriction ("IgnoreQueryFilters() is allowed only in explicitly named ...
+// methods") covers all three for the same reason: AuthenticationUserRepository
+// runs before a tenant is known (login, refresh, activation), and — since
+// WP-8 Phase 2, docs/wp8-plan.md decision D9 — NotificationRepository and (WP-8
+// Phase 3) NoShowReleaseRepository both run with no tenant at all, because a
+// background job's one run sweeps its own table across every organisation in a
+// single tick and there is no ICurrentTenant to read one from. No fourth
+// caller is sanctioned without the same review.
 internal static class TenantBypassScope
 {
     private static readonly AsyncLocal<bool> IsActiveLocal = new();

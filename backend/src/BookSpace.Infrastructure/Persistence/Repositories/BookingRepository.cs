@@ -513,6 +513,18 @@ internal sealed class BookingRepository : IBookingRepository
         return bookings.FirstOrDefaultAsync(cancellationToken);
     }
 
+    // ---- The check-in (WP-8 Phase 3, decision D5) ----
+
+    // Strictly the caller's own — the WHERE clause has no admin-widening
+    // branch at all, unlike FindForCancellationAsync's owner-only filter,
+    // because there is no BookingOwnerFilter parameter here for a future
+    // caller to construct too widely.
+    public Task<Booking?> FindForCheckInAsync(
+        Guid bookingId, Guid ownerUserId, CancellationToken cancellationToken) =>
+        _context.Bookings
+            .Where(b => b.Id == bookingId && b.UserId == ownerUserId)
+            .FirstOrDefaultAsync(cancellationToken);
+
     // ---- The whole-series cancel (WP-5 Phase 2, FR-5.3) ----
 
     // Ordered so the response lists cancelled occurrences in a stable,
