@@ -24,7 +24,8 @@ public sealed class StaleApprovalExpiryOptions
     // Comfortably longer than a batch of this size should ever take to
     // expire — see PeriodicJobRunner.LeaseDuration's own header for why
     // this also has to clear IClock's whole-second truncation with real
-    // margin.
-    [Range(1, int.MaxValue)]
+    // margin. Floor of 5 rather than 1 (hardening pass, finding 8) — see
+    // NotificationDispatchOptions' own comment on the identical fix.
+    [Range(5, int.MaxValue)]
     public int LeaseSeconds { get; set; } = 120;
 }

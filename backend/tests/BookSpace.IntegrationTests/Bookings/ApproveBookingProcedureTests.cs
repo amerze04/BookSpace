@@ -78,6 +78,113 @@ public class ApproveBookingProcedureTests
         }
     }
 
+    // ---- Approval deadline re-check (hardening pass, finding 3, FR-9.3) ----
+    //
+    // Before this, dbo.ApproveBooking never read ApprovalRequests at all —
+    // an approval past its own configured deadline was approved exactly
+    // like any other, and only the stale-approval expiry job's own next
+    // tick would ever have refused it. These prove the deadline is now a
+    // real one, enforced at the moment of decision.
+
+    [Fact]
+    public async Task ApproveBooking_SucceedsOneSecondBeforeItsDeadline()
+    {
+        var resource = await CreateResourceAsync(capacity: 1);
+
+        try
+        {
+            var bookingId = await CreateBookingAsync(resource, At(9), At(10), quantity: 1, status: "Pending");
+            var deadline = At(0).AddHours(24);
+            await InsertApprovalRequestAsync(bookingId, deadline);
+
+            var outcome = await CallApproveAsync(
+                resource, bookingId, await ApproverIdAsync(), nowUtc: deadline.AddSeconds(-1));
+
+            Assert.Equal("Approved", outcome.ResultCode);
+        }
+        finally
+        {
+            await CleanUpAsync(resource.Id);
+        }
+    }
+
+    [Fact]
+    public async Task ApproveBooking_RefusesExactlyAtItsDeadline()
+    {
+        var resource = await CreateResourceAsync(capacity: 1);
+
+        try
+        {
+            var bookingId = await CreateBookingAsync(resource, At(9), At(10), quantity: 1, status: "Pending");
+            var deadline = At(0).AddHours(24);
+            await InsertApprovalRequestAsync(bookingId, deadline);
+
+            var outcome = await CallApproveAsync(resource, bookingId, await ApproverIdAsync(), nowUtc: deadline);
+
+            Assert.Equal("ApprovalRequestExpired", outcome.ResultCode);
+
+            // Refused before any mutation — still Pending, not silently
+            // rejected either; that transition belongs to the sweep job
+            // alone (Booking.ExpireApproval), not to a decision this
+            // procedure declined to make.
+            var stored = await ReadBookingAsync(bookingId);
+            Assert.Equal("Pending", stored.Status);
+        }
+        finally
+        {
+            await CleanUpAsync(resource.Id);
+        }
+    }
+
+    [Fact]
+    public async Task ApproveBooking_RefusesWellAfterItsDeadline()
+    {
+        var resource = await CreateResourceAsync(capacity: 1);
+
+        try
+        {
+            var bookingId = await CreateBookingAsync(resource, At(9), At(10), quantity: 1, status: "Pending");
+            var deadline = At(0).AddHours(24);
+            await InsertApprovalRequestAsync(bookingId, deadline);
+
+            // The exact poll-window gap finding 3 names: the sweep simply
+            // has not run yet, days later.
+            var outcome = await CallApproveAsync(
+                resource, bookingId, await ApproverIdAsync(), nowUtc: deadline.AddDays(3));
+
+            Assert.Equal("ApprovalRequestExpired", outcome.ResultCode);
+        }
+        finally
+        {
+            await CleanUpAsync(resource.Id);
+        }
+    }
+
+    // Organizations.ApprovalExpiryHours may be null for a tenant with no
+    // configured expiry — such a request waits indefinitely (FR-7.4's own
+    // documented behaviour) and must never be refused on deadline grounds
+    // no matter how old it is.
+    [Fact]
+    public async Task ApproveBooking_WithNoConfiguredDeadline_NeverExpires()
+    {
+        var resource = await CreateResourceAsync(capacity: 1);
+
+        try
+        {
+            var bookingId = await CreateBookingAsync(resource, At(9), At(10), quantity: 1, status: "Pending");
+            await InsertApprovalRequestAsync(bookingId, expiresAtUtc: null);
+
+            var outcome = await CallApproveAsync(
+                resource, bookingId, await ApproverIdAsync(), nowUtc: At(0).AddYears(1));
+
+            Assert.Equal("Approved", outcome.ResultCode);
+        }
+        finally
+        {
+            await CleanUpAsync(resource.Id);
+        }
+    }
+
     // ---- Approver eligibility re-check (hardening pass, P2) ---------------
 
     [Fact]
@@ -658,6 +765,31 @@ public class ApproveBookingProcedureTests
         return bookingId;
     }
 
+    // Hardening pass, finding 3. dbo.CreateBooking never writes
+    // ApprovalRequests itself (that row is added by the application layer,
+    // WP-5 Phase 3) — this fixture inserts it directly, decision 0017's
+    // carve-out, so ExpiresAtUtc can be pinned to whatever the test needs
+    // rather than derived from Organizations.ApprovalExpiryHours and real
+    // wall-clock time.
+    private static async Task InsertApprovalRequestAsync(Guid bookingId, DateTime? expiresAtUtc)
+    {
+        await using var connection = new SqlConnection(ConnectionString);
+        await connection.OpenAsync();
+        await EnterRlsBypassAsync(connection);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO dbo.ApprovalRequests (Id, BookingId, RequestedAtUtc, ExpiresAtUtc, Decision)
+            VALUES (@Id, @BookingId, @RequestedAtUtc, @ExpiresAtUtc, 'Pending');
+            """;
+        command.Parameters.AddWithValue("@Id", Guid.NewGuid());
+        command.Parameters.AddWithValue("@BookingId", bookingId);
+        command.Parameters.AddWithValue("@RequestedAtUtc", At(0));
+        command.Parameters.AddWithValue("@ExpiresAtUtc", (object?)expiresAtUtc ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync();
+    }
+
     private static async Task<Guid> OrgIdOfAsync(Guid resourceId) =>
         await ScalarAsync<Guid>("SELECT OrgId FROM dbo.Resources WHERE Id = @p0;", resourceId);
 
@@ -786,7 +918,18 @@ public class ApproveBookingProcedureTests
             await EnterRlsBypassAsync(connection);
 
             await using var command = connection.CreateCommand();
-            command.CommandText = "DELETE FROM dbo.Bookings WHERE ResourceId = @ResourceId;";
+            // ApprovalRequests first: FK_ApprovalRequests_Bookings is
+            // NoAction (CLAUDE.md §4.5), so a booking with a row referencing
+            // it cannot be deleted first — a no-op for every test in this
+            // file except the finding-3 expiry ones below, which are the
+            // first to insert one.
+            command.CommandText =
+                """
+                DELETE FROM dbo.ApprovalRequests
+                WHERE BookingId IN (SELECT Id FROM dbo.Bookings WHERE ResourceId = @ResourceId);
+
+                DELETE FROM dbo.Bookings WHERE ResourceId = @ResourceId;
+                """;
             command.Parameters.AddWithValue("@ResourceId", resourceId);
             await command.ExecuteNonQueryAsync();
         }

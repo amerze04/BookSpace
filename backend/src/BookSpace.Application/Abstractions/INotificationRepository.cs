@@ -29,11 +29,31 @@ public interface INotificationRepository
     // window (backoffBase * 2^Attempts, measured from its last claim) has
     // elapsed, so a transiently-failing item is retried with growing spacing
     // rather than on every tick.
+    //
+    // Hardening pass, finding 6: candidates are ordered (SendAtUtc,
+    // CreatedAtUtc, Id) *inside the same atomic statement* — SQL Server's
+    // own `UPDATE TOP (n)` promises no order at all, which meant the oldest
+    // overdue row had no guarantee of ever being claimed ahead of a newer
+    // one under a sustained backlog. Selecting and updating remain one
+    // statement (a CTE, not two round trips), so the ordering costs nothing
+    // in atomicity.
+    //
+    // Hardening pass, finding 2: jobName/ownerId fence the claim against
+    // *current* lease ownership, evaluated against dbo.JobLeases' own row —
+    // a worker whose lease has already lapsed (even if it has not noticed
+    // yet) claims nothing, closing the one place this job's own lease
+    // exclusivity actually matters: a claim gates an external side effect
+    // (an email send) that nothing can undo once started, unlike the
+    // in-database mutations NoShowReleaseJob/StaleApprovalExpiryJob perform,
+    // which Bookings.RowVersion already protects on its own (see those two
+    // repositories' own headers for why they do not need this).
     Task<IReadOnlyList<ClaimedNotification>> ClaimDueAsync(
         int batchSize,
         int maxAttempts,
         TimeSpan backoffBase,
         DateTime nowUtc,
+        string jobName,
+        Guid ownerId,
         CancellationToken cancellationToken);
 
     // Composes the email for a claimed row, resolving whichever anchor it
@@ -42,11 +62,18 @@ public interface INotificationRepository
     // belong to a known tenant at this point — see NotificationRepository for
     // where TenantBypassScope is entered.
     //
-    // Null means this notification's own subject no longer needs an email —
-    // today, only a Reminder whose Booking is no longer Confirmed (decision
-    // D10, docs/wp8-plan.md: cancelled or rejected before the reminder fired).
+    // Null means this notification's own subject is stale and no longer
+    // needs an email — the booking or series it describes moved on before
+    // dispatch got to it. Hardening pass, finding 5, widens this beyond its
+    // original single case (a Reminder whose Booking is no longer Confirmed,
+    // decision D10): see ComposeForBooking's own header for the full list.
     // The caller still records the attempt as handled, never retried.
-    Task<EmailMessage?> BuildEmailAsync(ClaimedNotification notification, CancellationToken cancellationToken);
+    //
+    // nowUtc is the run's own instant (hardening pass, finding 5) — needed
+    // for the one staleness check that is about *time* rather than *status*:
+    // a Reminder whose booking's own interval has already ended.
+    Task<EmailMessage?> BuildEmailAsync(
+        ClaimedNotification notification, DateTime nowUtc, CancellationToken cancellationToken);
 
     // Ordinary EF: Notifications carries no tenant filter or RLS policy at
     // all (it is not one of §4.2's six tables), so this is a plain read of

@@ -28,12 +28,23 @@ internal sealed class NotificationRepository : INotificationRepository
     // is about parameterisation, not about which of EF's two raw-SQL entry
     // points is used.
     //
-    // UPDATE TOP (n) has no defined row order (SQL Server picks arbitrarily
-    // among matches), so this batch is not guaranteed oldest-due-first.
-    // Accepted: nothing here promises an order, only that every due row is
-    // eventually claimed across however many ticks it takes.
+    // Hardening pass, finding 6: `UPDATE TOP (n)` alone has no defined row
+    // order, so a sustained backlog had no guarantee the *oldest* overdue
+    // row would ever be claimed ahead of a newer one. The CTE below adds a
+    // real `ORDER BY` inside its own `TOP (n)`, and the UPDATE still runs
+    // against that CTE in one atomic statement — selecting and claiming are
+    // not two round trips a second claimer could race between.
+    //
+    // Hardening pass, finding 2: the EXISTS clause fences the claim to the
+    // caller's own *current* lease ownership, checked against dbo.JobLeases
+    // with the database's own clock (SYSUTCDATETIME(), matching
+    // JobLeaseRepository's own authority, finding 1) rather than trusting
+    // that PeriodicJobRunner's heartbeat has already noticed a lost lease.
+    // See INotificationRepository's own header for why this job specifically
+    // needs it and the other two do not.
     public async Task<IReadOnlyList<ClaimedNotification>> ClaimDueAsync(
-        int batchSize, int maxAttempts, TimeSpan backoffBase, DateTime nowUtc, CancellationToken cancellationToken)
+        int batchSize, int maxAttempts, TimeSpan backoffBase, DateTime nowUtc,
+        string jobName, Guid ownerId, CancellationToken cancellationToken)
     {
         var connection = _context.Database.GetDbConnection();
         var openedHere = connection.State != ConnectionState.Open;
@@ -48,17 +59,27 @@ internal sealed class NotificationRepository : INotificationRepository
             await using var command = connection.CreateCommand();
             command.CommandText =
                 """
-                UPDATE TOP (@BatchSize) dbo.Notifications WITH (UPDLOCK, READPAST)
+                ;WITH Candidates AS (
+                    SELECT TOP (@BatchSize) *
+                    FROM dbo.Notifications WITH (UPDLOCK, READPAST)
+                    WHERE SentAtUtc IS NULL
+                      AND SendAtUtc <= @NowUtc
+                      AND Attempts < @MaxAttempts
+                      AND (Attempts = 0
+                           OR DATEADD(SECOND, CAST(POWER(2, Attempts) * @BackoffBaseSeconds AS BIGINT), UpdatedAtUtc) <= @NowUtc)
+                      AND EXISTS (
+                          SELECT 1 FROM dbo.JobLeases
+                          WHERE JobName = @JobName
+                            AND OwnerId = @OwnerId
+                            AND LeaseExpiresAtUtc > SYSUTCDATETIME())
+                    ORDER BY SendAtUtc, CreatedAtUtc, Id
+                )
+                UPDATE Candidates
                 SET Attempts = Attempts + 1,
                     UpdatedAtUtc = @NowUtc
                 OUTPUT inserted.Id, inserted.BookingId, inserted.RecurrenceRuleId,
                        inserted.OccurrenceDate, inserted.RecipientUserId, inserted.Kind,
                        inserted.Attempts
-                WHERE SentAtUtc IS NULL
-                  AND SendAtUtc <= @NowUtc
-                  AND Attempts < @MaxAttempts
-                  AND (Attempts = 0
-                       OR DATEADD(SECOND, CAST(POWER(2, Attempts) * @BackoffBaseSeconds AS BIGINT), UpdatedAtUtc) <= @NowUtc)
                 """;
             command.Transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
 
@@ -69,6 +90,8 @@ internal sealed class NotificationRepository : INotificationRepository
             {
                 Value = (int)backoffBase.TotalSeconds,
             });
+            command.Parameters.Add(new SqlParameter("@JobName", SqlDbType.NVarChar, 100) { Value = jobName });
+            command.Parameters.Add(new SqlParameter("@OwnerId", SqlDbType.UniqueIdentifier) { Value = ownerId });
 
             var claimed = new List<ClaimedNotification>();
 
@@ -105,7 +128,8 @@ internal sealed class NotificationRepository : INotificationRepository
     // job repository is now a second, equally-named exception, for the same
     // reason the first one is — nothing here has any other way to be told
     // which tenant a row belongs to.
-    public async Task<EmailMessage?> BuildEmailAsync(ClaimedNotification notification, CancellationToken cancellationToken)
+    public async Task<EmailMessage?> BuildEmailAsync(
+        ClaimedNotification notification, DateTime nowUtc, CancellationToken cancellationToken)
     {
         using var _ = TenantBypassScope.Enter();
 
@@ -117,6 +141,12 @@ internal sealed class NotificationRepository : INotificationRepository
             .FirstAsync(cancellationToken);
 
         var to = new EmailAddress(recipient.Email, recipient.FullName);
+        // Hardening pass, finding 4: keyed on the notification row's own id,
+        // so a repeated send of the *same* row — an ordinary retry, or the
+        // rarer post-send-crash case — carries an identical Message-ID
+        // rather than a fresh random one. See EmailMessage's own header for
+        // what this can and cannot promise.
+        var idempotencyKey = notification.Id.ToString("n");
 
         if (notification.BookingId is { } bookingId)
         {
@@ -127,11 +157,43 @@ internal sealed class NotificationRepository : INotificationRepository
                 .Select(b => new { b.ResourceId, b.StartsAtUtc, b.EndsAtUtc, b.Status })
                 .FirstAsync(cancellationToken);
 
-            // Decision D10 (docs/wp8-plan.md): a Reminder whose Booking is no
-            // longer Confirmed — cancelled or rejected before it fired — has
-            // nothing left to remind about. The caller marks this handled,
-            // not sent, and it is never retried.
-            if (notification.Kind == NotificationKind.Reminder && booking.Status != BookingStatus.Confirmed)
+            // Hardening pass, finding 5. A claimed row can sit unsent for a
+            // while — the batch is bounded, the backlog is not — and the
+            // booking it describes can move on in the meantime, sometimes
+            // producing a second, *contradictory* row for the same booking
+            // (Confirmed queued, then Cancelled before either is sent).
+            // Suppressing every one of these here, at compose time, is what
+            // actually closes that gap — ClaimDueAsync's own claim order
+            // (finding 6) makes claiming fairer, but promises nothing about
+            // *which* of two due rows for the same booking is sent first.
+            //
+            //   Confirmed — stale once the booking is no longer Confirmed.
+            //   ApprovalRequested — stale once the booking is no longer
+            //     Pending: already decided (Approved/Rejected/Expired) or
+            //     cancelled before anyone acted.
+            //   Reminder — stale once the booking is no longer Confirmed
+            //     (decision D10, unchanged), *or* once its own interval has
+            //     already ended: a reminder that arrives after the meeting
+            //     is over is wrong under any reading, with no invented
+            //     policy needed. Deliberately narrower than "already
+            //     started": a reminder for a meeting *in progress* is still
+            //     arguably useful, and drawing that line would be inventing
+            //     a rule no FR asks for — the same trap the WP-7
+            //     click-through found the booking detail screen in.
+            //
+            // Cancelled/Rejected/NoShowReleased/ApprovalExpired are
+            // deliberately exempt: each is already a terminal fact about
+            // something that already happened, and nothing here would make
+            // it less true later.
+            var isStale = notification.Kind switch
+            {
+                NotificationKind.Confirmed => booking.Status != BookingStatus.Confirmed,
+                NotificationKind.ApprovalRequested => booking.Status != BookingStatus.Pending,
+                NotificationKind.Reminder => booking.Status != BookingStatus.Confirmed || booking.EndsAtUtc <= nowUtc,
+                _ => false,
+            };
+
+            if (isStale)
             {
                 return null;
             }
@@ -147,7 +209,7 @@ internal sealed class NotificationRepository : INotificationRepository
             var when = FormatInterval(zone.ToLocal(booking.StartsAtUtc), zone.ToLocal(booking.EndsAtUtc), resource.TimeZoneId);
             var (subject, body) = ComposeForBooking(notification.Kind, resource.Name, when);
 
-            return new EmailMessage(to, subject, body);
+            return new EmailMessage(to, subject, body, IdempotencyKey: idempotencyKey);
         }
 
         var recurrenceRuleId = notification.RecurrenceRuleId
@@ -171,7 +233,7 @@ internal sealed class NotificationRepository : INotificationRepository
         var (ruleSubject, ruleBody) = ComposeForRecurrenceRule(
             notification.Kind, ruleResource.Name, notification.OccurrenceDate);
 
-        return new EmailMessage(to, ruleSubject, ruleBody);
+        return new EmailMessage(to, ruleSubject, ruleBody, IdempotencyKey: idempotencyKey);
     }
 
     // Plain EF: Notifications carries no tenant filter and no RLS policy at

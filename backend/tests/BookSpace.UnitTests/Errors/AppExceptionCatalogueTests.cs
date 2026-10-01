@@ -103,6 +103,11 @@ public class AppExceptionCatalogueTests
         // current state, not the request, is what refuses this.
         [typeof(BookingNotCheckableException)] =
             (ReasonCodes.BookingNotCheckable, ErrorKind.Conflict),
+
+        // Hardening pass, finding 3. RuleViolation, matching BookingNotPending:
+        // a standing deadline refuses this, not a conflicting write.
+        [typeof(ApprovalRequestExpiredException)] =
+            (ReasonCodes.ApprovalRequestExpired, ErrorKind.RuleViolation),
     };
 
     // AuthenticationException is excluded deliberately, and it is the one

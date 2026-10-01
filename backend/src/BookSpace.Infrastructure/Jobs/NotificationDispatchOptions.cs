@@ -23,7 +23,15 @@ public sealed class NotificationDispatchOptions
     // Comfortably longer than a batch of this size should ever take to send —
     // see PeriodicJobRunner.LeaseDuration's own header for why this also has
     // to clear IClock's whole-second truncation with real margin.
-    [Range(1, int.MaxValue)]
+    //
+    // Hardening pass, finding 8: the floor used to be [Range(1, ...)], which
+    // let a 1-second override through even though this comment (and
+    // LeaseDuration's own) already said "comfortably longer" — a real
+    // configuration mistake this codebase would have installed with a 400-style
+    // validation error at boot for a JSON typo elsewhere, but silently
+    // accepted here. Five seconds is comfortably above both the whole-second
+    // truncation floor and HeartbeatInterval's own (LeaseSeconds / 2) margin.
+    [Range(5, int.MaxValue)]
     public int LeaseSeconds { get; set; } = 120;
 
     [Range(1, 100)]

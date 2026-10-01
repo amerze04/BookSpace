@@ -21,11 +21,23 @@ public sealed record EmailAddress(string Address, string? DisplayName = null);
 // TextBody is required and HtmlBody is optional, not the other way round: a
 // message that renders only as HTML is unreadable in a client that refuses it,
 // and an activation link has to survive that.
+//
+// Hardening pass, finding 4. IdempotencyKey, when supplied, becomes the
+// outgoing message's own Message-ID (MimeMessageFactory) rather than a
+// randomly generated one. This is a mitigation, not a guarantee: nothing in
+// SMTP requires a receiving server or mail client to deduplicate on
+// Message-ID, so a retried send after a post-send, pre-acknowledgement
+// crash (see INotificationRepository's own header) can still land as two
+// messages in an inbox that does not dedupe. What it *does* buy is a stable
+// value a mail admin can search on to confirm two arrivals were the same
+// logical send, and it costs nothing when nobody looks — most callers
+// (activation, invitation) leave it null and get an ordinary random one.
 public sealed record EmailMessage(
     EmailAddress To,
     string Subject,
     string TextBody,
-    string? HtmlBody = null);
+    string? HtmlBody = null,
+    string? IdempotencyKey = null);
 
 // A delivery failure is a *return value*, not an exception, and that is the
 // load-bearing part of this contract.

@@ -232,4 +232,15 @@ public static class ReasonCodes
     // lock; reject's is the same predicate (Booking.CanBeRejected) checked in
     // the handler, since rejecting needs no lock to begin with.
     public const string BookingNotPending = "BookingNotPending";
+
+    // ErrorKind.RuleViolation (hardening pass, finding 3, FR-9.3). Approve or
+    // reject called after ApprovalRequest.ExpiresAtUtc has already passed —
+    // deliberately distinct from BookingNotPending: the booking genuinely is
+    // still Pending (the stale-approval expiry job has not swept it yet),
+    // so telling the caller "not pending" would be a lie the reason code
+    // itself makes. This is what closes the poll-window race between a
+    // human deciding and the sweep eventually running: the same deadline is
+    // now enforced at the moment of decision, not only by the job that
+    // cleans up whatever nobody decided in time.
+    public const string ApprovalRequestExpired = "ApprovalRequestExpired";
 }

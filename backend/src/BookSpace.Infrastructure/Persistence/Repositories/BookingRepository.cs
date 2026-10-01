@@ -744,6 +744,7 @@ internal sealed class BookingRepository : IBookingRepository
     {
         "Approved" => BookingApprovalResult.Approved,
         "BookingNotPending" => BookingApprovalResult.BookingNotPending,
+        "ApprovalRequestExpired" => BookingApprovalResult.ApprovalRequestExpired,
         "ApproverNotEligible" => BookingApprovalResult.ApproverNotEligible,
         "ResourceNotFound" => BookingApprovalResult.ResourceNotFound,
         "ResourceArchived" => BookingApprovalResult.ResourceArchived,

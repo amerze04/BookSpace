@@ -23,8 +23,9 @@ public sealed class StaleApprovalExpiryJob : PeriodicJobRunner
         _options = options;
     }
 
-    // Matches the seeded dbo.JobLeases row (AddJobLeases) exactly.
-    protected override string JobName => "StaleApprovalExpiry";
+    // Matches the seeded dbo.JobLeases row (AddJobLeases) exactly — via
+    // JobNames, the one place that name is spelled (hardening pass, finding 9).
+    protected override string JobName => JobNames.StaleApprovalExpiry;
 
     protected override TimeSpan PollInterval => TimeSpan.FromSeconds(_options.CurrentValue.PollSeconds);
 
@@ -49,15 +50,29 @@ public sealed class StaleApprovalExpiryJob : PeriodicJobRunner
                 // decision on this specific booking between the read above
                 // and this call is exactly the case a human deciding (or
                 // dbo.ApproveBooking's own re-check) makes possible, and this
-                // request is simply no longer Pending to expire.
-                await expiries.TryExpireAsync(candidate, nowUtc, cancellationToken);
+                // request is simply no longer Pending to expire. Logged at
+                // Debug rather than folded silently into "succeeded"
+                // (hardening pass, finding 7) — see NoShowReleaseJob's
+                // identical comment.
+                var expired = await expiries.TryExpireAsync(candidate, nowUtc, cancellationToken);
+                if (!expired)
+                {
+                    Logger.LogDebug(
+                        "{JobName} skipped booking {BookingId}: lost the race to a concurrent decision",
+                        JobName, candidate.Booking.Id);
+                }
+
                 succeeded++;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 // "Isolate failure per item" (WP-8's own wording): one bad
                 // candidate must not abort every other one still queued
-                // behind it in this batch.
+                // behind it in this batch. Logged with the booking id
+                // (hardening pass, finding 7) — see NoShowReleaseJob's
+                // identical comment.
+                Logger.LogWarning(
+                    ex, "{JobName} failed to expire approval for booking {BookingId}", JobName, candidate.Booking.Id);
                 failed++;
             }
         }

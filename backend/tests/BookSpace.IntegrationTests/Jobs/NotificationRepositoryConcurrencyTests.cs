@@ -21,6 +21,13 @@ public sealed class NotificationRepositoryConcurrencyTests : IAsyncLifetime
 {
     private readonly AuthenticationTestHost _host;
     private readonly List<Guid> _notificationIds = [];
+    // Hardening pass, finding 2: ClaimDueAsync now fences on a live,
+    // unexpired dbo.JobLeases row for (jobName, ownerId) — its own throwaway
+    // name/owner, seeded with a lease far in the future, so nothing in this
+    // file needs to also prove lease *acquisition*; that is
+    // JobLeaseRepositoryConcurrencyTests' own job.
+    private readonly string _jobName = $"wp8-test-{Guid.NewGuid():n}";
+    private readonly Guid _ownerId = Guid.NewGuid();
     private Guid _bookingId;
     private Guid _resourceId;
     private Guid _recipientUserId;
@@ -37,6 +44,12 @@ public sealed class NotificationRepositoryConcurrencyTests : IAsyncLifetime
     {
         await using var scope = _host.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<BookSpaceDbContext>();
+
+        await context.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            INSERT INTO dbo.JobLeases (JobName, OwnerId, AcquiredAtUtc, LeaseExpiresAtUtc, LastHeartbeatAtUtc)
+            VALUES ({_jobName}, {_ownerId}, SYSUTCDATETIME(), DATEADD(YEAR, 1, SYSUTCDATETIME()), SYSUTCDATETIME())
+            """);
 
         using var _ = TenantBypassScope.Enter();
 
@@ -83,6 +96,9 @@ public sealed class NotificationRepositoryConcurrencyTests : IAsyncLifetime
     {
         await using var scope = _host.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<BookSpaceDbContext>();
+
+        await context.Database.ExecuteSqlInterpolatedAsync(
+            $"DELETE FROM dbo.JobLeases WHERE JobName = {_jobName}");
 
         using var _ = TenantBypassScope.Enter();
 
@@ -159,6 +175,124 @@ public sealed class NotificationRepositoryConcurrencyTests : IAsyncLifetime
         Assert.DoesNotContain(tooSoon, c => c.Id == id);
     }
 
+    // ---- At-least-once, not exactly-once (hardening pass, finding 4) ------
+    //
+    // Reproduces "SendAsync returned Delivered, then the process died before
+    // RecordOutcomeAsync's SaveChangesAsync committed" concretely, rather
+    // than leaving it as an argued risk. A row that was claimed once
+    // (Attempts already bumped — claiming *is* the attempt) but never had
+    // its outcome recorded is, from the row's own point of view,
+    // indistinguishable from a first attempt nobody has retried yet — so it
+    // is claimed again once its own backoff window elapses, and a real
+    // caller would send it again. See NotificationDispatchJob's own header
+    // for the accepted contract this demonstrates.
+    [Fact]
+    public async Task ARowNeverAcknowledgedAfterItsFirstClaimIsClaimedAgainOnceItsBackoffElapses()
+    {
+        var id = await InsertRowAsync(sendAtUtc: DateTime.UtcNow.AddMinutes(-5));
+
+        var firstClaim = await ClaimAsync(backoffBase: TimeSpan.FromSeconds(30));
+        Assert.Contains(firstClaim, c => c.Id == id);
+        // Deliberately never calls RecordOutcomeAsync — the crash this test
+        // reproduces is precisely that it never runs.
+
+        await BackdateUpdatedAtUtcAsync(id, DateTime.UtcNow.AddMinutes(-5));
+
+        var secondClaim = await ClaimAsync(backoffBase: TimeSpan.FromSeconds(30));
+
+        Assert.Contains(secondClaim, c => c.Id == id);
+        Assert.Equal(2, await AttemptsAsync(id));
+        Assert.Null(await SentAtUtcAsync(id));
+    }
+
+    private async Task BackdateUpdatedAtUtcAsync(Guid id, DateTime updatedAtUtc)
+    {
+        await using var scope = _host.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<BookSpaceDbContext>();
+
+        await context.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE dbo.Notifications SET UpdatedAtUtc = {updatedAtUtc} WHERE Id = {id}");
+    }
+
+    private async Task<DateTime?> SentAtUtcAsync(Guid id)
+    {
+        await using var scope = _host.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<BookSpaceDbContext>();
+
+        return await context.Notifications.Where(n => n.Id == id).Select(n => n.SentAtUtc).FirstAsync();
+    }
+
+    // ---- Deterministic ordering (hardening pass, finding 6) ---------------
+
+    [Fact]
+    public async Task ClaimsTheOldestDueRowFirstUnderContention()
+    {
+        // Three distinct Kinds — not three Confirmed rows — because
+        // UQ_Notifications_Once allows only one row per
+        // (BookingId, RecipientUserId, Kind); this test's own booking is
+        // shared incidentally, not the thing under test.
+        var oldest = await InsertRowAsync(DateTime.UtcNow.AddMinutes(-30), NotificationKind.Confirmed);
+        var middle = await InsertRowAsync(DateTime.UtcNow.AddMinutes(-20), NotificationKind.Rejected);
+        var newest = await InsertRowAsync(DateTime.UtcNow.AddMinutes(-10), NotificationKind.Cancelled);
+
+        var claimed = await ClaimAsync(batchSize: 1);
+
+        var single = Assert.Single(claimed);
+        Assert.Equal(oldest, single.Id);
+        Assert.NotEqual(middle, single.Id);
+        Assert.NotEqual(newest, single.Id);
+    }
+
+    // ---- Lease fencing (hardening pass, finding 2) -------------------------
+    //
+    // A claim gates an external side effect (the email send that follows)
+    // nothing can undo once started — unlike NoShowReleaseRepository/
+    // StaleApprovalExpiryRepository, which Bookings.RowVersion already
+    // protects on its own, this is the one place the job's *lease* itself
+    // has to be re-checked at the exact moment of the mutation, not merely
+    // trusted from whenever RunOnceAsync last renewed it.
+
+    [Fact]
+    public async Task ClaimsNothingWhenTheCallersOwnLeaseHasExpired()
+    {
+        var id = await InsertRowAsync(sendAtUtc: DateTime.UtcNow.AddMinutes(-1));
+
+        await ExpireOwnLeaseAsync();
+
+        var claimed = await ClaimAsync();
+
+        Assert.DoesNotContain(claimed, c => c.Id == id);
+    }
+
+    [Fact]
+    public async Task ClaimsNothingWhenAnotherOwnerNowHoldsTheLease()
+    {
+        var id = await InsertRowAsync(sendAtUtc: DateTime.UtcNow.AddMinutes(-1));
+        var newOwner = Guid.NewGuid();
+
+        await using var scope = _host.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<BookSpaceDbContext>();
+        await context.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            UPDATE dbo.JobLeases
+            SET OwnerId = {newOwner}, LeaseExpiresAtUtc = DATEADD(YEAR, 1, SYSUTCDATETIME())
+            WHERE JobName = {_jobName}
+            """);
+
+        var claimed = await ClaimAsync();
+
+        Assert.DoesNotContain(claimed, c => c.Id == id);
+    }
+
+    private async Task ExpireOwnLeaseAsync()
+    {
+        await using var scope = _host.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<BookSpaceDbContext>();
+
+        await context.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE dbo.JobLeases SET LeaseExpiresAtUtc = '2000-01-01' WHERE JobName = {_jobName}");
+    }
+
     [Fact]
     public async Task ExactlyOneOfTwoConcurrentClaimsGetsAGivenRow()
     {
@@ -175,13 +309,13 @@ public sealed class NotificationRepositoryConcurrencyTests : IAsyncLifetime
 
     // ---- Helpers ----
 
-    private async Task<Guid> InsertRowAsync(DateTime sendAtUtc)
+    private async Task<Guid> InsertRowAsync(DateTime sendAtUtc, NotificationKind kind = NotificationKind.Confirmed)
     {
         await using var scope = _host.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<BookSpaceDbContext>();
 
         var notification = Notification.ForBooking(
-            Guid.NewGuid(), _bookingId, _recipientUserId, NotificationKind.Confirmed,
+            Guid.NewGuid(), _bookingId, _recipientUserId, kind,
             sendAtUtc, _recipientUserId, DateTime.UtcNow);
 
         context.Notifications.Add(notification);
@@ -198,7 +332,8 @@ public sealed class NotificationRepositoryConcurrencyTests : IAsyncLifetime
         var repository = scope.ServiceProvider.GetRequiredService<INotificationRepository>();
 
         return await repository.ClaimDueAsync(
-            batchSize, maxAttempts, backoffBase ?? TimeSpan.FromSeconds(30), DateTime.UtcNow, CancellationToken.None);
+            batchSize, maxAttempts, backoffBase ?? TimeSpan.FromSeconds(30), DateTime.UtcNow,
+            _jobName, _ownerId, CancellationToken.None);
     }
 
     private async Task<int> AttemptsAsync(Guid id)

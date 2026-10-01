@@ -33,6 +33,20 @@ public abstract class PeriodicJobRunner : BackgroundService
     // after tick, and a fresh Guid only appears when a new instance starts.
     private readonly Guid _ownerId = Guid.NewGuid();
 
+    // Exposed so a job's own RunAsync can pass it down to a repository
+    // method that needs to fence a mutation against current lease ownership
+    // (hardening pass, finding 2) — NotificationRepository.ClaimDueAsync is
+    // the one caller today. Read-only from outside: only this class ever
+    // acquires or renews using it.
+    protected Guid OwnerId => _ownerId;
+
+    // Hardening pass, finding 7: a per-item failure a job only recorded on
+    // its own row (LastError) was invisible to anything watching application
+    // logs — "picked up 100, succeeded 99, failed 1" with no way to tell
+    // which row or why. Exposed so each job's own per-item catch can log the
+    // entity id and exception alongside the outcome it already records.
+    protected ILogger Logger => _logger;
+
     protected PeriodicJobRunner(IServiceScopeFactory scopeFactory, ILogger logger)
     {
         _scopeFactory = scopeFactory;
@@ -100,11 +114,13 @@ public abstract class PeriodicJobRunner : BackgroundService
         var leases = scope.ServiceProvider.GetRequiredService<IJobLeaseRepository>();
         var clock = scope.ServiceProvider.GetRequiredService<IClock>();
 
-        bool acquired;
+        // No nowUtc passed in — see IJobLeaseRepository's own header
+        // (hardening pass, finding 1): lease acquisition is judged entirely
+        // against SQL Server's clock, never this process's.
+        DateTime? acquired;
         try
         {
-            acquired = await leases.TryAcquireOrRenewAsync(
-                JobName, _ownerId, LeaseDuration, clock.UtcNow, cancellationToken);
+            acquired = await leases.TryAcquireOrRenewAsync(JobName, _ownerId, LeaseDuration, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -112,7 +128,7 @@ public abstract class PeriodicJobRunner : BackgroundService
             return new JobRunOutcome(false, null, ex);
         }
 
-        if (!acquired)
+        if (acquired is null)
         {
             _logger.LogDebug("{JobName} lease held by another instance this tick", JobName);
             return new JobRunOutcome(false, null, null);
@@ -207,13 +223,11 @@ public abstract class PeriodicJobRunner : BackgroundService
 
                 using var heartbeatScope = _scopeFactory.CreateScope();
                 var leases = heartbeatScope.ServiceProvider.GetRequiredService<IJobLeaseRepository>();
-                var clock = heartbeatScope.ServiceProvider.GetRequiredService<IClock>();
 
-                bool renewed;
+                DateTime? renewed;
                 try
                 {
-                    renewed = await leases.TryAcquireOrRenewAsync(
-                        JobName, _ownerId, LeaseDuration, clock.UtcNow, stopLoop);
+                    renewed = await leases.TryAcquireOrRenewAsync(JobName, _ownerId, LeaseDuration, stopLoop);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -223,7 +237,7 @@ public abstract class PeriodicJobRunner : BackgroundService
                     return;
                 }
 
-                if (!renewed)
+                if (renewed is null)
                 {
                     _logger.LogWarning(
                         "{JobName} lost its lease to another instance mid-run; stopping the run", JobName);
@@ -266,8 +280,7 @@ public abstract class PeriodicJobRunner : BackgroundService
         try
         {
             var leases = scope.ServiceProvider.GetRequiredService<IJobLeaseRepository>();
-            var clock = scope.ServiceProvider.GetRequiredService<IClock>();
-            await leases.ReleaseAsync(JobName, _ownerId, clock.UtcNow, CancellationToken.None);
+            await leases.ReleaseAsync(JobName, _ownerId, CancellationToken.None);
         }
         catch (Exception ex)
         {

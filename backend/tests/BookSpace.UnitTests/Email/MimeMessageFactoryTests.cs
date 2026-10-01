@@ -81,6 +81,49 @@ public class MimeMessageFactoryTests
         Assert.Null(mime.HtmlBody);
     }
 
+    // Hardening pass, finding 4. Deterministic on the supplied key, not
+    // randomly generated — so a repeated send of the *same* logical
+    // notification (an ordinary retry, or the rarer post-send-crash case)
+    // carries an identical Message-ID, which is a real mitigation for a
+    // duplicate send even though nothing requires a receiving mail server to
+    // act on it (see EmailMessage's own header).
+    [Fact]
+    public void MessageId_IsDeterministicWhenAnIdempotencyKeyIsSupplied()
+    {
+        var message = Message() with { IdempotencyKey = "abc123" };
+
+        var first = MimeMessageFactory.Create(Options(), message);
+        var second = MimeMessageFactory.Create(Options(), message);
+
+        Assert.Equal(first.MessageId, second.MessageId);
+        Assert.Contains("abc123", first.MessageId);
+    }
+
+    // The domain half of the From address, not a hardcoded placeholder — so
+    // the Message-ID at least names a domain this deployment actually owns.
+    [Fact]
+    public void MessageId_UsesTheConfiguredFromAddressDomain()
+    {
+        var message = Message() with { IdempotencyKey = "abc123" };
+
+        var mime = MimeMessageFactory.Create(Options(), message);
+
+        Assert.EndsWith("@bookspace.example", mime.MessageId);
+    }
+
+    // No caller today passes a key for most messages (activation,
+    // invitation) — MimeKit's own default (a fresh random id per message)
+    // is exactly right for those, and must not become deterministic by
+    // accident.
+    [Fact]
+    public void MessageId_IsLeftToMimeKitWhenNoIdempotencyKeyIsSupplied()
+    {
+        var first = MimeMessageFactory.Create(Options(), Message());
+        var second = MimeMessageFactory.Create(Options(), Message());
+
+        Assert.NotEqual(first.MessageId, second.MessageId);
+    }
+
     // Not decoration: an .eml is only worth writing if it round-trips, because
     // opening it in a mail client is the whole reason the sink produces one.
     [Fact]

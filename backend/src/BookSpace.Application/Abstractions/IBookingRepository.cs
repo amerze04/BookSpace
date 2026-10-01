@@ -341,6 +341,14 @@ public enum BookingApprovalResult
     // handler could race.
     BookingNotPending,
 
+    // Hardening pass, finding 3, FR-9.3: the request's own configured
+    // deadline (ApprovalRequests.ExpiresAtUtc) has already passed, checked
+    // under the same lock as the decision itself — closing the window
+    // between the deadline passing and the stale-approval expiry job
+    // actually sweeping it, during which a human could otherwise still
+    // approve a request the system considers overdue.
+    ApprovalRequestExpired,
+
     // Hardening pass, P2: the caller is no longer an assigned approver for
     // this resource — checked under the same lock as the decision itself, so
     // an admin removing them mid-request cannot slip through. Never reached

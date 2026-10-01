@@ -34,6 +34,23 @@ internal static class MimeMessageFactory
         mime.To.Add(new MailboxAddress(message.To.DisplayName, message.To.Address));
         mime.Subject = message.Subject;
 
+        // Hardening pass, finding 4: a deterministic Message-ID for a
+        // caller that supplies one (NotificationRepository, keyed on the
+        // notification row's own id), so a repeated send of the *same* row
+        // — whether an ordinary retry or the rarer post-send-crash case —
+        // carries identical headers rather than MimeMessage's own default of
+        // a fresh random one per construction. See EmailMessage's own header
+        // for what this can and cannot promise. Left unset (MimeKit
+        // generates its usual random one) for every caller that passes
+        // nothing, which is every caller but the dispatch job today.
+        if (!string.IsNullOrWhiteSpace(message.IdempotencyKey))
+        {
+            var domain = options.FromAddress.Contains('@')
+                ? options.FromAddress[(options.FromAddress.IndexOf('@') + 1)..]
+                : "bookspace.local";
+            mime.MessageId = $"{message.IdempotencyKey}@{domain}";
+        }
+
         var body = new BodyBuilder { TextBody = message.TextBody };
 
         // Left unset rather than defaulted from the text body. A multipart/

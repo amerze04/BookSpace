@@ -170,6 +170,66 @@ public sealed class NotificationDispatchJobTests : IAsyncLifetime
         Assert.NotNull(await SentAtUtcAsync(notificationId));
     }
 
+    // ---- Stale notification suppression (hardening pass, finding 5) -------
+    //
+    // A claimed row can sit unsent for a while (the batch is bounded, the
+    // backlog is not), and the booking it describes can move on in the
+    // meantime — sometimes producing a genuinely contradictory pair, e.g. a
+    // Confirmed row queued and then the booking cancelled before either
+    // notification is sent. Suppressing at compose time, keyed off the
+    // booking's *current* state, is what actually closes that gap —
+    // ClaimDueAsync's own ordering fix (finding 6) makes claiming fairer, but
+    // promises nothing about which of two due rows for the same booking goes
+    // out first.
+
+    [Fact]
+    public async Task AConfirmedNotificationForAnAlreadyCancelledBookingIsHandledWithoutSending()
+    {
+        var bookingId = await CreateBookingAsync(BookingStatus.Confirmed);
+        await CancelBookingAsync(bookingId);
+        var notificationId = await InsertBookingNotificationAsync(bookingId, NotificationKind.Confirmed);
+
+        var outcome = await RunJobAsync();
+
+        Assert.Equal(new JobRunSummary(1, 1, 0), outcome.Summary);
+        Assert.NotNull(await SentAtUtcAsync(notificationId));
+    }
+
+    // "Already decided" simulated the same way StaleApprovalExpiryJobTests
+    // does — dbo.ApproveBooking is the real write path for this transition,
+    // not a plain EF one, so the tracked property is overridden directly
+    // rather than re-proving the procedure's own behaviour here.
+    [Fact]
+    public async Task AnApprovalRequestedNotificationForAnAlreadyApprovedBookingIsHandledWithoutSending()
+    {
+        var bookingId = await CreateBookingAsync(BookingStatus.Pending);
+        await ForceStatusAsync(bookingId, BookingStatus.Confirmed);
+        var notificationId = await InsertBookingNotificationAsync(bookingId, NotificationKind.ApprovalRequested);
+
+        var outcome = await RunJobAsync();
+
+        Assert.Equal(new JobRunSummary(1, 1, 0), outcome.Summary);
+        Assert.NotNull(await SentAtUtcAsync(notificationId));
+    }
+
+    // A Reminder arriving after the meeting has already ended is wrong under
+    // any reading, with no invented policy needed — deliberately narrower
+    // than "already started" (a reminder for a meeting in progress is still
+    // arguably useful, and drawing that line would be inventing a rule no FR
+    // asks for). Needs its own backdated booking: the file's shared fixture
+    // is deliberately far in the future (line 30's own comment).
+    [Fact]
+    public async Task AReminderForABookingWhoseIntervalHasAlreadyEndedIsHandledWithoutSending()
+    {
+        var bookingId = await CreateBackdatedConfirmedBookingAsync();
+        var notificationId = await InsertBookingNotificationAsync(bookingId, NotificationKind.Reminder);
+
+        var outcome = await RunJobAsync();
+
+        Assert.Equal(new JobRunSummary(1, 1, 0), outcome.Summary);
+        Assert.NotNull(await SentAtUtcAsync(notificationId));
+    }
+
     // Proves the "one arm per Kind, default throws" composer for every
     // Booking-anchored kind this dispatch job can see today (ApprovalExpired,
     // WP-8 Phase 4, is not built yet) — none of them should throw, and every
@@ -308,6 +368,48 @@ public sealed class NotificationDispatchJobTests : IAsyncLifetime
         var booking = await context.Bookings.IgnoreQueryFilters().SingleAsync(b => b.Id == bookingId);
         booking.Cancel(_recipientUserId, "Test cancellation", DateTime.UtcNow);
         await context.SaveChangesAsync();
+    }
+
+    // Hardening pass, finding 5's own test fixture: dbo.ApproveBooking is the
+    // real write path to Confirmed from Pending, not a plain EF one — the
+    // tracked property is overridden directly instead, the same technique
+    // StaleApprovalExpiryJobTests uses for the identical simulated fact.
+    private async Task ForceStatusAsync(Guid bookingId, BookingStatus status)
+    {
+        await using var scope = _host.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<BookSpaceDbContext>();
+
+        using var _ = TenantBypassScope.Enter();
+
+        var booking = await context.Bookings.IgnoreQueryFilters().SingleAsync(b => b.Id == bookingId);
+        context.Entry(booking).Property(nameof(Booking.Status)).CurrentValue = status;
+        await context.SaveChangesAsync();
+    }
+
+    // Created via dbo.CreateBooking with a past interval the endpoint itself
+    // would refuse (BookingInThePast is an app-layer pre-check, not enforced
+    // by the procedure) — this fixture bypasses the handler entirely and
+    // calls the repository straight, the same carve-out
+    // NoShowReleaseJobTests uses for its own backdated StartsAtUtc.
+    private async Task<Guid> CreateBackdatedConfirmedBookingAsync()
+    {
+        await using var scope = _host.CreateScope();
+        var bookings = scope.ServiceProvider.GetRequiredService<IBookingRepository>();
+
+        using var _ = TenantBypassScope.Enter();
+
+        var start = DateTime.UtcNow.AddHours(-3);
+        var bookingId = Guid.NewGuid();
+
+        await bookings.CreateAsync(
+            new NewBooking(
+                bookingId, _resourceId, _recipientUserId, RecurrenceRuleId: null,
+                start, start.AddHours(1), Quantity: 1, Title: "Ended booking test fixture",
+                BookingStatus.Confirmed, CreatedByUserId: _recipientUserId, DateTime.UtcNow),
+            CancellationToken.None);
+
+        _bookingIds.Add(bookingId);
+        return bookingId;
     }
 
     private async Task<Guid> InsertBookingNotificationAsync(Guid bookingId, NotificationKind kind)

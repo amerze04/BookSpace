@@ -55,6 +55,33 @@ public sealed class RejectBookingCommandRequestHandler
             throw new BookingNotPendingException(booking.Id);
         }
 
+        // Hardening pass, finding 3, FR-9.3: loaded before the eligibility
+        // check below so its deadline can be enforced before either — no
+        // point checking whether this approver may still decide on a
+        // request the system already considers overdue.
+        var approvalRequest = await _bookings.FindApprovalRequestAsync(booking.Id, cancellationToken)
+            ?? throw new InvalidOperationException(
+                $"Booking {booking.Id} was Pending with no ApprovalRequest row (FR-7.1 invariant).");
+
+        // Read once and reused for the check below and for the mutation
+        // further down — CLAUDE.md §4.3's own convention, so the instant
+        // this decision is judged against and the instant it is recorded
+        // with never disagree.
+        var nowUtc = _clock.UtcNow;
+
+        // dbo.ApproveBooking's own re-check, mirrored here since reject has
+        // no procedure to hold a lock — the same shape the eligibility
+        // re-check just below already uses for the identical reason.
+        // ExpiresAtUtc is never updated after creation, so no lock is needed
+        // to read it safely; the race that matters is with the
+        // stale-approval expiry job's *write* to this same Booking row,
+        // which Bookings.RowVersion already catches at SaveChangesAsync
+        // below (surfaced as 409 by GlobalExceptionHandler, unchanged).
+        if (approvalRequest.ExpiresAtUtc is { } expiresAtUtc && expiresAtUtc <= nowUtc)
+        {
+            throw new ApprovalRequestExpiredException(booking.Id);
+        }
+
         // Hardening pass, P2 — the same TOCTOU dbo.ApproveBooking's own
         // re-check closes, mirrored here since reject has no procedure to
         // hold a lock: re-verified immediately before the mutation rather
@@ -77,13 +104,7 @@ public sealed class RejectBookingCommandRequestHandler
             }
         }
 
-        var nowUtc = _clock.UtcNow;
-
         booking.Reject(actorUserId, nowUtc);
-
-        var approvalRequest = await _bookings.FindApprovalRequestAsync(booking.Id, cancellationToken)
-            ?? throw new InvalidOperationException(
-                $"Booking {booking.Id} was Pending with no ApprovalRequest row (FR-7.1 invariant).");
 
         approvalRequest.Decide(ApprovalDecision.Rejected, actorUserId, nowUtc, request.Note);
 

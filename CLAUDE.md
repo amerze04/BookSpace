@@ -2252,9 +2252,10 @@ what happens?" — and closed rather than left as a documented risk.
   reporting a failed outcome rather than running to completion.
 
 **Where this stands, for picking WP-8 back up in a fresh session**:
-Phases 1–4 are done, plus the heartbeat addition above. The baseline going
-into Phase 5 is 1388 backend unit + 705 backend integration tests, all
-green. **Phase 5 — the ICS feed — is
+Phases 1–4 are done, plus the heartbeat addition and the external hardening
+pass below. The baseline going into Phase 5 is 1409 backend unit + 719
+backend integration tests, all green (confirmed stable across two
+consecutive full runs). **Phase 5 — the ICS feed — is
 next**; its task breakdown (`CalendarFeedTokens`, `POST /users/me
 /calendar-feed-token`, the anonymous `GET /calendar-feed/{token}.ics`, and
 decisions D6/D7 on the token model and the hand-rolled ICS writer) is in
@@ -2262,3 +2263,148 @@ decisions D6/D7 on the token model and the hand-rolled ICS writer) is in
 has not been refreshed for any of WP-8 yet (still dated 2026-09-23, from
 before the admin console even closed) — this CLAUDE.md section is the
 current source of truth for WP-8 until the whole package closes.
+
+### Hardening pass — 2026-09-30 (background jobs)
+Not a new phase: a focused external review of all six commits on
+`feature/background-jobs` (lease/runner, notification dispatch, check-in/
+no-show, stale-approval expiry, the heartbeat) across nine numbered findings,
+each verified against the actual code, SQL and tests before anything
+changed. Seven were confirmed and fixed; two were confirmed as genuine but
+deliberately *not* fully closed, with the residual risk stated rather than
+argued away — see below. 1409 unit + 719 integration tests (21 + 14 new),
+confirmed stable across two consecutive full runs. Two migrations
+(`AddApprovalExpiredNotificationKind` predates this pass; the new one here
+is `AlterApproveBookingProcedureChecksApprovalExpiry`).
+
+**Finding 1 — the lease used the caller's own clock — CONFIRMED, fixed.**
+`IJobLeaseRepository.TryAcquireOrRenewAsync`/`ReleaseAsync` no longer take a
+`nowUtc` at all; every lease timestamp is `SYSUTCDATETIME()`, computed and
+compared inside the same atomic `UPDATE`. Two skewed application instances
+can no longer disagree about lease ownership, because neither's own clock
+ever enters the decision — proven structurally (a unit test asserts neither
+method's signature contains a `DateTime` parameter, so the guard survives a
+future "helpful" re-addition) and behaviourally
+(`JobLeaseRepositoryConcurrencyTests`, rewritten off the pre-existing
+shared-`now` pattern the finding specifically warned would prove nothing).
+
+**Finding 2 — lease loss is detected but not fenced — CONFIRMED, fixed where
+it has to be, deliberately not everywhere.** `NotificationRepository
+.ClaimDueAsync` now fences its claim on the caller's *current* lease
+ownership, re-checked against `dbo.JobLeases` with the database's own clock
+in the same atomic statement as the claim — the one place fencing has
+irreplaceable value, because a claim gates an external side effect (an
+email send) nothing can undo once started. `NoShowReleaseRepository`/
+`StaleApprovalExpiryRepository` deliberately gained no equivalent: both
+write only to `Bookings`, and `Bookings.RowVersion` (already load-bearing
+since WP-4) plus each domain method's own status re-check already make a
+"late" write from a stale lease holder either (a) correctly rejected, if the
+row changed at all in the meantime, or (b) a legitimately correct business
+transition on a row nobody else touched — not data corruption either way.
+This is stated as a reasoned scope boundary, not an oversight — seeing it
+argued is not the same as seeing it proven, so
+`ARaceWithAConcurrentCheckInDoesNotOverwriteIt` (Phase 3) and
+`ARaceWithAConcurrentDecisionDoesNotOverwriteIt` (Phase 4) already exist as
+exactly that proof, unchanged by this pass.
+
+**Finding 3 — approval expiry was only eventually enforced — CONFIRMED,
+fixed.** `dbo.ApproveBooking` now checks `ApprovalRequests.ExpiresAtUtc`
+under the same lock as the rest of its decision, and
+`RejectBookingCommandRequestHandler` gained the identical pre-check (plain
+EF has no lock to hold, so `Bookings.RowVersion` covers the concurrent case
+exactly as it already does for the sweep-vs-approve race). New reason code
+`ApprovalRequestExpired` (`RuleViolation`, 422) — deliberately not
+`BookingNotPending`, which would be a lie while the sweep job has not yet
+run and the booking is genuinely still `Pending`.
+
+**Finding 4 — notification-row idempotence is not email-delivery
+idempotence — CONFIRMED, documented and mitigated, not "fixed."** The
+honest contract (`NotificationDispatchJob`'s own header, expanded) is
+at-least-once: a crash between a successful `SendAsync` and the
+`SentAtUtc` commit that acknowledges it produces a real duplicate email,
+and nothing here closes that without a provider-level idempotency key or a
+broker this pass was told not to introduce.
+`ARowNeverAcknowledgedAfterItsFirstClaimIsClaimedAgainOnceItsBackoffElapses`
+reproduces the scenario directly rather than leaving it argued. The one
+real mitigation shipped: `EmailMessage.IdempotencyKey`, a deterministic
+Message-ID keyed on the notification row's own id
+(`MimeMessageFactory`) — stated plainly as a mitigation a mail admin can
+search on, not a guarantee any receiving server honours.
+
+**Finding 5 — dispatch could send stale or contradictory notifications —
+CONFIRMED, fixed.** `NotificationRepository.BuildEmailAsync` now suppresses
+(marks handled, never sends) a `Confirmed` notification once its booking is
+no longer `Confirmed`, an `ApprovalRequested` once it is no longer
+`Pending`, and a `Reminder` once its booking's own interval has already
+ended, alongside the pre-existing "no longer `Confirmed`" reminder check —
+deliberately not "already started," which would invent a rule no FR asks
+for. `Cancelled`/`Rejected`/`NoShowReleased`/`ApprovalExpired` stay
+unconditional: each is already a terminal fact nothing later makes untrue.
+
+**Finding 6 — `UPDATE TOP` claiming had no ordering guarantee — CONFIRMED,
+fixed.** `ClaimDueAsync`'s claim is now a `SELECT TOP (n) ... ORDER BY
+SendAtUtc, CreatedAtUtc, Id` inside a CTE, updated in the same statement —
+still one atomic claim, not two round trips a second claimer could race
+between. `ClaimsTheOldestDueRowFirstUnderContention` proves the oldest of
+three due rows (three different `Kind`s — `UQ_Notifications_Once` refuses
+three same-`Kind` rows for one booking, caught while writing this test) is
+claimed first under a `batchSize` of one.
+
+**Finding 7 — per-item failures were under-observable — CONFIRMED, fixed.**
+`NoShowReleaseJob`/`StaleApprovalExpiryJob`/`NotificationDispatchJob` now log
+the entity id and exception for a genuine per-item failure (previously
+visible only in the row's own `LastError`, or not at all), and log a
+`Debug` line naming which booking was skipped as "lost the race" — a
+distinct, findable fact, without changing `JobRunSummary`'s own shape
+(reporting a lost race as a new kind of outcome there would have rippled
+through every existing test asserting on it; logging was the narrower,
+equally-honest fix the finding itself offered as an alternative). The
+"poison row" starvation risk (a deterministically-failing candidate staying
+at the front of every future batch) is a genuine, accepted residual risk —
+see below — not solved here, deliberately: the finding's own instruction
+was not to invent a dead-letter subsystem for it.
+
+**Finding 8 — configuration validation allowed unsafe values — CONFIRMED,
+fixed.** All three job options classes' `LeaseSeconds` floor moved from
+`[Range(1, ...)]` to `[Range(5, ...)]`, matching what their own comments
+already claimed. `NotificationDispatchOptionsValidator` (new
+`IValidateOptions<T>`) refuses a `MaxAttempts`/`BackoffBaseSeconds`
+combination whose worst-case backoff risks overflowing the `BIGINT` cast
+inside `ClaimDueAsync`'s own claim query — a cross-field rule data
+annotations cannot express, caught before boot rather than the first time a
+persistently-failing row's `Attempts` climbs high enough to hit it live.
+
+**Finding 9 — a missing lease row looks like ordinary contention —
+CONFIRMED, fixed.** `JobNames` centralises the three job-name strings this
+branch's own history shows can drift (the `ReminderDispatch` →
+`NotificationDispatch` rename). `IJobLeaseRepository
+.FindMissingJobNamesAsync` plus a new `JobLeaseStartupValidator`
+(`IHostedService`) fail the boot loudly if any known name has no seeded
+row. **Found and fixed during this pass, not before it shipped**: the first
+version ran this check as inline code between `builder.Build()` and
+`app.Run()` in `Program.cs`, which broke every `WebApplicationFactory`-based
+HTTP integration test in the solution — the async work there interfered
+with `WebApplicationFactory`'s own interception of a minimal-API entry
+point, surfacing as "the server has not been started" on every
+`CreateClient()` call, once instantly and once as a multi-minute hang.
+Moved into an `IHostedService`, which behaves correctly in a real deployment
+*and* is cleanly stripped by `AuthenticationTestHost` for every other test
+in the suite (`services.RemoveAll<IHostedService>()`, pre-existing) — the
+validator's own correctness is proven directly against
+`IJobLeaseRepository` in `JobLeaseStartupValidationTests`, independent of
+whichever hosting path runs it.
+
+**Remaining risks, stated rather than hidden:**
+- The at-least-once email contract (finding 4) is permanent, not a
+  to-do — closing it needs a provider-level idempotency primitive or a
+  broker, neither of which this pass was authorized to introduce.
+- The "poison row" starvation risk (finding 7) is unmitigated: a
+  candidate that deterministically throws stays eligible at the front of
+  every future batch until an operator, alerted by the now-logged
+  exception, fixes the underlying data.
+- Findings 2's scope boundary (no fencing beyond the notification claim)
+  rests on `Bookings.RowVersion` continuing to be the concurrency token on
+  every job-owned mutation to that table — true today, worth re-checking if
+  a future job ever writes a table with no such token of its own.
+
+Decisions D1–D10 (docs/wp8-plan.md) are unaffected by this pass and remain
+queued for write-up when Phase 6 closes, per the plan's own note.

@@ -104,6 +104,12 @@ public static class DependencyInjection
         // singleton hosted service itself.
         services.AddScoped<IJobLeaseRepository, JobLeaseRepository>();
 
+        // Hardening pass, finding 9. Registered first, deliberately: hosted
+        // services start in registration order, and this one's job is to
+        // fail the whole boot before any real job gets a chance to start
+        // against a JobLeases table it doesn't fully agree with.
+        services.AddHostedService<JobLeaseStartupValidator>();
+
         // WP-8 Phase 2. No annotation-only ValidateOnStart posture here on
         // purpose — see NotificationDispatchOptions' own header for why a
         // missing section is not a boot failure the way EmailOptions'
@@ -112,6 +118,10 @@ public static class DependencyInjection
             .Bind(configuration.GetSection(NotificationDispatchOptions.SectionName))
             .ValidateDataAnnotations()
             .ValidateOnStart();
+        // Hardening pass, finding 8: MaxAttempts and BackoffBaseSeconds are
+        // each fine in isolation but can combine into a value that overflows
+        // the claim query's own BIGINT cast — see the validator's header.
+        services.AddSingleton<IValidateOptions<NotificationDispatchOptions>, NotificationDispatchOptionsValidator>();
         services.AddScoped<INotificationRepository, NotificationRepository>();
         services.AddHostedService<NotificationDispatchJob>();
 

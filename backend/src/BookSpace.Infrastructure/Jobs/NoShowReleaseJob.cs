@@ -24,8 +24,9 @@ public sealed class NoShowReleaseJob : PeriodicJobRunner
         _options = options;
     }
 
-    // Matches the seeded dbo.JobLeases row (AddJobLeases) exactly.
-    protected override string JobName => "NoShowRelease";
+    // Matches the seeded dbo.JobLeases row (AddJobLeases) exactly — via
+    // JobNames, the one place that name is spelled (hardening pass, finding 9).
+    protected override string JobName => JobNames.NoShowRelease;
 
     protected override TimeSpan PollInterval => TimeSpan.FromSeconds(_options.CurrentValue.PollSeconds);
 
@@ -50,15 +51,32 @@ public sealed class NoShowReleaseJob : PeriodicJobRunner
                 // concurrent check-in on this specific booking between the
                 // read above and this call is exactly the case check-in
                 // exists to make possible (decision D5), and this booking is
-                // simply no longer a no-show.
-                await noShows.TryReleaseAsync(booking, nowUtc, cancellationToken);
+                // simply no longer a no-show. Logged at Debug rather than
+                // folded silently into "succeeded" (hardening pass,
+                // finding 7): still counted the same way in the run summary
+                // — it genuinely is not a failure — but an operator scanning
+                // logs for *why* a specific booking was skipped this tick
+                // now has an answer instead of an identical-looking
+                // "succeeded" line.
+                var released = await noShows.TryReleaseAsync(booking, nowUtc, cancellationToken);
+                if (!released)
+                {
+                    Logger.LogDebug(
+                        "{JobName} skipped booking {BookingId}: lost the race to a concurrent change",
+                        JobName, booking.Id);
+                }
+
                 succeeded++;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 // "Isolate failure per item" (WP-8's own wording): one bad
                 // booking must not abort every other one still queued
-                // behind it in this batch.
+                // behind it in this batch. Logged with the booking id
+                // (hardening pass, finding 7) — before this, "picked up 100,
+                // succeeded 99, failed 1" gave an operator no way to learn
+                // which booking failed or why.
+                Logger.LogWarning(ex, "{JobName} failed to release booking {BookingId}", JobName, booking.Id);
                 failed++;
             }
         }

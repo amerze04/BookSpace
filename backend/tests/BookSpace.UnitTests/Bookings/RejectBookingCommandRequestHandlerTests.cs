@@ -53,6 +53,84 @@ public class RejectBookingCommandRequestHandlerTests
         Assert.Equal(1, bookings.SaveChangesCount);
     }
 
+    // ---- Approval deadline re-check (hardening pass, finding 3, FR-9.3) ---
+
+    [Fact]
+    public async Task RejectsOneSecondBeforeTheDeadline()
+    {
+        var booking = Booking();
+        var deadline = NowUtc.AddSeconds(1);
+        var bookings = new FakeApprovalBookingRepository
+        {
+            Reachable = booking,
+            ExistingApprovalRequest = new ApprovalRequest(Guid.NewGuid(), booking.Id, NowUtc, deadline),
+        };
+
+        var response = await Handler(bookings, Admin, Role.TenantAdmin).Handle(
+            new RejectBookingCommandRequest(booking.Id), CancellationToken.None);
+
+        Assert.Equal(BookingStatus.Rejected, response.Status);
+    }
+
+    [Fact]
+    public async Task RefusesExactlyAtTheDeadline()
+    {
+        var booking = Booking();
+        var bookings = new FakeApprovalBookingRepository
+        {
+            Reachable = booking,
+            // The handler's clock (TestClock(NowUtc)) reads exactly NowUtc —
+            // a deadline set to that same instant has already passed.
+            ExistingApprovalRequest = new ApprovalRequest(Guid.NewGuid(), booking.Id, NowUtc, NowUtc),
+        };
+
+        var exception = await Assert.ThrowsAsync<ApprovalRequestExpiredException>(
+            () => Handler(bookings, Admin, Role.TenantAdmin).Handle(
+                new RejectBookingCommandRequest(booking.Id), CancellationToken.None));
+
+        Assert.Equal(ErrorKind.RuleViolation, exception.Kind);
+        Assert.Equal(ReasonCodes.ApprovalRequestExpired, exception.ReasonCode);
+
+        // Refused before any mutation — the booking is still Pending, not
+        // silently rejected either; that transition belongs to the sweep
+        // job alone.
+        Assert.Equal(BookingStatus.Pending, booking.Status);
+        Assert.Equal(0, bookings.SaveChangesCount);
+    }
+
+    [Fact]
+    public async Task RefusesWellAfterTheDeadline()
+    {
+        var booking = Booking();
+        var bookings = new FakeApprovalBookingRepository
+        {
+            Reachable = booking,
+            ExistingApprovalRequest = new ApprovalRequest(
+                Guid.NewGuid(), booking.Id, NowUtc.AddDays(-3), NowUtc.AddDays(-1)),
+        };
+
+        await Assert.ThrowsAsync<ApprovalRequestExpiredException>(
+            () => Handler(bookings, Admin, Role.TenantAdmin).Handle(
+                new RejectBookingCommandRequest(booking.Id), CancellationToken.None));
+    }
+
+    // A null ExpiresAtUtc (no configured deadline, FR-7.4) must never expire.
+    [Fact]
+    public async Task WithNoConfiguredDeadline_NeverRefusesOnExpiryGrounds()
+    {
+        var booking = Booking();
+        var bookings = new FakeApprovalBookingRepository
+        {
+            Reachable = booking,
+            ExistingApprovalRequest = new ApprovalRequest(Guid.NewGuid(), booking.Id, NowUtc.AddYears(-1), null),
+        };
+
+        var response = await Handler(bookings, Admin, Role.TenantAdmin).Handle(
+            new RejectBookingCommandRequest(booking.Id), CancellationToken.None);
+
+        Assert.Equal(BookingStatus.Rejected, response.Status);
+    }
+
     [Fact]
     public async Task EnqueuesARejectionNotificationForTheBooker()
     {
@@ -149,6 +227,11 @@ public class RejectBookingCommandRequestHandlerTests
         {
             Reachable = booking,
             ApprovableResourceIds = [], // no longer includes booking's ResourceId
+            // Hardening pass, finding 3: the expiry check now runs before
+            // this one, so a real (non-expired) row is needed to reach it —
+            // ExpiresAtUtc null means "no configured deadline," matching
+            // what every other test here that doesn't care about expiry uses.
+            ExistingApprovalRequest = new ApprovalRequest(Guid.NewGuid(), booking.Id, NowUtc, null),
         };
 
         var exception = await Assert.ThrowsAsync<ApproverNotEligibleException>(

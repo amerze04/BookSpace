@@ -131,6 +131,10 @@ public sealed class ApproveBookingCommandRequestHandler
         outcome.Result switch
         {
             BookingApprovalResult.BookingNotPending => new BookingNotPendingException(bookingId),
+            // Hardening pass, finding 3, FR-9.3: dbo.ApproveBooking's own
+            // deadline re-check, under the same lock as the rest of this
+            // decision.
+            BookingApprovalResult.ApprovalRequestExpired => new ApprovalRequestExpiredException(bookingId),
             // Hardening pass, P2: the caller's own id is the only one that
             // could have failed this check — dbo.ApproveBooking's
             // eligibility re-check is by @ApproverUserId alone.
